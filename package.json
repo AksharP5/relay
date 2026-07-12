@@ -1,0 +1,59 @@
+{
+  "name": "@aksharp5/relay",
+  "version": "0.1.0",
+  "description": "Carry one coding task between Codex and OpenCode.",
+  "keywords": [
+    "cli",
+    "codex",
+    "coding-agent",
+    "effect",
+    "opencode"
+  ],
+  "homepage": "https://github.com/AksharP5/relay#readme",
+  "bugs": {
+    "url": "https://github.com/AksharP5/relay/issues"
+  },
+  "license": "MIT",
+  "author": "Akshar Patel",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AksharP5/relay.git"
+  },
+  "bin": {
+    "relay": "./src/cli.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "scripts": {
+    "relay": "bun src/cli.ts",
+    "build": "bun build src/cli.ts --compile --outfile dist/relay",
+    "check": "bun run format:check && bun run typecheck && bun run test",
+    "format": "oxfmt . --write",
+    "format:check": "oxfmt . --check",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.0-beta.59",
+    "effect": "4.0.0-beta.59",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "oxfmt": "^0.27.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0-beta.59"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "packageManager": "bun@1.3.10"
+}

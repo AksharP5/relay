@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+.DS_Store
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Relay data when RELAY_DATA_DIR points into the repository
+.relay/
+
+# Editor and temporary files
+.idea/
+.vscode/
+*.log
+*.tmp
