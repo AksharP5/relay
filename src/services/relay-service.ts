@@ -7,6 +7,7 @@ import type {
   HarnessTurnProgress,
   NativeTranscriptTurn,
   RelayMessage,
+  RelayTaskExport,
   RelayThread,
 } from "../domain.ts";
 import { CliError, ThreadNotFound } from "../errors.ts";
@@ -62,6 +63,8 @@ export class RelayService extends Context.Service<
     readonly historyForDisplay: (
       threadId: string,
     ) => Effect.Effect<ReadonlyArray<RelayMessage>, unknown>;
+    readonly exportTask: (threadId?: string) => Effect.Effect<RelayTaskExport, unknown>;
+    readonly deleteTask: (threadId?: string) => Effect.Effect<RelayThread, unknown>;
     readonly doctor: () => Effect.Effect<ReadonlyArray<HarnessStatus>>;
     readonly capabilities: (
       harness: Harness,
@@ -145,7 +148,7 @@ export class RelayService extends Context.Service<
       const ask = Effect.fn("RelayService.ask")((input: AskInput) =>
         Effect.gen(function* () {
           const initialThread = yield* ensureCurrent(input);
-          const runLease = yield* store.acquireRunLease(initialThread.id);
+          const runLease = yield* store.acquireExecutionLease(initialThread);
 
           return yield* Effect.gen(function* () {
             const lock = yield* store.acquireLock(initialThread.id);
@@ -232,7 +235,7 @@ export class RelayService extends Context.Service<
           }),
       );
 
-      const useThread = Effect.fn("RelayService.useThread")((threadId: string) =>
+      const resolveTask = Effect.fn("RelayService.resolveTask")((threadId: string) =>
         Effect.gen(function* () {
           const threads = yield* store.list();
           const matches = threads.filter(
@@ -249,7 +252,13 @@ export class RelayService extends Context.Service<
               message: `Task id ${threadId} is ambiguous; provide more characters`,
             });
           }
-          const thread = matches[0]!;
+          return matches[0]!;
+        }),
+      );
+
+      const useThread = Effect.fn("RelayService.useThread")((threadId: string) =>
+        Effect.gen(function* () {
+          const thread = yield* resolveTask(threadId);
           yield* store.setCurrent(thread.id);
           return thread;
         }),
@@ -270,6 +279,20 @@ export class RelayService extends Context.Service<
         store.recentMessages(threadId, { maxMessages: 200, maxChars: 1_000_000 }),
       );
 
+      const exportTask = Effect.fn("RelayService.exportTask")((threadId?: string) =>
+        Effect.gen(function* () {
+          const thread = threadId ? yield* resolveTask(threadId) : yield* store.current();
+          return yield* store.exportTask(thread);
+        }),
+      );
+
+      const deleteTask = Effect.fn("RelayService.deleteTask")((threadId?: string) =>
+        Effect.gen(function* () {
+          const thread = threadId ? yield* resolveTask(threadId) : yield* store.current();
+          return yield* store.deleteTask(thread);
+        }),
+      );
+
       const doctor = Effect.fn("RelayService.doctor")(() =>
         Effect.all([harnesses.status("codex"), harnesses.status("opencode")], { concurrency: 2 }),
       );
@@ -288,7 +311,7 @@ export class RelayService extends Context.Service<
             const thread = input.threadId
               ? yield* store.get(input.threadId)
               : yield* store.current();
-            const runLease = yield* store.acquireRunLease(thread.id);
+            const runLease = yield* store.acquireExecutionLease(thread);
             return yield* Effect.gen(function* () {
               const lock = yield* store.acquireLock(thread.id);
               return yield* Effect.gen(function* () {
@@ -452,6 +475,8 @@ export class RelayService extends Context.Service<
         history,
         historyFor,
         historyForDisplay,
+        exportTask,
+        deleteTask,
         doctor,
         capabilities,
         control,
@@ -460,7 +485,8 @@ export class RelayService extends Context.Service<
         beginNativeHandoff,
         abandonNativeHandoff,
         importNativeTurns,
-        acquireNativeLease: store.acquireRunLease,
+        acquireNativeLease: (threadId) =>
+          store.get(threadId).pipe(Effect.flatMap(store.acquireExecutionLease)),
         switchNativeHarness: (threadId, harness) => switchNativeHarness(harness, threadId),
         dropNativeBinding,
         dataRoot: store.root,

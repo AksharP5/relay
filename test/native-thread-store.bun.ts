@@ -14,6 +14,41 @@ afterAll(async () => {
 });
 
 describe("native transcript storage", () => {
+  it("prevents two Relay tasks from running in the same checkout", async () => {
+    const checkout = join(directory, "checkout-lease-fixture");
+    const nested = join(checkout, "packages", "app");
+    await mkdir(join(checkout, ".git"), { recursive: true });
+    await mkdir(nested, { recursive: true });
+    const { first, second } = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const first = yield* store.create({
+          title: "First checkout owner",
+          cwd: checkout,
+          harness: "codex",
+        });
+        const second = yield* store.create({
+          title: "Second checkout owner",
+          cwd: nested,
+          harness: "opencode",
+        });
+        return { first, second };
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+    const acquire = (thread: typeof first) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.acquireExecutionLease(thread);
+        }).pipe(Effect.provide(ThreadStore.layer)),
+      );
+    const owner = await acquire(first);
+    await expect(acquire(second)).rejects.toThrow("checkout is already active");
+    await owner.release();
+    const next = await acquire(second);
+    await next.release();
+  });
+
   it("recovers a stale run lease without allowing concurrent owners", async () => {
     const created = await Effect.runPromise(
       Effect.gen(function* () {

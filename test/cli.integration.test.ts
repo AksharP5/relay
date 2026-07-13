@@ -163,6 +163,110 @@ describe("Relay CLI storage", () => {
     expect(result.stderr).toContain("Run relay new first");
   });
 
+  it("exports a versioned task and deletes only Relay-owned records", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-export-delete-"));
+    tempRoots.push(root);
+    const created = await runRelay(root, ["new", "Disposable task"]);
+    const shortId = created.stdout.match(/[0-9a-f]{8}/)?.[0];
+    const [threadId] = await readdir(join(root, "threads"));
+    const output = join(root, "task-export.json");
+
+    const exported = await runRelay(root, ["export", shortId!, "--out", output]);
+    expect(exported.exitCode).toBe(0);
+    const payload = JSON.parse(await readFile(output, "utf8")) as {
+      formatVersion: number;
+      task: { id: string; title: string };
+      messages: Array<unknown>;
+    };
+    expect(payload).toMatchObject({
+      formatVersion: 1,
+      task: { id: threadId, title: "Disposable task" },
+      messages: [],
+    });
+    expect((await stat(output)).mode & 0o077).toBe(0);
+
+    const guarded = await runRelay(root, ["delete", shortId!]);
+    expect(guarded.exitCode).toBe(1);
+    expect(guarded.stderr).toContain("Re-run with --force");
+    expect(await access(join(root, "threads", threadId!))).toBeUndefined();
+
+    const deleted = await runRelay(root, ["delete", shortId!, "--force"]);
+    expect(deleted.exitCode).toBe(0);
+    await expect(access(join(root, "threads", threadId!))).rejects.toThrow();
+    expect(
+      (JSON.parse(await readFile(join(root, "index.json"), "utf8")) as { threadIds: [] }).threadIds,
+    ).toEqual([]);
+    expect((await runRelay(root, ["status"])).stderr).toContain("Run relay new first");
+  });
+
+  it("marks legacy storage as version 1 and rejects newer formats", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-storage-version-"));
+    tempRoots.push(root);
+    await mkdir(join(root, "threads"), { recursive: true });
+    await writeFile(
+      join(root, "index.json"),
+      `${JSON.stringify({ currentThreadId: null, threadIds: [] })}\n`,
+      { mode: 0o600 },
+    );
+
+    const migrated = await runRelay(root, ["list"]);
+    expect(migrated.exitCode).toBe(0);
+    expect(JSON.parse(await readFile(join(root, "index.json"), "utf8"))).toEqual({
+      version: 1,
+      currentThreadId: null,
+      threadIds: [],
+    });
+
+    await writeFile(
+      join(root, "index.json"),
+      `${JSON.stringify({ version: 99, currentThreadId: null, threadIds: [] })}\n`,
+      {
+        mode: 0o600,
+      },
+    );
+    const rejected = await runRelay(root, ["list"]);
+    expect(rejected.exitCode).toBe(1);
+    expect(rejected.stderr).toContain("storage format 99");
+  });
+
+  it("finishes a journaled deletion after an interrupted delete", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-delete-recovery-"));
+    tempRoots.push(root);
+    await runRelay(root, ["new", "Interrupted deletion"]);
+    const [threadId] = await readdir(join(root, "threads"));
+    await mkdir(join(root, "deletions"), { recursive: true });
+    await writeFile(
+      join(root, "deletions", `${threadId}.json`),
+      `${JSON.stringify({
+        version: 1,
+        threadId,
+        createdAt: new Date().toISOString(),
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const listed = await runRelay(root, ["list"]);
+    expect(listed.exitCode).toBe(0);
+    expect(listed.stdout).toContain("No Relay tasks yet");
+    await expect(access(join(root, "threads", threadId!))).rejects.toThrow();
+    await expect(access(join(root, "deletions", `${threadId}.json`))).rejects.toThrow();
+  });
+
+  it("rejects a task file from a newer Relay without rewriting it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-task-version-"));
+    tempRoots.push(root);
+    await runRelay(root, ["new", "Future task"]);
+    const [threadId] = await readdir(join(root, "threads"));
+    const path = join(root, "threads", threadId!, "thread.json");
+    const future = `${JSON.stringify({ ...(JSON.parse(await readFile(path, "utf8")) as object), version: 99 })}\n`;
+    await writeFile(path, future, { mode: 0o600 });
+
+    const status = await runRelay(root, ["status"]);
+    expect(status.exitCode).toBe(1);
+    expect(status.stderr).toContain("task storage format 99");
+    expect(await readFile(path, "utf8")).toBe(future);
+  });
+
   it("recovers a journaled turn after a partial event-log write", async () => {
     const root = await mkdtemp(join(tmpdir(), "relay-recovery-"));
     tempRoots.push(root);

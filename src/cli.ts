@@ -2,6 +2,8 @@
 
 import { BunRuntime } from "@effect/platform-bun";
 import { Console, Effect, Layer, ManagedRuntime, pipe } from "effect";
+import { chmod, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import pc from "picocolors";
 import packageJson from "../package.json" with { type: "json" };
 import { parseArgs } from "./cli-args.ts";
@@ -26,6 +28,8 @@ ${pc.bold("Usage")}
   relay history
   relay list
   relay thread <id>
+  relay export [id] [--out file]
+  relay delete [id] --force
   relay native [codex|opencode]
 
 ${pc.bold("Examples")}
@@ -124,6 +128,39 @@ export const program = (argv: ReadonlyArray<string>) =>
         const thread = yield* relay.useThread(command.threadId);
         yield* Console.log(
           `${pc.green("Selected")} ${pc.bold(thread.title)} ${pc.dim(shortId(thread.id))}`,
+        );
+        return;
+      }
+      case "export": {
+        const exported = yield* relay.exportTask(command.threadId);
+        const json = `${JSON.stringify(exported, null, 2)}\n`;
+        if (!command.output) {
+          yield* Console.log(json.trimEnd());
+          return;
+        }
+        const output = resolve(command.output);
+        yield* Effect.tryPromise({
+          try: async () => {
+            await writeFile(output, json, { encoding: "utf8", mode: 0o600 });
+            await chmod(output, 0o600);
+          },
+          catch: (cause) => new Error(`Could not write ${output}: ${String(cause)}`),
+        });
+        yield* Console.log(`${pc.green("Exported")} ${pc.bold(exported.task.title)} to ${output}`);
+        return;
+      }
+      case "delete": {
+        if (!command.force) {
+          return yield* Effect.fail(
+            new Error("Task deletion is permanent. Re-run with --force after exporting if needed."),
+          );
+        }
+        const deleted = yield* relay.deleteTask(command.threadId);
+        yield* Console.log(
+          `${pc.green("Deleted")} ${pc.bold(deleted.title)} ${pc.dim(shortId(deleted.id))}`,
+        );
+        yield* Console.log(
+          pc.dim("Workspace files and native Codex/OpenCode sessions were not deleted."),
         );
         return;
       }

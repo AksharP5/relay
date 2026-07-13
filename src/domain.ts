@@ -72,6 +72,26 @@ export const RelayIndex = Schema.Struct({
 });
 export type RelayIndex = typeof RelayIndex.Type;
 
+export interface RelayTaskExport {
+  readonly formatVersion: 1;
+  readonly exportedAt: string;
+  readonly task: {
+    readonly id: string;
+    readonly title: string;
+    readonly cwd: string;
+    readonly activeHarness: Harness;
+    readonly createdAt: string;
+    readonly updatedAt: string;
+  };
+  readonly messages: ReadonlyArray<{
+    readonly seq: number;
+    readonly role: MessageRole;
+    readonly content: string;
+    readonly harness: Harness;
+    readonly createdAt: string;
+  }>;
+}
+
 export interface HarnessTurnInput {
   readonly cwd: string;
   readonly prompt: string;

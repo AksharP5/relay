@@ -29,4 +29,17 @@ describe("parseArgs", () => {
     expect(parseArgs(["native"])).toEqual({ name: "native" });
     expect(parseArgs(["native", "opencode"])).toEqual({ name: "native", harness: "opencode" });
   });
+
+  it("parses task export and explicit deletion", () => {
+    expect(parseArgs(["export", "abc123", "--out", "task.json"])).toEqual({
+      name: "export",
+      threadId: "abc123",
+      output: "task.json",
+    });
+    expect(parseArgs(["delete", "abc123", "--force"])).toEqual({
+      name: "delete",
+      threadId: "abc123",
+      force: true,
+    });
+  });
 });

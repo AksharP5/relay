@@ -12,6 +12,8 @@ export type CliCommand =
   | { readonly name: "new"; readonly title: string; readonly harness: Harness }
   | { readonly name: "use"; readonly harness: Harness }
   | { readonly name: "thread"; readonly threadId: string }
+  | { readonly name: "export"; readonly threadId?: string; readonly output?: string }
+  | { readonly name: "delete"; readonly threadId?: string; readonly force: boolean }
   | { readonly name: "native"; readonly harness?: Harness }
   | {
       readonly name: "ask";
@@ -54,6 +56,38 @@ const parseAsk = (args: ReadonlyArray<string>): CliCommand => {
   return { name: "ask", prompt, ...(harness ? { harness } : {}), ...(model ? { model } : {}) };
 };
 
+const parseTaskFileCommand = (
+  command: "export" | "delete",
+  args: ReadonlyArray<string>,
+): CliCommand => {
+  let threadId: string | undefined;
+  let output: string | undefined;
+  let force = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--out" && command === "export") {
+      output = valueAfter(args, index, "--out");
+      index += 1;
+      continue;
+    }
+    if (arg === "--force" && command === "delete") {
+      force = true;
+      continue;
+    }
+    if (arg.startsWith("--")) throw new CliError({ message: `Unknown option: ${arg}` });
+    if (threadId) throw new CliError({ message: `Usage: relay ${command} [task-id]` });
+    threadId = arg;
+  }
+  if (command === "export") {
+    return {
+      name: "export",
+      ...(threadId ? { threadId } : {}),
+      ...(output ? { output } : {}),
+    };
+  }
+  return { name: "delete", ...(threadId ? { threadId } : {}), force };
+};
+
 export const parseArgs = (args: ReadonlyArray<string>): CliCommand => {
   const [command, ...rest] = args;
   if (!command || command === "help" || command === "--help" || command === "-h")
@@ -64,6 +98,7 @@ export const parseArgs = (args: ReadonlyArray<string>): CliCommand => {
     return { name: command };
   }
   if (command === "ask") return parseAsk(rest);
+  if (command === "export" || command === "delete") return parseTaskFileCommand(command, rest);
   if (command === "native") {
     const harness = rest[0];
     if (!harness) return { name: "native" };
