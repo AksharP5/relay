@@ -9,7 +9,7 @@ $ relay
 
 Relay opens the selected harness exactly as its own CLI renders it. Codex looks and behaves like Codex; OpenCode looks and behaves like OpenCode. Type `/` and the native command palette owns the input. `Escape` remains owned by that native TUI, including any version-specific behavior.
 
-> **Platform support:** Relay supports macOS and glibc Linux. Native Windows is not supported yet.
+> **Platform support:** Relay supports macOS 13 or newer and glibc 2.25+ Linux. Native Windows is not supported yet.
 
 To switch harnesses while the current session is idle, press `Ctrl+Q`. Relay carries the completed conversation forward and opens the other real TUI. `F6` remains available as a fallback (`Fn+F6` when macOS treats the function row as media keys). See [Terminal shortcuts](#terminal-shortcuts) for the Zellij caveat.
 
@@ -67,8 +67,8 @@ Read [How Relay keeps context](docs/how-relay-works.md) for lifecycle details an
 
 ### Supported platforms
 
-- macOS on Apple Silicon or Intel
-- glibc Linux on arm64 or x64
+- macOS 13 or newer on Apple Silicon or Intel
+- glibc 2.25 or newer Linux on arm64 or x64
 
 Native Windows is not supported. Relay's terminal host currently depends on Unix pseudo-terminal and process semantics; Windows support requires a dedicated ConPTY backend rather than another npm binary. A glibc-based WSL distribution is treated as Linux, but WSL is not currently covered by Relay's automated compatibility tests.
 
@@ -91,7 +91,7 @@ npm install --global @akshar5/relay@latest
 relay doctor
 ```
 
-That one command installs a ready-to-run native executable for the current machine. Relay supports Apple Silicon and Intel macOS, plus x64 and arm64 glibc Linux. npm selects only the matching platform package; it does not download the other executables. Bun is not required at runtime, and the tiny launcher replaces itself with Relay instead of leaving an extra process in memory.
+That one command installs a ready-to-run native executable for the current machine. Relay supports Apple Silicon and Intel macOS 13+, plus x64 and arm64 glibc 2.25+ Linux. npm selects only the matching platform package; it does not download the other executables. Bun is not required at runtime, and the tiny launcher replaces itself with Relay instead of leaving an extra process in memory.
 
 Update with the same command:
 
@@ -198,7 +198,7 @@ Use `relay delete [id] --force` to erase one task's Relay-owned records. Deletio
 
 ## Current boundaries
 
-- Relay supports Codex and OpenCode on macOS and glibc Linux. Native Windows PTY hosting is not implemented.
+- Relay supports Codex and OpenCode on macOS 13+ and glibc 2.25+ Linux. Native Windows PTY hosting is not implemented.
 - Relay prevents two tasks from running agents in the same git checkout, including tasks started from nested or symlinked paths. Use separate git worktrees for intentional concurrency.
 - Cross-engine continuity includes completed visible text and the working tree, not hidden state.
 - A turn must finish in its source TUI before Relay switches; partial streaming output is not mirrored into the destination TUI.
