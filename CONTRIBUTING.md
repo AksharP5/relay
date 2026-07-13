@@ -8,11 +8,12 @@ Open an issue for a new harness, storage-format change, or user-visible behavior
 
 Relay's design priorities are:
 
-1. preserve a clear canonical conversation;
-2. use supported harness interfaces instead of private database writes;
-3. keep storage and runtime overhead small;
-4. make failures explicit and recoverable;
-5. explain limitations honestly.
+1. preserve the literal upstream TUI experience;
+2. preserve a clear canonical conversation;
+3. use supported harness interfaces instead of private database writes;
+4. keep storage and runtime overhead small;
+5. make failures explicit and recoverable;
+6. explain limitations honestly.
 
 ## Local setup
 
@@ -33,6 +34,10 @@ RELAY_DATA_DIR=/tmp/relay-dev bun run relay -- new "Adapter test"
 
 `bun run check` runs formatting, TypeScript, and the automated test suite. Adapter parsing should have fixture-level tests. Changes to a live adapter should also be tested against the corresponding installed CLI, but live model calls must not be part of CI.
 
+`bun run compat:latest` installs nothing and tests the currently resolved Codex and OpenCode executables through real local servers without a model call. The scheduled GitHub workflow first installs both latest stable packages, records their resolved versions, and runs this contract on Linux daily; manual runs also cover macOS.
+
+Changes to PTY input, process lifetime, session preparation, hidden injection, active-session resolution, or transcript import must include a focused regression for the failure they could cause. Do not add broad tests that merely repeat type checking or implementation details.
+
 Never add credentials, provider responses containing private data, or real user transcripts as fixtures.
 
 ## Code style
@@ -41,6 +46,7 @@ Never add credentials, provider responses containing private data, or real user 
 - Use tagged errors for expected operational failures.
 - Prefer small modules with explicit inputs over global state.
 - Keep the canonical format independent from any one harness.
+- Keep native frontend bytes and native slash-command input out of Relay-owned renderers.
 - Add dependencies only when they materially simplify the product.
 
 By contributing, you agree that your contribution is licensed under the MIT License.

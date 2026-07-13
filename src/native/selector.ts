@@ -6,6 +6,7 @@ interface SelectorInput extends EventEmitter {
   readonly isRaw?: boolean;
   setRawMode?: (enabled: boolean) => unknown;
   resume: () => unknown;
+  pause?: () => unknown;
 }
 
 interface SelectorOutput {
@@ -31,6 +32,8 @@ export const selectHarness = (
 ): Promise<Harness | undefined> => {
   const initialRawMode = io.input.isRaw === true;
   let selected = Math.max(0, options.indexOf(current));
+  let pending = "";
+  let escapeTimer: ReturnType<typeof setTimeout> | undefined;
 
   const render = () => {
     const rows = options
@@ -46,7 +49,9 @@ export const selectHarness = (
     const finish = (result: Harness | undefined) => {
       if (settled) return;
       settled = true;
+      if (escapeTimer) clearTimeout(escapeTimer);
       io.input.off("data", onData);
+      io.input.pause?.();
       io.input.setRawMode?.(initialRawMode);
       io.output.write(restoreScreen);
       resolve(result);
@@ -55,21 +60,48 @@ export const selectHarness = (
       selected = (selected + offset + options.length) % options.length;
       render();
     };
+    const consume = () => {
+      while (pending.length > 0 && !settled) {
+        if (pending.startsWith("\u001b[")) {
+          if (pending.length < 3) return;
+          const sequence = pending.slice(0, 3);
+          pending = pending.slice(3);
+          if (sequence === "\u001b[A" || sequence === "\u001b[D") move(-1);
+          else if (sequence === "\u001b[B" || sequence === "\u001b[C") move(1);
+          else finish(current);
+          continue;
+        }
+        if (pending[0] === "\u001b") {
+          if (pending.length === 1) {
+            escapeTimer = setTimeout(() => finish(current), 30);
+            return;
+          }
+          pending = pending.slice(1);
+          finish(current);
+          continue;
+        }
+
+        const value = pending[0]!;
+        pending = pending.slice(1);
+        if (value === "\u0003" || value.toLowerCase() === "q") finish(undefined);
+        else if (value === "\r" || value === "\n") finish(options[selected]);
+        else if (value === "\t") move(1);
+        else if (value.toLowerCase() === "c") {
+          selected = options.indexOf("codex");
+          render();
+        } else if (value.toLowerCase() === "o") {
+          selected = options.indexOf("opencode");
+          render();
+        }
+      }
+    };
     const onData = (chunk: Buffer | Uint8Array | string) => {
-      const value = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
-      if (value === "\u0003" || value.toLowerCase() === "q") return finish(undefined);
-      if (value === "\u001b") return finish(current);
-      if (value === "\r" || value === "\n") return finish(options[selected]);
-      if (value === "\u001b[A" || value === "\u001b[D") return move(-1);
-      if (value === "\u001b[B" || value === "\u001b[C" || value === "\t") return move(1);
-      if (value.toLowerCase() === "c") {
-        selected = options.indexOf("codex");
-        render();
+      if (escapeTimer) {
+        clearTimeout(escapeTimer);
+        escapeTimer = undefined;
       }
-      if (value.toLowerCase() === "o") {
-        selected = options.indexOf("opencode");
-        render();
-      }
+      pending += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+      consume();
     };
 
     io.output.write(alternateScreen);

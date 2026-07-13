@@ -1,178 +1,171 @@
 # Relay
 
-Carry one coding task between Codex and OpenCode.
-
-Relay is a terminal workspace where Codex and OpenCode can take turns on the same task. The transcript, composer, and working directory stay put; the underlying harness and interface skin can be changed independently at any time.
+Use the real Codex and OpenCode TUIs on one continuous coding task.
 
 ```console
 $ cd my-project
 $ relay
 ```
 
-Write the first request, press `Enter`, and Relay starts the task with Codex. Press `Ctrl+R` to choose the underlying harness and `Ctrl+T` to choose the Codex or OpenCode interface. Switching either one does not close the interface or clear the draft.
+Relay opens the selected harness exactly as its own CLI renders it. Codex looks and behaves like Codex; OpenCode looks and behaves like OpenCode. Type `/` and the native command palette owns the input. Press `Escape` and the native dialog closes normally.
 
-## Why Relay?
+To switch harnesses, press `Ctrl+]`, release it, then press `R`. Relay briefly shows a two-item selector, carries the completed conversation forward, and opens the other real TUI.
 
-Coding harnesses have different strengths. One may have the model, tools, interface, or permission model you want for a particular turn. Today, changing harnesses usually means copying a transcript, writing a handoff prompt, or starting over.
+## Why use Relay?
 
-Relay makes the handoff a normal part of the task:
+Codex and OpenCode have different models, tools, permission systems, commands, and strengths. Moving between them normally means starting over or manually writing a handoff.
 
-- **Use the right harness per turn.** Choose Codex or OpenCode beside the composer without leaving the task.
-- **Keep native sessions.** Relay resumes the same Codex and OpenCode sessions on later turns.
-- **Keep one understandable workspace.** The canonical transcript stays visible while each response is labeled by the harness that produced it.
-- **Switch without rebuilding everything.** A harness receives only the conversation it has not seen yet, then resumes normally on later turns.
-- **Stay lightweight.** No daemon, background indexer, shadow transcript, or copy of a vendor session database.
-- **Keep your existing setup.** Authentication, models, tools, and agents remain owned by Codex and OpenCode. Relay does not copy credentials or provider configuration.
-- **Choose the interface independently.** Use the OpenCode-compatible interface over Codex, the Codex-compatible interface over OpenCode, or link the interface so it switches with the harness.
-- **Keep familiar commands.** `/sessions` and `/resume` open the same Relay task picker; portable commands are translated, while truly native-only commands stay visible but disabled with an explanation.
+Relay makes that transition part of the terminal workflow:
 
-## How it works
+- **Keep the native experience.** Relay does not redraw, imitate, or embed screenshots of either interface. It hosts the installed CLI in a real pseudo-terminal.
+- **Keep one task.** Completed user and assistant messages are carried to the other harness, while the shared working directory carries the code and tool results.
+- **Keep native commands.** `/resume`, `/model`, `/undo`, `/sessions`, approval prompts, keyboard shortcuts, and dialogs are handled by the selected application.
+- **Resume both sides.** Relay remembers the Codex thread and OpenCode session associated with the task.
+- **Move only the delta.** A harness receives conversation it has not already seen instead of a rebuilt prompt on every turn.
+- **Stay lightweight.** Only the selected TUI and its local backend are alive. Relay does not keep two renderers, a terminal framebuffer, an indexer, or a daemon in memory.
+- **Keep credentials where they belong.** Authentication, provider settings, MCP servers, agents, tools, and permissions remain owned by Codex and OpenCode.
 
-A Relay task is a small canonical conversation plus a binding to each native harness session.
+## What “native” means
 
-1. The first turn in a harness creates a native session for that harness.
-2. Later turns in the same harness resume that session directly.
-3. When you switch, Relay sends only the conversation added since that harness last ran.
-4. The harness still inspects and edits the shared working directory as usual.
+Relay is a transparent terminal layer around the upstream applications:
 
-Relay stores message text plus small task metadata under `~/.local/share/relay`. Metadata includes the task title and ID, working directory, active harness, native session IDs, synchronization cursors, and timestamps. It does **not** copy Codex or OpenCode session databases, store their credentials, or retain raw tool output. Partial streamed text exists only in the running interface; the completed response is the only copy Relay commits. Harness processes are short-lived: Relay launches them for capability discovery or an operation, then exits them instead of keeping both harnesses warm.
+```text
+your terminal
+    └── Relay PTY host
+          ├── native Codex TUI ── Relay-owned Codex app-server
+          └── native OpenCode TUI ── Relay-owned OpenCode server
+```
 
-This provides practical continuity, not identical hidden state. A receiving harness gets the visible dialogue it missed and inspects the shared working tree. Hidden reasoning, private tool traces, provider caches, and harness-specific internals do not cross the boundary.
+Only one branch runs at a time. Relay forwards terminal bytes unchanged, including colors, alternate-screen behavior, mouse input, enhanced keyboard sequences, bracketed paste, and resize events. It reserves one prefix chord—`Ctrl+]`, then `R`—so ordinary native keys remain available.
 
-Read [How Relay keeps context](docs/how-relay-works.md) for the full model and its boundaries.
+The current release pairs each interface with its own engine: Codex TUI with Codex, and OpenCode TUI with OpenCode. Running the literal OpenCode TUI against the Codex engine would require a complete, bidirectional translation between their live protocols, approvals, tools, streaming events, session semantics, and commands. Relay does not claim that adapter exists yet.
 
-## Status
+## How context moves
 
-Relay is an early, working release for local Codex and OpenCode CLIs. The persistent TUI, create/switch/resume loop, and headless commands are tested on macOS. Linux should work anywhere Bun and the selected harness CLIs are available; Windows has not been tested yet.
+A Relay task stores a small canonical log and a binding for each harness.
 
-Relay currently carries text conversation between harnesses and shows text events exposed by their supported JSON interfaces. It includes independent Codex/OpenCode skins, harness-specific models, semantic slash commands, native compaction/review/share controls, and guarded OpenCode undo/redo. Rich tool-call rendering, attachments, automatic import of turns made outside Relay, and additional harnesses are not in v0.1.
+1. Relay imports completed native user/final-assistant turns.
+2. It compares the destination binding’s synchronization cursor with the canonical log.
+3. It injects only missing messages into the destination session without running a model.
+4. It starts the destination’s real TUI attached to that session.
 
-The compatibility skins are Relay interfaces, not embedded copies of the native TUIs. Normal turns use each harness's supported headless interface. Native commands that require an interactive approval or question Relay cannot render are reported as unsupported rather than silently approved. For full native interactive behavior, open the native session with `relay native`.
+OpenCode receives a synthetic, hidden `noReply` message. Codex receives structured app-server history items. Neither handoff causes an inference request. After the handoff, the native session resumes normally, preserving the stable prefix that provider prompt caches prefer.
+
+Relay transfers visible conversation—not hidden reasoning, raw tool payloads, approval state, provider cache entries, or another harness’s private database. The receiving harness should inspect the shared workspace because it is the source of truth for file changes.
+
+Handoffs are bounded to the newest 200 messages and 120,000 characters. This keeps memory and context usage predictable without paying for an automatic summarization call. Native context-window errors and native compaction remain visible and controllable in the selected TUI.
+
+Read [How Relay keeps context](docs/how-relay-works.md) for lifecycle details and edge cases.
 
 ## Install
 
 ### Prerequisites
 
 - [Bun](https://bun.sh/) 1.3 or newer
-- [Codex CLI](https://github.com/openai/codex) and/or [OpenCode](https://opencode.ai/)
-- Authentication completed in each harness you plan to use
+- the latest stable [Codex CLI](https://github.com/openai/codex)
+- the latest stable [OpenCode](https://opencode.ai/)
+- authentication completed in each harness you plan to use
 
-Install from source:
+One npm-based way to install or update both harnesses is:
+
+```bash
+npm install --global @openai/codex@latest opencode-ai@latest
+```
+
+Install Relay from source:
 
 ```bash
 git clone https://github.com/AksharP5/relay.git
 cd relay
 bun install
+bun run check
 bun run build
 bun link
 relay doctor
 ```
 
-The build produces a native Relay executable for your current platform, and `bun link` makes it available through Bun's global bin directory. Re-run `bun run build` after pulling Relay updates. If your shell cannot find it, add `${BUN_INSTALL:-$HOME/.bun}/bin` to `PATH`.
+The build creates a standalone Relay executable for the current platform. Re-run `bun run build` after pulling changes.
 
-`relay doctor` reports whether both native CLIs can be found and shows their versions. Relay v0.1 has been live-tested with Codex CLI 0.144.1 and OpenCode 1.15.5; adapter changes in other versions may require an update.
+Relay targets the latest stable releases rather than silently pinning old harnesses. The current native contract is live-tested with Codex CLI `0.144.2` and OpenCode `1.17.18`. A scheduled compatibility workflow installs both `@latest` packages every day and exercises their schemas, authenticated local servers, session creation, hidden handoff injection, resume, status, and cleanup without a model call. Manual compatibility runs cover macOS as well as Linux.
 
-## Use the TUI
+Relay does not auto-update tools on startup. That would add latency, network traffic, and an unexpected global machine mutation. `relay doctor` reports the locally installed versions; Relay’s CI detects upstream changes, and releases should pass `bun run compat:latest` against the latest harnesses.
 
-From the project you want the agents to work on:
+## Use the native workspace
+
+Run Relay from the directory you want the agents to edit:
 
 ```bash
 relay
 ```
 
-The first submitted message creates a Relay task lazily, so opening and leaving an empty TUI writes no task or native session. The interface then stays open across every turn.
+Relay uses the most recent task bound to that directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
 
-| Input                   | Action                                          |
-| ----------------------- | ----------------------------------------------- |
-| `Enter`                 | Send the draft through the selected harness     |
-| `Shift+Enter`           | Add a newline                                   |
-| `Ctrl+R`                | Open or close the Codex/OpenCode selector       |
-| `Ctrl+T`                | Choose the Codex or OpenCode interface skin     |
-| `Ctrl+O`                | Choose a model from the underlying harness      |
-| `/`                     | Open commands for the selected interface        |
-| `↑` / `↓`, then `Enter` | Choose a harness while the selector is open     |
-| `Escape`                | Close the selector without changing the harness |
-| `Ctrl+C`                | Exit Relay                                      |
+| Input                 | Owner          | Action                                                    |
+| --------------------- | -------------- | --------------------------------------------------------- |
+| `/`, letters, `Enter` | Native TUI     | Type and run native slash commands normally               |
+| `Escape`              | Native TUI     | Close its active dialog or autocomplete                   |
+| `Ctrl+C`              | Native TUI     | Interrupt or exit according to native behavior            |
+| `Ctrl+]`, then `R`    | Relay          | Open the harness selector when the native session is idle |
+| `↑` / `↓`, `Enter`    | Relay selector | Choose Codex or OpenCode                                  |
+| `Escape`              | Relay selector | Return to the current harness                             |
+| `q`                   | Relay selector | Exit Relay                                                |
 
-The harness, skin, and model beside the composer are clickable in terminals with mouse support. Interface switching is linked to harness switching by default. Choosing a skin manually pins it; open the skin selector and press `Ctrl+L` to link or unlink automatic switching.
+Relay refuses to detach while a turn is active, because doing so could strand an approval or lose streaming state. The terminal bell sounds; wait for the turn to finish, then use the switch chord again.
 
-The selected skin supplies command names and defaults. Relay resolves those names to semantic actions before choosing an implementation:
+Native session navigation remains native. Relay detects a Codex thread created or resumed inside the Codex TUI, and an OpenCode session that becomes active through native work, then updates the task binding and imports its completed turns. Merely highlighting a different OpenCode session and switching away before any activity may not produce a server event; in that narrow case Relay can reopen the prior binding.
 
-- OpenCode `/sessions`, `/resume`, and Codex `/resume` all open Relay's task picker.
-- `/model` or `/models` always lists models from the underlying harness, never from the skin.
-- `/compact` uses the selected native implementation without adding a fake prompt to the transcript.
-- OpenCode `/share` remains visible but disabled over Codex, with an explanation and the required harness.
-- OpenCode `/undo` and `/redo` use OpenCode's file snapshot operations and move Relay's canonical transcript to the same turn.
-- Project, skill, and MCP prompt commands discovered from OpenCode execute through OpenCode. Missed cross-harness context is injected before the command runs.
+## Headless commands
 
-Use `/commands` to inspect a command's implementation and choose another verified implementation when more than one exists. Relay never offers an override that has no working adapter.
-
-The workspace keeps its recent conversation window in memory for responsive rendering. The complete canonical transcript remains on disk and is available through `relay history`.
-
-A task stays attached to the directory where it was created. Relay stops a turn with a directory-mismatch message rather than editing the wrong project. The headless commands can create, inspect, and select tasks when needed:
+The native TUI is the primary interface. Relay also keeps a headless surface for scripts and diagnostics:
 
 ```bash
+relay doctor
+relay new "Improve the parser" --with codex
+relay ask "Find the edge case and add a focused test"
+relay ask --with opencode "Review the implementation"
+relay use codex
+relay status
+relay history
 relay list
 relay thread <id>
-relay new "Improve the parser" --with codex
 ```
 
-## Headless use
+See the [command guide](docs/commands.md) for full examples.
 
-The TUI is the primary interface. The same engine also has commands for scripts, automation, diagnostics, and explicit model selection:
+## Storage and performance
 
-```bash
-relay ask "Find the edge case and add a regression test"
-relay ask --with opencode "Review the implementation for cases Codex missed"
-relay ask --with codex --model <model-name> "Apply the useful findings"
-```
+Relay stores canonical visible message text and task metadata under `~/.local/share/relay` by default. Metadata includes the task ID, directory, active harness, native session IDs, synchronization cursors, and timestamps.
 
-Model names and availability belong to the selected harness and provider.
-When a turn explicitly selects a model, Relay remembers it on that harness's native binding and reuses it on later turns until another model is selected.
+It does not copy credential files, vendor session databases, raw terminal output, or tool traces. Canonical messages use append-only JSON Lines and are streamed from disk with bounded windows. While a TUI is active, Relay keeps only small routing queues and the handoff delta needed for a switch.
 
-## Commands
+Each active backend binds only to loopback and uses an ephemeral capability secret:
 
-| Command                                               | Purpose                                       |
-| ----------------------------------------------------- | --------------------------------------------- |
-| `relay`                                               | Open the persistent conversation TUI          |
-| `relay doctor`                                        | Check Codex and OpenCode availability         |
-| `relay new [name] [--with harness]`                   | Start and select a Relay task                 |
-| `relay ask [--with harness] [--model name] <message>` | Run the next turn                             |
-| `relay use codex\|opencode`                           | Choose the harness for future turns           |
-| `relay status`                                        | Show the current task and native bindings     |
-| `relay history`                                       | Read the canonical cross-harness conversation |
-| `relay list`                                          | List local Relay tasks                        |
-| `relay thread <id>`                                   | Select another Relay task                     |
-| `relay native [harness]`                              | Print the command that opens a native session |
+- Codex: authenticated WebSocket app-server; the token lives in a private temporary file and environment variable.
+- OpenCode: password-protected HTTP server; the password lives in memory/environment and never appears in process arguments.
 
-See the [command guide](docs/commands.md) for examples and environment options.
+Both the backend and native frontend stop when Relay leaves that harness. Native session persistence remains in the harness’s own storage.
 
-## Prompt caching and performance
+Set `RELAY_DATA_DIR` to place Relay’s canonical log elsewhere. Protect it like any local agent transcript.
 
-Relay is deliberately append-oriented. A resumed native session keeps its stable existing prefix, and a handoff adds only the missing dialogue. That shape is friendly to provider prompt caches, which generally require an exact repeated prefix.
+## Current boundaries
 
-Prompt caches are still provider- and model-specific: a cache created for Codex cannot be reused by OpenCode or another provider. Relay reduces avoidable context movement; it does not pretend caches are portable. For background, see [ngrok's prompt caching explanation](https://ngrok.com/blog/prompt-caching).
+- Relay currently supports Codex and OpenCode on macOS and Linux. Windows PTY hosting is not implemented.
+- Cross-engine continuity includes completed visible text and the working tree, not hidden state.
+- Attachments and rich tool events stay in their native session; they are not translated into the other harness.
+- Native undo, compaction, sharing, and session commands still use native semantics. Relay imports completed turns opportunistically; it will not rewrite vendor-owned storage to force two histories to become identical.
+- If a harness edits files and then fails, the workspace may be ahead of the canonical conversation. Inspect `git status` before retrying.
+- Literal cross-pairing—such as OpenCode’s TUI over Codex—is future protocol-adapter work, not a cosmetic skin toggle.
 
-## Privacy and security
-
-Relay runs locally and invokes CLIs already installed on your machine.
-
-- It never reads or copies harness credential files.
-- It adds no persistent daemon or telemetry. OpenCode discovery and native commands may use OpenCode's temporary password-protected loopback server, which is stopped after the operation.
-- It stores canonical user/assistant text and the task metadata listed above in private local files.
-- The selected harness keeps responsibility for sandboxing, approvals, tools, and provider traffic.
-
-Relay itself adds no telemetry or persistent network service. The Codex and OpenCode processes it invokes can still contact their configured providers and services.
-
-Conversation text can still contain sensitive information. Protect the Relay data directory as you would any local agent transcript. See [SECURITY.md](SECURITY.md) to report a vulnerability.
+These boundaries favor native fidelity, supported interfaces, and recoverable local state over fragile emulation.
 
 ## Development
 
-Relay is written in TypeScript with [Effect](https://effect.website/), Bun, Solid, and [OpenTUI](https://github.com/anomalyco/opentui). Effect services keep storage, process execution, and harness behavior independently testable; OpenTUI provides native terminal rendering and input without a browser or local web server.
+Relay is TypeScript on Bun, with [Effect](https://effect.website/) services around storage and harness operations. Native rendering is intentionally left to Codex and OpenCode; Relay’s terminal layer uses Bun’s PTY primitives.
 
 ```bash
 bun install
 bun run check
+bun run compat:latest
 bun run build
 ```
 

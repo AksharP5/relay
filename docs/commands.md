@@ -1,113 +1,103 @@
-# TUI and command guide
+# Native TUI and command guide
 
-Run Relay from the project directory you want the harnesses to edit. Relay refuses to run a turn when the current directory differs from the task's saved directory.
+Run Relay from the project directory you want the harnesses to edit.
 
-## Open the workspace
+## Open the native workspace
 
 ```bash
 relay
 ```
 
-Bare `relay` opens the persistent TUI. Type a request and press `Enter`. Use `Ctrl+R` to select the underlying Codex or OpenCode harness, `Ctrl+T` to select the Codex or OpenCode interface, and `Ctrl+O` to select a model from the underlying harness. `Shift+Enter` inserts a newline and `Ctrl+C` exits.
+Relay selects the most recent task for the current directory or creates one, then starts its active native TUI.
 
-Harness and interface are separate. By default, changing harness also changes interface. Selecting an interface manually pins it; while the interface selector is open, `Ctrl+L` toggles automatic switching.
+Inside Codex, Codex owns its composer and slash commands. Inside OpenCode, OpenCode owns them. Relay does not translate `/resume` into `/sessions`, replace `/undo`, or focus a second command dialog. Type commands exactly as you would when launching that CLI directly.
 
-Type `/` to open the selected interface's command palette. Disabled commands remain visible with the native harness they require. Examples:
+To change harnesses, press `Ctrl+]`, release it, and press `R`. Choose with the arrow keys and `Enter`. `Escape` returns to the current harness; `q` exits.
 
-```text
-Codex harness + OpenCode interface
-/sessions   available through Relay
-/compact    available after selecting Codex behavior
-/share      OpenCode native; disabled
-```
+If a native turn is active, Relay keeps the frontend attached and rings the terminal bell. Retry the switch after the turn becomes idle.
 
-`/commands` opens verified behavior choices for each semantic action. Invalid combinations are not offered. Task navigation, model selection, help, status, and interface controls are Relay-owned; compaction, review, sharing, prompt commands, and undo/redo use the corresponding native protocol.
-
-Opening an empty workspace does not create a task. Relay creates it from the first request, using the current directory and selected harness.
-
-The remaining commands are useful for diagnostics, scripting, and task management. They operate on the currently selected Relay task.
-
-## Check your setup
+## Check installed harnesses
 
 ```bash
 relay doctor
 ```
 
-Relay reports each CLI independently. You can use Relay with one installed harness, but switching requires both.
+Relay reports whether each executable is on `PATH` and prints its installed version. Relay does not contact a package registry or mutate global tools during startup.
 
-## Start a task
+The project’s scheduled compatibility workflow installs the latest stable Codex and OpenCode and exercises the protocol contract daily. Contributors can run the same no-model-call probe locally:
+
+```bash
+bun run compat:latest
+```
+
+## Start and select tasks
 
 ```bash
 relay new "Repair CSV import" --with codex
+relay new "Review the API" --with opencode
 ```
 
-`relay new` records the current directory. It does not launch a harness until the first `relay ask`.
+`relay new` records the current directory and selected harness. The native binding is created when the corresponding native workspace opens.
 
-If you run `relay ask` before `relay new`, Relay creates a task automatically using the current directory and a title derived from the request.
-
-## Run a turn
-
-```bash
-relay ask "Reproduce the import failure and add a focused test"
-relay ask --with opencode "Review the fix for encoding edge cases"
-```
-
-`--with` selects the harness for this turn and makes it active for later turns. `--model` is forwarded without translation:
-
-```bash
-relay ask --with opencode --model anthropic/claude-sonnet-4-5 "Review this"
-```
-
-An explicit model becomes part of that harness's native binding. Later turns reuse it unless another `--model` value replaces it.
-
-Quote multi-word messages so your shell passes them as one request.
-
-## Switch without running a turn
-
-```bash
-relay use codex
-```
-
-The target native session is still created lazily on its first actual turn.
-
-## Inspect or change tasks
+Inspect and select tasks with:
 
 ```bash
 relay status
 relay history
 relay list
-relay thread 8efbcd50-e70a-4552-a8af-8314dea50547
+relay thread <id>
 ```
 
-`relay thread` accepts the short ID displayed by `relay list`. If two tasks share that prefix, provide more characters from the full ID stored in the task metadata.
+`relay thread` accepts a full ID or an unambiguous prefix from `relay list`.
 
-`relay list` includes each task's saved working directory so similarly named tasks can be distinguished.
+Tasks are directory-bound. Relay will not run or synchronize a task from a different directory, which prevents an accidental native session from editing the wrong project.
 
-## Open a native session
+## Run a headless turn
+
+The native workspace is the primary interface, but scripts can run turns directly:
+
+```bash
+relay ask "Reproduce the import failure and add a focused test"
+relay ask --with opencode "Review the fix for encoding edge cases"
+relay ask --with codex --model <model-name> "Apply the useful findings"
+```
+
+`--with` chooses the harness for this turn and makes it active. `--model` is forwarded to that harness and remembered on its binding.
+
+Headless turns use the supported non-interactive interface of each CLI. Interactive approvals and questions are best handled in bare `relay`, where the real native TUI is present.
+
+## Switch the next headless turn
+
+```bash
+relay use codex
+relay use opencode
+```
+
+This changes task metadata without running a model. Bare `relay` opens the selected native TUI on the next launch.
+
+## Open a binding without Relay’s live backend
 
 ```bash
 relay native
 relay native opencode
 ```
 
-This prints, but does not execute, the native resume command. Relay does not automatically import turns made directly in the native app.
+This prints a conventional standalone resume command for an existing native binding. It does not execute the command.
+
+Turns made through that standalone process are outside Relay’s live coordination. Relay attempts to import completed turns when it later reattaches through bare `relay`, but the vendor may not expose every out-of-band state transition.
 
 ## Choose a data directory
 
-Relay follows `RELAY_DATA_DIR` when it is set:
+Relay follows `RELAY_DATA_DIR`:
 
 ```bash
-RELAY_DATA_DIR="$HOME/Library/Application Support/relay" relay status
+RELAY_DATA_DIR="$HOME/Library/Application Support/relay" relay
 ```
 
-The default is `~/.local/share/relay`. The directory contains conversation text, so include it in your normal local data protection and backup decisions.
+The default is `~/.local/share/relay`. It contains visible conversation text and task metadata, so include it in your normal data-protection decisions.
 
-Relay does not yet have a per-task delete command. To remove all Relay metadata and canonical transcripts, delete the Relay data directory while Relay is not running. Native Codex and OpenCode sessions are separate and are not deleted with Relay data.
+## Exit behavior
 
-## Exit status
+Headless commands exit `0` on success and `1` for invalid input, missing state, unavailable harnesses, or failed turns. Bare Relay normally returns the native frontend’s non-zero exit code.
 
-Relay exits with status `0` after a successful command and `1` after invalid input, missing state, a missing harness, or a failed native turn. Native error details are printed to standard error when available.
-
-The native harness receives a 30-minute process timeout. A failed or timed-out harness may have changed files even though Relay does not add the turn to canonical history; inspect `git status` and the workspace before retrying.
-
-If a warm native session reaches its context limit, run `/compact` and retry or select a model with a larger context window. A cold cross-harness handoff is bounded automatically; Relay retains the newest 200 messages up to 120,000 characters and points the receiving harness to `relay history` when older context was omitted.
+A failed or interrupted harness may have modified files even if Relay could not import a completed response. Inspect the working tree before retrying.

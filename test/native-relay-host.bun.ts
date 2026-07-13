@@ -220,11 +220,15 @@ describe("native harness selector", () => {
     class Input extends EventEmitter {
       isRaw = false;
       modes: Array<boolean> = [];
+      pauseCalls = 0;
       setRawMode(enabled: boolean) {
         this.isRaw = enabled;
         this.modes.push(enabled);
       }
       resume() {}
+      pause() {
+        this.pauseCalls += 1;
+      }
     }
     const input = new Input();
     const output: Array<string> = [];
@@ -232,11 +236,11 @@ describe("native harness selector", () => {
       input,
       output: { write: (value) => void output.push(String(value)) },
     });
-    input.emit("data", "\u001b[B");
-    input.emit("data", "\r");
+    input.emit("data", "\u001b[B\r");
 
     expect(await selection).toBe("codex");
     expect(input.modes).toEqual([true, false]);
+    expect(input.pauseCalls).toBe(1);
     expect(input.listenerCount("data")).toBe(0);
     expect(output.join("")).toContain("\u001b[?1049l");
   });

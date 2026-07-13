@@ -19,6 +19,7 @@ interface HostInput extends EventEmitter {
   readonly isRaw?: boolean;
   setRawMode?: (enabled: boolean) => unknown;
   resume: () => unknown;
+  pause?: () => unknown;
 }
 
 interface HostOutput {
@@ -240,6 +241,7 @@ export const runNativeTui = async (
   } finally {
     if (prefixTimer) clearTimeout(prefixTimer);
     io.input.off("data", onInput);
+    io.input.pause?.();
     io.resizeSource.off("SIGWINCH", onResize);
     io.resizeSource.off("SIGHUP", onHangup);
     io.resizeSource.off("SIGTERM", onTerminate);

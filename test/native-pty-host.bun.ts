@@ -8,6 +8,7 @@ class TestInput extends EventEmitter {
   isTTY = true;
   isRaw = false;
   readonly rawModes: Array<boolean> = [];
+  pauseCalls = 0;
 
   setRawMode(enabled: boolean) {
     this.isRaw = enabled;
@@ -15,6 +16,9 @@ class TestInput extends EventEmitter {
   }
 
   resume() {}
+  pause() {
+    this.pauseCalls += 1;
+  }
 }
 
 class TestOutput {
@@ -113,6 +117,7 @@ describe("native PTY host", () => {
     expect(await result).toEqual({ reason: "switch" });
     expect(output.text()).toContain(":TRAILING_OUTPUT");
     expect(input.rawModes).toEqual([true, false]);
+    expect(input.pauseCalls).toBe(1);
     expect(input.listenerCount("data")).toBe(0);
     expect(resize.listenerCount("SIGWINCH")).toBe(0);
   });

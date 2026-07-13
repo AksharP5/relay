@@ -33,8 +33,9 @@ ${pc.bold("Examples")}
   relay ask "Find the cause and implement a fix"
   relay ask --with opencode "Review the change and run the tests"
 
-Relay creates a native session only when a harness first receives a turn.
-Your current harness can also be changed without running a model using ${pc.cyan("relay use")}.
+Bare ${pc.cyan("relay")} opens the selected harness's real native TUI.
+Press ${pc.cyan("Ctrl+]")}, then ${pc.cyan("R")} to switch between Codex and OpenCode.
+Your next harness can also be changed without running a model using ${pc.cyan("relay use")}.
 `.trim();
 
 const shortId = (id: string) => id.slice(0, 8);
@@ -143,7 +144,7 @@ export const program = (argv: ReadonlyArray<string>) =>
         yield* Console.log(nativeCommand);
         yield* Console.error(
           pc.dim(
-            "Turns made directly in the native app are not imported into Relay automatically.",
+            "Relay will attempt to import completed turns when it next attaches this binding.",
           ),
         );
         return;

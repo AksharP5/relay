@@ -14,9 +14,7 @@ let directory: string | undefined;
 
 const makeLayer = (harnesses: typeof HarnessService.Service) =>
   RelayService.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(ThreadStore.layer, Layer.succeed(HarnessService, harnesses)),
-    ),
+    Layer.provide(Layer.mergeAll(ThreadStore.layer, Layer.succeed(HarnessService, harnesses))),
   );
 
 afterEach(async () => {
