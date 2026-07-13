@@ -5,6 +5,27 @@ import { readFileSync, writeFileSync } from "node:fs";
 let revertMessageID: string | undefined = "msg_003";
 let createdSessions = 0;
 let retryHistoryAttempts = 0;
+const fakeMessages = [
+  { info: { id: "msg_001", role: "user" }, parts: [{ type: "text", text: "first" }] },
+  {
+    info: { id: "msg_002", role: "assistant", providerID: "openai", modelID: "gpt-5.6-sol" },
+    parts: [],
+  },
+  { info: { id: "msg_003", role: "user" }, parts: [{ type: "text", text: "second" }] },
+  {
+    info: { id: "msg_004", role: "assistant", providerID: "openai", modelID: "gpt-5.6-sol" },
+    parts: [],
+  },
+];
+if (Bun.argv[2] === "export") {
+  process.stdout.write(
+    JSON.stringify({
+      info: { ...(revertMessageID ? { revert: { messageID: revertMessageID } } : {}) },
+      messages: fakeMessages,
+    }),
+  );
+  process.exit(0);
+}
 const eventControllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const encoder = new TextEncoder();
 const emitEvent = (event: unknown) => {
@@ -114,18 +135,7 @@ const server = Bun.serve({
         writeFileSync(recoveryFile, String(attempts + 1));
         if (attempts < 4) return new Response("stuck attached server", { status: 503 });
       }
-      return Response.json([
-        { info: { id: "msg_001", role: "user" }, parts: [{ type: "text", text: "first" }] },
-        {
-          info: { id: "msg_002", role: "assistant", providerID: "openai", modelID: "gpt-5.6-sol" },
-          parts: [],
-        },
-        { info: { id: "msg_003", role: "user" }, parts: [{ type: "text", text: "second" }] },
-        {
-          info: { id: "msg_004", role: "assistant", providerID: "openai", modelID: "gpt-5.6-sol" },
-          parts: [],
-        },
-      ]);
+      return Response.json(fakeMessages);
     }
     if (url.pathname.endsWith("/command") && request.method === "POST") {
       const body = (await request.json()) as { command?: unknown; arguments?: unknown };

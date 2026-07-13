@@ -59,7 +59,7 @@ describe("OpenCode native backend", () => {
     ]);
   });
 
-  it("recovers a detached server's persistent history 5xx through a fresh local server", async () => {
+  it("recovers a detached server's persistent history 5xx through read-only export", async () => {
     const directory = await mkdtemp(join(tmpdir(), "relay-opencode-read-recovery-"));
     const marker = join(directory, "attempts");
     const previousMarker = Bun.env.RELAY_TEST_RECOVERY_FILE;

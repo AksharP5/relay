@@ -1,6 +1,7 @@
 import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { buildHandoff } from "../handoff.ts";
 import { startOpenCodeServer, type RunningOpenCodeServer } from "../harnesses/opencode-server.ts";
+import { readStream, stopProcessTree } from "../services/process-runner.ts";
 import { NativeSessionUnavailable } from "./errors.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
@@ -66,6 +67,21 @@ export const parseOpenCodeNativeTurns = (
     pending = undefined;
   }
   return turns;
+};
+
+const transcriptFrom = (session: unknown, messages: unknown) => {
+  const revertedMessageId = asObject(asObject(session)?.revert)?.messageID;
+  const turns = parseOpenCodeNativeTurns(
+    messages,
+    typeof revertedMessageId === "string" ? revertedMessageId : undefined,
+  );
+  const visible = new Set(turns.map((turn) => turn.id));
+  return {
+    turns,
+    hiddenTurnIds: parseOpenCodeNativeTurns(messages)
+      .map((turn) => turn.id)
+      .filter((id) => !visible.has(id)),
+  };
 };
 
 export class OpenCodeNativeBackend {
@@ -342,20 +358,52 @@ export class OpenCodeNativeBackend {
         sessionResponse.status,
       );
     }
-    const session = asObject(await sessionResponse.json());
-    const revertedMessageId = asObject(session?.revert)?.messageID;
+    const session: unknown = await sessionResponse.json();
     const messages: unknown = await messagesResponse.json();
-    const turns = parseOpenCodeNativeTurns(
-      messages,
-      typeof revertedMessageId === "string" ? revertedMessageId : undefined,
-    );
-    const visible = new Set(turns.map((turn) => turn.id));
-    return {
-      turns,
-      hiddenTurnIds: parseOpenCodeNativeTurns(messages)
-        .map((turn) => turn.id)
-        .filter((id) => !visible.has(id)),
-    };
+    return transcriptFrom(session, messages);
+  }
+
+  async #readExport(sessionId: string) {
+    const child = Bun.spawn([this.#executable, "export", sessionId], {
+      cwd: this.#cwd,
+      env: Bun.env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      detached: process.platform !== "win32",
+    });
+    if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
+      await stopProcessTree(child);
+      throw new Error("OpenCode export pipes are unavailable");
+    }
+    let stopping: Promise<void> | undefined;
+    const stop = () => (stopping ??= stopProcessTree(child));
+    const onAbort = () => void stop();
+    this.#requestAbort.signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const [stdout, stderr, exitCode] = await Promise.all([
+        readStream(child.stdout, { limit: 64 * 1024 * 1024 }),
+        readStream(child.stderr, { limit: 128_000 }),
+        child.exited,
+      ]);
+      if (exitCode !== 0)
+        throw new Error(
+          `OpenCode history export failed with exit code ${exitCode}${stderr ? `\n${stderr}` : ""}`,
+        );
+      let exported: unknown;
+      try {
+        exported = JSON.parse(stdout);
+      } catch (cause) {
+        throw new Error("OpenCode history export returned invalid JSON", { cause });
+      }
+      const value = asObject(exported);
+      if (!Array.isArray(value?.messages))
+        throw new Error("OpenCode history export did not include messages");
+      return transcriptFrom(value?.info, value.messages);
+    } finally {
+      this.#requestAbort.signal.removeEventListener("abort", onAbort);
+      if (this.#requestAbort.signal.aborted) await stop();
+    }
   }
 
   async read(sessionId: string) {
@@ -365,18 +413,9 @@ export class OpenCodeNativeBackend {
       if (!(cause instanceof OpenCodeReadError) || cause.status < 500 || cause.status > 504)
         throw cause;
       // OpenCode can leave the server that hosted an attached TUI unable to
-      // read history just after detach. A fresh authenticated local server can
-      // safely read the same persisted session without mutating or rerunning it.
-      const recovery = await startOpenCodeServer(
-        this.#executable,
-        this.#cwd,
-        this.#requestAbort.signal,
-      );
-      try {
-        return await this.#readFrom(recovery, sessionId);
-      } finally {
-        await recovery.close();
-      }
+      // read history just after detach. Its read-only export command accesses
+      // the same persisted session without mutating or rerunning it.
+      return this.#readExport(sessionId);
     }
   }
 

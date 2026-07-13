@@ -158,10 +158,11 @@ const synchronize = async (input: {
   readonly harness: Harness;
   readonly sessionId: string;
   readonly sessionChanged: boolean;
+  readonly transcript?: NativeTranscript;
 }) => {
   const { controller, backend, harness, sessionId } = input;
   const model = input.thread.bindings[harness]?.model ?? input.thread.preferredModels?.[harness];
-  const transcript = await backend.read(sessionId);
+  const transcript = input.transcript ?? (await backend.read(sessionId));
   const turns = transcript.turns;
 
   if (input.sessionChanged) {
@@ -411,6 +412,7 @@ const runHarness = async (
                   harness,
                   sessionId: resolvedSessionId,
                   sessionChanged: false,
+                  transcript,
                 })
               : await adoptNativeSession({
                   controller,

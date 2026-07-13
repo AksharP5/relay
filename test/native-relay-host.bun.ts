@@ -593,13 +593,17 @@ describe("native Relay host", () => {
     const preparedModels: Array<string | undefined> = [];
     const commandModels: Array<string | undefined> = [];
     const protectionModes: Array<boolean> = [];
+    let reads = 0;
     const backend: NativeBackend = {
       prepareSession: async (input) => {
         preparedModels.push(input.model);
         return { sessionId: "codex-session", handoffInjected: false };
       },
       inject: async () => {},
-      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      read: async () => {
+        reads += 1;
+        return { turns: [], hiddenTurnIds: [] };
+      },
       isIdle: async () => true,
       resolveSession: async (fallback) => fallback,
       command: (_sessionId, model) => {
@@ -620,6 +624,7 @@ describe("native Relay host", () => {
     expect(preparedModels).toEqual([undefined]);
     expect(commandModels).toEqual([undefined]);
     expect(protectionModes).toEqual([false]);
+    expect(reads).toBe(2);
   });
 
   it("replaces a definitively deleted binding with the complete canonical handoff", async () => {
