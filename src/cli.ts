@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { BunRuntime } from "@effect/platform-bun";
-import { Console, Effect, Layer, pipe } from "effect";
+import { Console, Effect, Layer, ManagedRuntime, pipe } from "effect";
 import pc from "picocolors";
 import packageJson from "../package.json" with { type: "json" };
 import { parseArgs } from "./cli-args.ts";
@@ -10,11 +10,13 @@ import { HarnessService } from "./harnesses/harness-service.ts";
 import { ProcessRunner } from "./services/process-runner.ts";
 import { RelayService } from "./services/relay-service.ts";
 import { ThreadStore } from "./services/thread-store.ts";
+import { makeTuiController } from "./tui/controller.ts";
 
 const help = `
 ${pc.bold("Relay")} — carry one coding task between Codex and OpenCode
 
 ${pc.bold("Usage")}
+  relay
   relay doctor
   relay new [name] [--with codex|opencode]
   relay ask [--with codex|opencode] [--model name] <message>
@@ -176,16 +178,32 @@ export const program = (argv: ReadonlyArray<string>) =>
   });
 
 const HarnessLayer = HarnessService.layer.pipe(Layer.provide(ProcessRunner.layer));
-const MainLayer = RelayService.layer.pipe(
+export const MainLayer = RelayService.layer.pipe(
   Layer.provide(Layer.merge(ThreadStore.layer, HarnessLayer)),
 );
 
 if (import.meta.main) {
-  pipe(
-    program(process.argv.slice(2)),
-    Effect.provide(MainLayer),
-    Effect.tapError((error) => Console.error(pc.red(renderError(error)))),
-    Effect.catch(() => Effect.sync(() => (process.exitCode = 1))),
-    BunRuntime.runMain,
-  );
+  const argv = process.argv.slice(2);
+  if (argv.length === 0) {
+    const runtime = ManagedRuntime.make(MainLayer);
+    const runTui = async () => {
+      await import("@opentui/solid/runtime-plugin-support");
+      const { launchTui } = await import("./tui/app.tsx");
+      await launchTui(makeTuiController(runtime));
+    };
+    void runTui()
+      .catch((error) => {
+        process.stderr.write(`${pc.red(renderError(error))}\n`);
+        process.exitCode = 1;
+      })
+      .finally(() => runtime.dispose());
+  } else {
+    pipe(
+      program(argv),
+      Effect.provide(MainLayer),
+      Effect.tapError((error) => Console.error(pc.red(renderError(error)))),
+      Effect.catch(() => Effect.sync(() => (process.exitCode = 1))),
+      BunRuntime.runMain,
+    );
+  }
 }
