@@ -35,7 +35,7 @@
     "format": "oxfmt . --write",
     "format:check": "oxfmt . --check",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run && bun test ./test/tui.bun.tsx",
+    "test": "vitest run && bun test ./test/tui.bun.tsx ./test/process-runner.bun.ts",
     "test:watch": "vitest"
   },
   "dependencies": {

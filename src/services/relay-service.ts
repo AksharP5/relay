@@ -80,6 +80,7 @@ export class RelayService extends Context.Service<
             const harness = input.harness ?? thread.activeHarness;
             const previousMessages = yield* store.messages(thread.id);
             const binding = thread.bindings[harness];
+            const model = input.model ?? binding?.model;
             const handoff = previousMessages.filter(
               (message) => message.seq > (binding?.lastSyncedSeq ?? 0),
             );
@@ -89,7 +90,7 @@ export class RelayService extends Context.Service<
               prompt: input.prompt,
               handoff,
               ...(binding ? { sessionId: binding.sessionId } : {}),
-              ...(input.model ? { model: input.model } : {}),
+              ...(model ? { model } : {}),
               ...(input.onProgress ? { onProgress: input.onProgress } : {}),
             });
 
@@ -99,6 +100,7 @@ export class RelayService extends Context.Service<
               response: nativeResult.text,
               sessionId: nativeResult.sessionId,
               bindingCreatedAt: binding?.createdAt ?? new Date().toISOString(),
+              ...(model ? { model } : {}),
             });
 
             return {

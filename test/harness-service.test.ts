@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { HarnessService } from "../src/harnesses/harness-service.ts";
 import { ProcessRunner, type ProcessInput } from "../src/services/process-runner.ts";
 
-const runWithFake = async (harness: "codex" | "opencode", sessionId?: string) => {
+const runWithFake = async (harness: "codex" | "opencode", sessionId?: string, model?: string) => {
   let received: ProcessInput | undefined;
   const progress: Array<string> = [];
   const fakeRunner = Layer.succeed(ProcessRunner, {
@@ -45,6 +45,7 @@ const runWithFake = async (harness: "codex" | "opencode", sessionId?: string) =>
         prompt: "Current request",
         handoff: [],
         ...(sessionId ? { sessionId } : {}),
+        ...(model ? { model } : {}),
         onProgress: (event) => {
           if (event.type === "text") progress.push(event.text);
         },
@@ -64,8 +65,9 @@ describe("HarnessService", () => {
   });
 
   it("resumes Codex with the native session id and streams the response", async () => {
-    const { result, received, progress } = await runWithFake("codex", "codex-existing");
+    const { result, received, progress } = await runWithFake("codex", "codex-existing", "gpt-5.4");
     expect(received.args).toContain("codex-existing");
+    expect(received.args).toContain("gpt-5.4");
     expect(received.stdin).toBe("Current request");
     expect(result.text).toBe("Codex response");
     expect(progress).toEqual(["Codex response"]);

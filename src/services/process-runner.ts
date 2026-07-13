@@ -90,11 +90,17 @@ export class ProcessRunner extends Context.Service<
             const process = Bun.spawn([input.command, ...(input.args ?? [])], {
               ...(input.cwd ? { cwd: input.cwd } : {}),
               env: { ...Bun.env, ...input.env },
-              stdin: input.stdin === undefined ? "ignore" : new Blob([input.stdin]),
+              stdin: input.stdin === undefined ? "ignore" : "pipe",
               stdout: "pipe",
               stderr: "pipe",
               signal: controller.signal,
             });
+
+            const stdin = process.stdin;
+            if (input.stdin !== undefined && stdin && typeof stdin !== "number") {
+              stdin.write(input.stdin);
+              stdin.end();
+            }
 
             const [stdout, stderr, exitCode] = await Promise.all([
               readStream(process.stdout, {

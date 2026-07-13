@@ -230,6 +230,7 @@ export interface CommitTurnInput {
   readonly response: string;
   readonly sessionId: string;
   readonly bindingCreatedAt: string;
+  readonly model?: string;
 }
 
 export class ThreadStore extends Context.Service<
@@ -401,6 +402,7 @@ export class ThreadStore extends Context.Service<
           const binding: HarnessBinding = {
             harness: input.harness,
             sessionId: input.sessionId,
+            ...(input.model ? { model: input.model } : {}),
             lastSyncedSeq: response.seq,
             createdAt: input.bindingCreatedAt,
             updatedAt: now,

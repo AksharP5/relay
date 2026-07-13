@@ -19,6 +19,7 @@ export type RelayMessage = typeof RelayMessage.Type;
 export const HarnessBinding = Schema.Struct({
   harness: Harness,
   sessionId: Schema.String,
+  model: Schema.optional(Schema.String),
   lastSyncedSeq: Schema.Number,
   createdAt: Schema.String,
   updatedAt: Schema.String,
