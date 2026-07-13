@@ -1,5 +1,6 @@
 import type { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 
 import { stopProcessTree } from "../services/process-runner.ts";
 import { NativeInputRouter } from "./input-router.ts";
@@ -70,16 +71,19 @@ const dimensions = (output: HostOutput) => ({
   rows: Math.max(1, output.rows ?? 24),
 });
 
-interface NativeInputPump {
+interface BoundedInputBuffer {
+  buffered: Array<Uint8Array>;
+  bufferedBytes: number;
+  overflowed: boolean;
+}
+
+interface NativeInputPump extends BoundedInputBuffer {
   readonly initialRawMode: boolean;
   readonly limitBytes: number;
   readonly listener: (chunk: Buffer | Uint8Array | string) => void;
   readonly onStandbyInterrupt: () => void;
   stop: () => Promise<void>;
   consumer: ((chunk: Uint8Array) => void) | undefined;
-  buffered: Array<Uint8Array>;
-  bufferedBytes: number;
-  overflowed: boolean;
 }
 
 const DEFAULT_HANDOFF_INPUT_LIMIT_BYTES = 256 * 1024;
@@ -87,6 +91,25 @@ const nativeInputPumps = new WeakMap<HostInput, NativeInputPump>();
 
 const bytesFrom = (chunk: Buffer | Uint8Array | string) =>
   typeof chunk === "string" ? Buffer.from(chunk) : new Uint8Array(chunk);
+
+const resetBufferedInput = (target: BoundedInputBuffer) => {
+  target.buffered = [];
+  target.bufferedBytes = 0;
+  target.overflowed = false;
+};
+
+const bufferBoundedInput = (target: BoundedInputBuffer, input: Uint8Array, limitBytes: number) => {
+  if (input.byteLength === 0 || target.overflowed) return;
+  if (target.bufferedBytes + input.byteLength > limitBytes) {
+    // Never replay a prefix: truncating bracketed paste or escape sequences can
+    // leave the next native TUI in a corrupt input mode.
+    resetBufferedInput(target);
+    target.overflowed = true;
+    return;
+  }
+  target.buffered.push(input.slice());
+  target.bufferedBytes += input.byteLength;
+};
 
 const bufferStandbyInput = (pump: NativeInputPump, input: Uint8Array) => {
   let sawInterrupt = false;
@@ -96,17 +119,7 @@ const bufferStandbyInput = (pump: NativeInputPump, input: Uint8Array) => {
     return false;
   });
   if (sawInterrupt) pump.onStandbyInterrupt();
-  if (filtered.byteLength === 0) return;
-
-  const remaining = Math.max(0, pump.limitBytes - pump.bufferedBytes);
-  if (remaining === 0) {
-    pump.overflowed = true;
-    return;
-  }
-  const retained = filtered.slice(0, remaining);
-  pump.buffered.push(retained);
-  pump.bufferedBytes += retained.byteLength;
-  if (retained.byteLength < filtered.byteLength) pump.overflowed = true;
+  bufferBoundedInput(pump, filtered, pump.limitBytes);
 };
 
 const releaseInputPump = async (input: HostInput) => {
@@ -146,7 +159,15 @@ export const runNativeTui = async (
   let sequenceTimer: ReturnType<typeof setTimeout> | undefined;
   let lastSubmitAt: number | undefined;
   const now = options.now ?? Date.now;
-  const pendingSwitchInput: Array<Uint8Array> = [];
+  const handoffInputLimitBytes = Math.max(
+    0,
+    options.handoffInputLimitBytes ?? DEFAULT_HANDOFF_INPUT_LIMIT_BYTES,
+  );
+  const pendingSwitchInput: BoundedInputBuffer = {
+    buffered: [],
+    bufferedBytes: 0,
+    overflowed: false,
+  };
   let terminal: Bun.Terminal | undefined;
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let resolvePtyEof: () => void;
@@ -211,7 +232,7 @@ export const runNativeTui = async (
     }
     if (parentSignal) return;
     if (switchCheckPending) {
-      pendingSwitchInput.push(bytes.slice());
+      bufferBoundedInput(pendingSwitchInput, bytes, handoffInputLimitBytes);
       return;
     }
     const routed = router.route(bytes);
@@ -233,30 +254,35 @@ export const runNativeTui = async (
     const recentSubmit =
       lastSubmitAt !== undefined &&
       now() - lastSubmitAt < (options.submitProtectionMs ?? options.submitGraceMs ?? 0);
-    pendingSwitchInput.push(routed.afterSwitch);
+    bufferBoundedInput(pendingSwitchInput, routed.afterSwitch, handoffInputLimitBytes);
     switchCheckPending = true;
     void Promise.resolve(options.onSwitchRequest?.(recentSubmit) ?? true)
       .then((allowed) => {
         if (!allowed || switchRequested || parentSignal) {
           if (!allowed) {
-            for (const buffered of pendingSwitchInput.splice(0)) writeInput(buffered);
+            for (const buffered of pendingSwitchInput.buffered) writeInput(buffered);
             writeOutput(Uint8Array.of(0x07));
-          } else {
-            pendingSwitchInput.length = 0;
           }
+          resetBufferedInput(pendingSwitchInput);
           switchCheckPending = false;
           return;
         }
         if (options.preserveInputOnSwitch && inputPump) {
-          for (const buffered of pendingSwitchInput.splice(0))
-            bufferStandbyInput(inputPump, buffered);
-        } else pendingSwitchInput.length = 0;
+          if (pendingSwitchInput.overflowed) {
+            resetBufferedInput(inputPump);
+            inputPump.overflowed = true;
+          } else {
+            for (const buffered of pendingSwitchInput.buffered)
+              bufferStandbyInput(inputPump, buffered);
+          }
+        }
+        resetBufferedInput(pendingSwitchInput);
         switchCheckPending = false;
         switchRequested = true;
         if (child) stopping = stopProcessTree(child);
       })
       .catch((cause) => {
-        pendingSwitchInput.length = 0;
+        resetBufferedInput(pendingSwitchInput);
         switchCheckPending = false;
         hostFailure = cause instanceof Error ? cause : new Error(String(cause));
         if (child) stopping = stopProcessTree(child);
@@ -290,10 +316,7 @@ export const runNativeTui = async (
       if (!inputPump) {
         const pump: NativeInputPump = {
           initialRawMode,
-          limitBytes: Math.max(
-            0,
-            options.handoffInputLimitBytes ?? DEFAULT_HANDOFF_INPUT_LIMIT_BYTES,
-          ),
+          limitBytes: handoffInputLimitBytes,
           listener: (chunk) => {
             const bytes = bytesFrom(chunk);
             if (pump.consumer) pump.consumer(bytes);
@@ -313,15 +336,24 @@ export const runNativeTui = async (
           // A tiny native reader owns fd 0 for Relay's lifetime. Bun's Node and
           // Web stdin bridges can both report a false EOF when child PTYs are
           // replaced; the pipe from cat remains stable and event-driven.
-          const inputProxyExecutable = Bun.which("cat");
+          const inputProxyExecutable = ["/bin/cat", "/usr/bin/cat"].find(existsSync);
           if (!inputProxyExecutable)
-            throw new Error("Relay could not find the system input reader (cat) in PATH");
+            throw new Error(
+              "Relay could not find the system input reader at /bin/cat or /usr/bin/cat",
+            );
           const inputProxy = spawn(inputProxyExecutable, ["/dev/tty"], {
             stdio: ["ignore", "pipe", "ignore"],
+            env: {},
           });
           let reading = true;
           let proxyFailed = false;
-          const closed = new Promise<void>((resolve) => inputProxy.once("close", () => resolve()));
+          let proxyClosed = false;
+          const closed = new Promise<void>((resolve) =>
+            inputProxy.once("close", () => {
+              proxyClosed = true;
+              resolve();
+            }),
+          );
           const onProxyFailure = () => {
             if (!reading || proxyFailed) return;
             proxyFailed = true;
@@ -337,7 +369,13 @@ export const runNativeTui = async (
             inputProxy.off("exit", onProxyFailure);
             if (inputProxy.exitCode === null && inputProxy.signalCode === null)
               inputProxy.kill("SIGTERM");
-            await closed;
+            const exited = await Promise.race([
+              closed.then(() => true),
+              Bun.sleep(250).then(() => false),
+            ]);
+            if (!exited && !proxyClosed) inputProxy.kill("SIGKILL");
+            await Promise.race([closed, Bun.sleep(250)]);
+            inputProxy.stdout.destroy();
           };
         } else {
           io.input.on("data", pump.listener);
@@ -348,9 +386,7 @@ export const runNativeTui = async (
         inputPump.consumer = onInput;
         const buffered = inputPump.buffered;
         const overflowed = inputPump.overflowed;
-        inputPump.buffered = [];
-        inputPump.bufferedBytes = 0;
-        inputPump.overflowed = false;
+        resetBufferedInput(inputPump);
         for (const chunk of buffered) onInput(chunk);
         if (overflowed) writeOutput(Uint8Array.of(0x07));
       }

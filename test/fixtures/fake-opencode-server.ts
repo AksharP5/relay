@@ -2,6 +2,7 @@
 
 let revertMessageID: string | undefined = "msg_003";
 let createdSessions = 0;
+let retryHistoryAttempts = 0;
 const eventControllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const encoder = new TextEncoder();
 const emitEvent = (event: unknown) => {
@@ -40,6 +41,11 @@ const server = Bun.serve({
         },
       });
       return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+    }
+    if (url.pathname === "/test/close-events" && request.method === "POST") {
+      for (const controller of eventControllers) controller.close();
+      eventControllers.clear();
+      return Response.json(true);
     }
     if (url.pathname === "/session" && request.method === "POST") {
       createdSessions += 1;
@@ -90,6 +96,8 @@ const server = Bun.serve({
       return Response.json({ info: { id: "hidden", role: "user" }, parts: body.parts });
     }
     if (url.pathname.endsWith("/message") && request.method === "GET") {
+      if (url.pathname.includes("/ses_retry/") && retryHistoryAttempts++ === 0)
+        return new Response("transient", { status: 503 });
       return Response.json([
         { info: { id: "msg_001", role: "user" }, parts: [{ type: "text", text: "first" }] },
         {

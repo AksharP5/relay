@@ -1,17 +1,50 @@
-import { chmod } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "bun:test";
 import {
   discoverOpenCodeCommands,
   runOpenCodeCommand,
   runOpenCodeControl,
+  startOpenCodeServer,
 } from "../src/harnesses/opencode-server.ts";
 
 const executable = fileURLToPath(new URL("./fixtures/fake-opencode-server.ts", import.meta.url));
+const hangingExecutable = fileURLToPath(
+  new URL("./fixtures/fake-hanging-opencode.sh", import.meta.url),
+);
 
-beforeAll(() => chmod(executable, 0o755));
+beforeAll(() => Promise.all([chmod(executable, 0o755), chmod(hangingExecutable, 0o755)]));
 
 describe("OpenCode command discovery", () => {
+  it("cancels and terminates a server interrupted during startup", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-abort-"));
+    const pidPath = join(directory, "server.pid");
+    const previousPidPath = Bun.env.RELAY_TEST_PID_FILE;
+    Bun.env.RELAY_TEST_PID_FILE = pidPath;
+    const controller = new AbortController();
+    try {
+      const starting = startOpenCodeServer(hangingExecutable, process.cwd(), controller.signal);
+      let pid: number | undefined;
+      for (let attempt = 0; attempt < 100 && pid === undefined; attempt += 1) {
+        pid = await readFile(pidPath, "utf8")
+          .then((value) => Number(value.trim()))
+          .catch(() => undefined);
+        if (pid === undefined) await Bun.sleep(5);
+      }
+      expect(pid).toBeNumber();
+      controller.abort();
+      await expect(starting).rejects.toHaveProperty("name", "AbortError");
+      await Bun.sleep(25);
+      expect(() => process.kill(pid!, 0)).toThrow();
+    } finally {
+      if (previousPidPath === undefined) delete Bun.env.RELAY_TEST_PID_FILE;
+      else Bun.env.RELAY_TEST_PID_FILE = previousPidPath;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("loads and normalizes commands from the authenticated native server", async () => {
     const commands = await discoverOpenCodeCommands(executable, process.cwd());
     expect(commands).toEqual([

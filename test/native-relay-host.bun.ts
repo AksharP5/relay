@@ -202,6 +202,7 @@ describe("native Relay host", () => {
     const backendReady = new Promise<NativeBackend>((resolve) => (resolveBackend = resolve));
     const starting = new Promise<void>((resolve) => (notifyStarting = resolve));
     let closed = false;
+    let startupSignal: AbortSignal | undefined;
     const backend: NativeBackend = {
       prepareSession: async () => ({ handoffInjected: false }),
       inject: async () => {},
@@ -216,7 +217,8 @@ describe("native Relay host", () => {
     try {
       const launched = launchNativeRelay(controller, {
         signalSource: signals,
-        startBackend: async () => {
+        startBackend: async (_harness, _cwd, signal) => {
+          startupSignal = signal;
           notifyStarting();
           return backendReady;
         },
@@ -226,6 +228,7 @@ describe("native Relay host", () => {
       await launched;
       expect(process.exitCode).toBe(130);
       expect(closed).toBe(false);
+      expect(startupSignal?.aborted).toBe(true);
 
       resolveBackend(backend);
       await Bun.sleep(0);
@@ -482,6 +485,9 @@ describe("native Relay host", () => {
     });
 
     expect(coldLaunchModes).toEqual([false]);
+    await expect(
+      controller.loadLocalThread().then((value) => value.bindings.codex?.sessionId),
+    ).resolves.toBe("warm-session");
   });
 
   it("does not persist an unresumable empty Codex thread", async () => {

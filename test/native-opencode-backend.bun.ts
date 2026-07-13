@@ -75,6 +75,10 @@ describe("OpenCode native backend", () => {
       expect(command.env?.OPENCODE_SERVER_PASSWORD).toBeTruthy();
       expect(await backend.isIdle(sessionId)).toBe(true);
       expect(await backend.resolveSession(sessionId)).toBe(sessionId);
+      await expect(backend.read("ses_retry")).resolves.toEqual({
+        turns: [],
+        hiddenTurnIds: [],
+      });
       await backend.inject(
         sessionId,
         [
@@ -113,6 +117,21 @@ describe("OpenCode native backend", () => {
       expect(childSession.ok).toBe(true);
       await Bun.sleep(10);
       expect(await backend.resolveSession(sessionId)).toBe(created.id);
+
+      const closeEvents = await fetch(new URL("/test/close-events", baseUrl), {
+        method: "POST",
+        headers,
+      });
+      expect(closeEvents.ok).toBe(true);
+      await Bun.sleep(150);
+      const afterReconnect = await fetch(new URL(`/session?directory=${process.cwd()}`, baseUrl), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({}),
+      });
+      const reconnectedSession = (await afterReconnect.json()) as { id: string };
+      await Bun.sleep(50);
+      expect(await backend.resolveSession(sessionId)).toBe(reconnectedSession.id);
     } finally {
       await backend.close();
     }

@@ -51,10 +51,14 @@ const executableFor = (harness: Harness) => {
   return executable;
 };
 
-const startBackend = async (harness: Harness, cwd: string): Promise<NativeBackend> => {
+const startBackend = async (
+  harness: Harness,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<NativeBackend> => {
   const executable = executableFor(harness);
   if (harness === "codex") {
-    const backend = await CodexNativeBackend.start(executable, cwd);
+    const backend = await CodexNativeBackend.start(executable, cwd, signal);
     return {
       preparesColdHandoff: true,
       prepareSession: ({ sessionId, model, handoff, handoffOmittedMessages }) =>
@@ -75,7 +79,7 @@ const startBackend = async (harness: Harness, cwd: string): Promise<NativeBacken
     };
   }
 
-  const backend = await OpenCodeNativeBackend.start(executable, cwd);
+  const backend = await OpenCodeNativeBackend.start(executable, cwd, signal);
   return {
     prepareSession: async ({ sessionId, title, handoff }) =>
       !sessionId && handoff.length === 0
@@ -99,7 +103,11 @@ const startBackend = async (harness: Harness, cwd: string): Promise<NativeBacken
 };
 
 export interface NativeRelayHostDependencies {
-  readonly startBackend: (harness: Harness, cwd: string) => Promise<NativeBackend>;
+  readonly startBackend: (
+    harness: Harness,
+    cwd: string,
+    signal?: AbortSignal,
+  ) => Promise<NativeBackend>;
   readonly runTui: (
     command: NativeTuiCommand,
     onSwitchRequest: (recentSubmit?: boolean) => Promise<boolean>,
@@ -221,14 +229,16 @@ const runHarness = async (
     return closingBackend;
   };
   let startupSignal: NativeParentSignal | undefined;
+  const startupAbort = new AbortController();
   let resolveSignal: (signal: NativeParentSignal) => void;
   const signalReceived = new Promise<NativeParentSignal>((resolve) => (resolveSignal = resolve));
   const unsubscribeSignal = subscribeSignal((signal) => {
     startupSignal ??= signal;
     resolveSignal(signal);
+    startupAbort.abort(signal);
     if (backend) void closeBackend().catch(() => undefined);
   });
-  const startingBackend = dependencies.startBackend(harness, thread.cwd);
+  const startingBackend = dependencies.startBackend(harness, thread.cwd, startupAbort.signal);
   let started: { readonly backend: NativeBackend } | { readonly signal: NativeParentSignal };
   try {
     started = await Promise.race([
@@ -237,6 +247,7 @@ const runHarness = async (
     ]);
   } catch (cause) {
     unsubscribeSignal();
+    if (startupSignal) return { thread, exit: { reason: "signal", signal: startupSignal } };
     throw cause;
   }
   if ("signal" in started) {
@@ -323,15 +334,22 @@ const runHarness = async (
         // A native TUI forwards Enter before Relay sees the switch key. Sample
         // the backend across a short settling window so a newly-starting turn
         // cannot be mistaken for an idle session and terminated mid-request.
-        for (let sample = 0; sample < 3; sample += 1) {
-          await dependencies.wait(80);
-          sessionId = await backend.resolveSession(sessionId);
-          const sessionBecameCold = launchSessionId === undefined || sessionId !== launchSessionId;
-          if (recentSubmit && sessionBecameCold) {
-            if (!sessionId) return false;
-            if (backend.isMaterialized && !(await backend.isMaterialized(sessionId))) return false;
+        try {
+          for (let sample = 0; sample < 3; sample += 1) {
+            await dependencies.wait(80);
+            sessionId = await backend.resolveSession(sessionId);
+            const sessionBecameCold =
+              launchSessionId === undefined || sessionId !== launchSessionId;
+            if (recentSubmit && sessionBecameCold) {
+              if (!sessionId) return false;
+              if (backend.isMaterialized && !(await backend.isMaterialized(sessionId)))
+                return false;
+            }
+            if (sessionId && !(await backend.isIdle(sessionId))) return false;
           }
-          if (sessionId && !(await backend.isIdle(sessionId))) return false;
+        } catch {
+          // Losing native session visibility is not permission to detach it.
+          return false;
         }
         return true;
       },
@@ -348,7 +366,7 @@ const runHarness = async (
         const turns = transcript.turns;
         const materialized =
           turns.length > 0 || (await backend.isMaterialized?.(resolvedSessionId)) === true;
-        if (boundSessionId || materialized) {
+        if (resolvedSessionId === boundSessionId || materialized) {
           thread = await synchronize({
             controller,
             backend,

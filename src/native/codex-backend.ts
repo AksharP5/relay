@@ -35,9 +35,11 @@ const waitForServer = async (
   token: string,
   child: ReturnType<typeof Bun.spawn>,
   stderr: () => string,
+  signal?: AbortSignal,
 ) => {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     if (child.exitCode !== null) {
       throw new Error(`Codex app-server exited with code ${child.exitCode}\n${stderr()}`.trim());
     }
@@ -190,7 +192,8 @@ export class CodexNativeBackend {
     this.#cwd = input.cwd;
   }
 
-  static async start(executable: string, cwd: string) {
+  static async start(executable: string, cwd: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const runtimeDirectory = await mkdtemp(join(tmpdir(), "relay-codex-"));
     await chmod(runtimeDirectory, 0o700);
     const token = `${crypto.randomUUID()}${crypto.randomUUID()}`;
@@ -222,9 +225,14 @@ export class CodexNativeBackend {
     if (child.stderr instanceof ReadableStream) {
       void readStream(child.stderr, { limit: 128_000 }).then((value) => (stderr = value));
     }
+    let terminating: Promise<void> | undefined;
+    const terminate = () => (terminating ??= stopProcessTree(child));
+    const onAbort = () => void terminate();
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      await waitForServer(remoteUrl, token, child, () => stderr);
+      signal?.throwIfAborted();
+      await waitForServer(remoteUrl, token, child, () => stderr, signal);
       return new CodexNativeBackend({
         child,
         runtimeDirectory,
@@ -234,9 +242,11 @@ export class CodexNativeBackend {
         cwd,
       });
     } catch (cause) {
-      await stopProcessTree(child);
+      await terminate();
       await rm(runtimeDirectory, { recursive: true, force: true });
       throw cause;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
     }
   }
 

@@ -29,7 +29,9 @@ export interface RunningOpenCodeServer {
 export const startOpenCodeServer = async (
   executable: string,
   cwd: string,
+  signal?: AbortSignal,
 ): Promise<RunningOpenCodeServer> => {
+  signal?.throwIfAborted();
   const password = `${crypto.randomUUID()}${crypto.randomUUID()}`;
   const child = Bun.spawn([executable, "serve", "--hostname", "127.0.0.1", "--port", "0"], {
     cwd,
@@ -59,10 +61,21 @@ export const startOpenCodeServer = async (
   void child.exited.then((code) =>
     rejectUrl!(new Error(`OpenCode server exited with code ${code}`)),
   );
+  let terminating: Promise<void> | undefined;
+  const terminate = () => (terminating ??= stopProcessTree(child));
+  let rejectAbort: (cause: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => (rejectAbort = reject));
+  const onAbort = () => {
+    void terminate();
+    rejectAbort(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
 
   try {
+    signal?.throwIfAborted();
     const baseUrl = await Promise.race([
       serverUrl,
+      aborted,
       Bun.sleep(15_000).then(() => {
         throw new Error("Timed out starting OpenCode");
       }),
@@ -71,11 +84,13 @@ export const startOpenCodeServer = async (
       baseUrl,
       password,
       authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
-      close: () => stopProcessTree(child),
+      close: terminate,
     };
   } catch (cause) {
-    await stopProcessTree(child);
+    await terminate();
     throw cause;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
   }
 };
 

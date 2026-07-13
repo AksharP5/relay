@@ -307,7 +307,7 @@ describe("native PTY host", () => {
     expect(await second).toEqual({ reason: "signal", signal: "SIGTERM" });
   });
 
-  it("bounds standby input and signals when excess bytes are dropped", async () => {
+  it("drops an overflowing standby sequence whole without corrupting the next router", async () => {
     const input = new TestInput();
     const resize = new EventEmitter();
     const command = {
@@ -324,7 +324,7 @@ describe("native PTY host", () => {
     await Bun.sleep(50);
     input.emit("data", Buffer.from("\u001b[17~"));
     expect(await first).toEqual({ reason: "switch" });
-    input.emit("data", Buffer.from("0123456789"));
+    input.emit("data", Buffer.from("\u001b[200~0123456789"));
 
     const secondOutput = new TestOutput();
     const second = runNativeTui(
@@ -334,11 +334,20 @@ describe("native PTY host", () => {
     );
     running.push(second);
     await Bun.sleep(50);
-    expect(secondOutput.text()).toContain(`INPUT:${Buffer.from("01234567").toString("hex")}`);
-    expect(secondOutput.text()).not.toContain(Buffer.from("89").toString("hex"));
+    expect(secondOutput.text()).not.toContain("INPUT:");
     expect(secondOutput.chunks.some((chunk) => chunk.includes(0x07))).toBe(true);
+    input.emit("data", Buffer.from("\u001b[17~"));
+    expect(await second).toEqual({ reason: "switch" });
+
+    const third = runNativeTui(
+      command,
+      { input, output: new TestOutput(), resizeSource: resize },
+      { preserveInputOnSwitch: true },
+    );
+    running.push(third);
+    await Bun.sleep(50);
     resize.emit("SIGTERM");
-    expect(await second).toEqual({ reason: "signal", signal: "SIGTERM" });
+    expect(await third).toEqual({ reason: "signal", signal: "SIGTERM" });
   });
 
   it("can release an abandoned preserved custom input", async () => {
@@ -565,6 +574,40 @@ describe("native PTY host", () => {
       .replaceAll(/[^0-9a-f]/g, "");
     expect(Buffer.from(nativeInput, "hex").toString()).toBe("abcdef");
 
+    resize.emit("SIGTERM");
+    expect(await result).toEqual({ reason: "signal", signal: "SIGTERM" });
+  });
+
+  it("bounds input while an asynchronous switch guard is pending", async () => {
+    const input = new TestInput();
+    const output = new TestOutput();
+    const resize = new EventEmitter();
+    let resolveIdle: ((idle: boolean) => void) | undefined;
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output, resizeSource: resize },
+      {
+        handoffInputLimitBytes: 8,
+        onSwitchRequest: () =>
+          new Promise<boolean>((resolve) => {
+            resolveIdle = resolve;
+          }),
+      },
+    );
+    running.push(result);
+
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from("\u001b[104;6u\u001b[200~"));
+    input.emit("data", Buffer.alloc(1_000_000, "x"));
+    resolveIdle?.(false);
+    await Bun.sleep(30);
+
+    expect(output.text()).not.toContain(`INPUT:${Buffer.from("\u001b[200~").toString("hex")}`);
+    expect(output.chunks.some((chunk) => chunk.includes(0x07))).toBe(true);
     resize.emit("SIGTERM");
     expect(await result).toEqual({ reason: "signal", signal: "SIGTERM" });
   });
