@@ -24,6 +24,23 @@ const server = Bun.serve({
         ...(revertMessageID ? { revert: { messageID: revertMessageID } } : {}),
       });
     }
+    if (url.pathname.endsWith("/message") && request.method === "POST") {
+      const body = (await request.json()) as {
+        noReply?: unknown;
+        parts?: Array<{ type?: unknown; text?: unknown; synthetic?: unknown }>;
+      };
+      const part = body.parts?.[0];
+      if (
+        body.noReply !== true ||
+        part?.type !== "text" ||
+        part.synthetic !== true ||
+        typeof part.text !== "string" ||
+        !part.text.includes('<relay_handoff version="1">')
+      ) {
+        return new Response("invalid hidden handoff", { status: 400 });
+      }
+      return Response.json({ info: { id: "hidden", role: "user" }, parts: body.parts });
+    }
     if (url.pathname.endsWith("/message") && request.method === "GET") {
       return Response.json([
         { info: { id: "msg_001", role: "user" }, parts: [{ type: "text", text: "first" }] },

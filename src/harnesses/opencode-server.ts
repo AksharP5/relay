@@ -45,6 +45,66 @@ const stopChild = async (child: ReturnType<typeof Bun.spawn>) => {
   }
 };
 
+export interface RunningOpenCodeServer {
+  readonly baseUrl: string;
+  readonly password: string;
+  readonly authorization: string;
+  readonly close: () => Promise<void>;
+}
+
+export const startOpenCodeServer = async (
+  executable: string,
+  cwd: string,
+): Promise<RunningOpenCodeServer> => {
+  const password = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+  const child = Bun.spawn([executable, "serve", "--hostname", "127.0.0.1", "--port", "0"], {
+    cwd,
+    env: { ...Bun.env, OPENCODE_SERVER_PASSWORD: password },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    detached: process.platform !== "win32",
+  });
+  if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
+    await stopChild(child);
+    throw new Error("OpenCode server output pipes are unavailable");
+  }
+
+  let resolveUrl: (value: string) => void;
+  let rejectUrl: (cause: Error) => void;
+  const serverUrl = new Promise<string>((resolve, reject) => {
+    resolveUrl = resolve;
+    rejectUrl = reject;
+  });
+  const inspectLine = (line: string) => {
+    const match = line.match(/opencode server listening on (http:\/\/\S+)/i);
+    if (match?.[1]) resolveUrl(match[1]);
+  };
+  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
+  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
+  void child.exited.then((code) =>
+    rejectUrl!(new Error(`OpenCode server exited with code ${code}`)),
+  );
+
+  try {
+    const baseUrl = await Promise.race([
+      serverUrl,
+      Bun.sleep(15_000).then(() => {
+        throw new Error("Timed out starting OpenCode");
+      }),
+    ]);
+    return {
+      baseUrl,
+      password,
+      authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
+      close: () => stopChild(child),
+    };
+  } catch (cause) {
+    await stopChild(child);
+    throw cause;
+  }
+};
+
 export const discoverOpenCodeCommands = async (
   executable: string,
   cwd: string,
