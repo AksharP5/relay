@@ -16,44 +16,12 @@ class TestInput extends EventEmitter {
     this.rawModes.push(enabled);
   }
 
-  isPaused() {
-    return this.paused;
-  }
   resume() {
     this.paused = false;
   }
   pause() {
     this.paused = true;
     this.pauseCalls += 1;
-  }
-}
-
-class QueuedResumeInput extends TestInput {
-  #resumeInput: Uint8Array | undefined;
-  #firstResumeAttempted = false;
-  #readRearmed = false;
-
-  queueForPausedReadRearm(input: Uint8Array) {
-    this.#resumeInput = input;
-    this.#firstResumeAttempted = false;
-    this.#readRearmed = false;
-  }
-
-  override pause() {
-    super.pause();
-    if (this.#firstResumeAttempted) this.#readRearmed = true;
-  }
-
-  override resume() {
-    super.resume();
-    if (this.#resumeInput && !this.#firstResumeAttempted) {
-      this.#firstResumeAttempted = true;
-      return;
-    }
-    if (!this.#readRearmed) return;
-    const input = this.#resumeInput;
-    this.#resumeInput = undefined;
-    if (input) this.emit("data", input);
   }
 }
 
@@ -238,36 +206,56 @@ describe("native PTY host", () => {
     expect(resize.listenerCount("SIGWINCH")).toBe(0);
   });
 
-  it("reattaches input before resuming the shared terminal for the next harness", async () => {
-    const input = new QueuedResumeInput();
+  it("keeps shared stdin flowing and buffers bytes between native harnesses", async () => {
+    const input = new TestInput();
     const command = {
       executable: process.execPath,
       args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
       cwd: process.cwd(),
     };
 
+    const firstOutput = new TestOutput();
     const firstResize = new EventEmitter();
-    const first = runNativeTui(command, {
-      input,
-      output: new TestOutput(),
-      resizeSource: firstResize,
-    });
+    const first = runNativeTui(
+      command,
+      {
+        input,
+        output: firstOutput,
+        resizeSource: firstResize,
+      },
+      { preserveInputOnSwitch: true },
+    );
     running.push(first);
     await Bun.sleep(50);
-    input.emit("data", Buffer.from("\u001b[104;6u"));
+    input.emit("data", Buffer.from("\u001b[104;6uafter-switch"));
     expect(await first).toEqual({ reason: "switch" });
+    expect(input.isRaw).toBe(true);
+    expect(input.paused).toBe(false);
+    expect(input.listenerCount("data")).toBe(1);
 
+    input.emit("data", Buffer.from(" capability-reply"));
+    const secondOutput = new TestOutput();
     const secondResize = new EventEmitter();
-    input.queueForPausedReadRearm(Buffer.from("\u001b[17~"));
-    const second = runNativeTui(command, {
-      input,
-      output: new TestOutput(),
-      resizeSource: secondResize,
-    });
+    const second = runNativeTui(
+      command,
+      {
+        input,
+        output: secondOutput,
+        resizeSource: secondResize,
+      },
+      { preserveInputOnSwitch: true },
+    );
     running.push(second);
-    void Bun.sleep(150).then(() => secondResize.emit("SIGTERM"));
-
-    expect(await second).toEqual({ reason: "switch" });
+    await Bun.sleep(75);
+    expect(secondOutput.text()).toContain(
+      `INPUT:${Buffer.from("after-switch capability-reply").toString("hex")}`,
+    );
+    secondResize.emit("SIGTERM");
+    expect(await second).toEqual({ reason: "signal", signal: "SIGTERM" });
+    expect(input.rawModes).toEqual([true, false]);
+    expect(input.isRaw).toBe(false);
+    expect(input.paused).toBe(true);
+    expect(input.listenerCount("data")).toBe(0);
   });
 
   it("rejects non-interactive input before starting a child", async () => {

@@ -10,6 +10,7 @@ import type { NativeRelayController } from "./controller.ts";
 import { NativeSessionUnavailable } from "./errors.ts";
 import { OpenCodeNativeBackend } from "./opencode-backend.ts";
 import {
+  releaseNativeTuiInput,
   runNativeTui,
   type NativeParentSignal,
   type NativeTuiCommand,
@@ -119,6 +120,7 @@ const defaultDependencies: NativeRelayHostDependencies = {
         onSwitchRequest,
         submitGraceMs: coldLaunch ? 2_000 : 0,
         submitProtectionMs: 10_000,
+        preserveInputOnSwitch: true,
       },
     ),
   signalSource: process,
@@ -399,6 +401,7 @@ export const launchNativeRelay = async (
       harness = harness === "codex" ? "opencode" : "codex";
     }
   } finally {
+    releaseNativeTuiInput();
     await lease?.release();
     dependencies.signalSource.off("SIGHUP", onHangup);
     dependencies.signalSource.off("SIGINT", onInterrupt);
