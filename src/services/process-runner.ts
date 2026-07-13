@@ -18,6 +18,39 @@ export interface ProcessOutput {
   readonly stderr: string;
 }
 
+const signalProcessTree = (child: ReturnType<typeof Bun.spawn>, signal: NodeJS.Signals) => {
+  if (child.exitCode !== null) return;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall through when the process group has already exited.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // The child may have exited between the status check and signal.
+  }
+};
+
+const makeTerminator = (child: ReturnType<typeof Bun.spawn>) => {
+  let terminating: Promise<void> | undefined;
+  return () => {
+    terminating ??= (async () => {
+      signalProcessTree(child, "SIGTERM");
+      const exited = await Promise.race([
+        child.exited.then(() => true),
+        Bun.sleep(1_000).then(() => false),
+      ]);
+      if (!exited) signalProcessTree(child, "SIGKILL");
+      await child.exited.catch(() => undefined);
+    })();
+    return terminating;
+  };
+};
+
 export const readStream = async (
   stream: ReadableStream<Uint8Array>,
   options: {
@@ -80,48 +113,58 @@ export class ProcessRunner extends Context.Service<
   }
 >()("@relay/ProcessRunner") {
   static readonly layer = Layer.succeed(ProcessRunner, {
-    run: Effect.fn("ProcessRunner.run")((input: ProcessInput) =>
-      Effect.tryPromise({
-        try: async () => {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? 30 * 60 * 1000);
+    run: Effect.fn("ProcessRunner.run")((input: ProcessInput) => {
+      let terminate: (() => Promise<void>) | undefined;
+      const operation = Effect.tryPromise({
+        try: async (signal) => {
+          let onAbort: (() => void) | undefined;
+          let timeout: ReturnType<typeof setTimeout> | undefined;
 
           try {
-            const process = Bun.spawn([input.command, ...(input.args ?? [])], {
+            const child = Bun.spawn([input.command, ...(input.args ?? [])], {
               ...(input.cwd ? { cwd: input.cwd } : {}),
               env: { ...Bun.env, ...input.env },
               stdin: input.stdin === undefined ? "ignore" : "pipe",
               stdout: "pipe",
               stderr: "pipe",
-              signal: controller.signal,
+              detached: process.platform !== "win32",
             });
+            terminate = makeTerminator(child);
+            onAbort = () => void terminate?.();
+            signal.addEventListener("abort", onAbort, { once: true });
+            timeout = setTimeout(() => void terminate?.(), input.timeoutMs ?? 30 * 60 * 1000);
 
-            const stdin = process.stdin;
+            const stdin = child.stdin;
             if (input.stdin !== undefined && stdin && typeof stdin !== "number") {
               stdin.write(input.stdin);
               stdin.end();
             }
 
             const [stdout, stderr, exitCode] = await Promise.all([
-              readStream(process.stdout, {
+              readStream(child.stdout, {
                 ...(input.onStdoutLine ? { onLine: input.onStdoutLine } : {}),
                 ...(input.captureLimitChars ? { limit: input.captureLimitChars } : {}),
                 ...(input.lineLimitChars ? { lineLimit: input.lineLimitChars } : {}),
               }),
-              readStream(process.stderr, {
+              readStream(child.stderr, {
                 ...(input.captureLimitChars ? { limit: input.captureLimitChars } : {}),
               }),
-              process.exited,
+              child.exited,
             ]);
 
             return { exitCode, stdout, stderr };
           } finally {
-            clearTimeout(timeout);
+            if (timeout) clearTimeout(timeout);
+            if (onAbort) signal.removeEventListener("abort", onAbort);
           }
         },
         catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
-      }),
-    ),
+      });
+
+      return operation.pipe(
+        Effect.onInterrupt(() => (terminate ? Effect.promise(() => terminate!()) : Effect.void)),
+      );
+    }),
     which: Effect.fn("ProcessRunner.which")((command: string) =>
       Effect.tryPromise({
         try: async () => Bun.which(command) ?? undefined,
