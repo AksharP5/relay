@@ -1,3 +1,4 @@
+import packageJson from "../../package.json" with { type: "json" };
 import type { HarnessTurnProgress } from "../domain.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
 
@@ -87,7 +88,7 @@ export class AppServerConnection {
       await connection.#requestRaw(
         "initialize",
         {
-          clientInfo: { name: "relay", title: "Relay", version: "0.1.0" },
+          clientInfo: { name: "relay", title: "Relay", version: packageJson.version },
           capabilities: null,
         },
         Math.min(timeoutMs, 15_000),
@@ -250,7 +251,7 @@ export class WebSocketAppServerConnection {
       await connection.request(
         "initialize",
         {
-          clientInfo: { name: "relay", title: "Relay", version: "0.1.0" },
+          clientInfo: { name: "relay", title: "Relay", version: packageJson.version },
           capabilities: null,
         },
         timeoutMs,

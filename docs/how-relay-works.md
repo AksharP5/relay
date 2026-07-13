@@ -107,9 +107,11 @@ By default:
       native-visibility.json  # created when native IDs or undo state need linking
 ```
 
-Relay creates directories with mode `0700` and files with mode `0600` on Unix-like systems. Message storage is append-oriented and recoverable through small pending-turn and pending-handoff journals. Reads stream and bound the retained window rather than loading an unlimited transcript into memory.
+Relay creates directories with mode `0700` and files with mode `0600` on Unix-like systems. Message storage is append-oriented and recoverable through small pending-turn and pending-handoff journals. Handoff reads retain at most the bounded context window described above. OpenCode native recovery uses cursor pages and keeps only visible conversation text. Task recovery and explicit history inspection may read the selected task's complete canonical log.
 
 Set `RELAY_DATA_DIR` to use another location.
+
+Exit Relay before deleting that directory to erase Relay's local records. Vendor-native sessions and workspace files are separate and are not deleted with it.
 
 ## Failure behavior
 

@@ -138,7 +138,7 @@ See the [command guide](docs/commands.md) for full examples.
 
 Relay stores canonical visible message text and task metadata under `~/.local/share/relay` by default. Metadata includes the task ID, directory, active harness, native session IDs, synchronization cursors, native undo visibility, and timestamps.
 
-It does not copy credential files, vendor session databases, raw terminal output, or tool traces. Canonical messages use append-only JSON Lines and are streamed from disk with bounded windows. While a TUI is active, Relay keeps only small routing queues and the handoff delta needed for a switch.
+It does not copy credential files, vendor session databases, raw terminal output, or tool traces. Canonical messages use append-only JSON Lines. Switch handoffs scan that log with a bounded message and character window; OpenCode recovery reads vendor history in cursor pages and immediately discards non-visible tool payloads. Task recovery and `relay history` may read the selected task's complete local canonical log. While a TUI is active, Relay otherwise keeps only small routing queues and the handoff delta needed for a switch.
 
 Each active backend binds only to loopback and uses an ephemeral capability secret:
 
@@ -149,9 +149,12 @@ Both the backend and native frontend stop when Relay leaves that harness. Native
 
 Set `RELAY_DATA_DIR` to place Relay’s canonical log elsewhere. Protect it like any local agent transcript.
 
+To erase Relay's local records, first exit Relay and remove its data directory. This does not delete files in your workspace or the native sessions retained by Codex and OpenCode.
+
 ## Current boundaries
 
 - Relay currently supports Codex and OpenCode on macOS and Linux. Windows PTY hosting is not implemented.
+- Run only one active agent task per checkout. Relay prevents concurrent use of the same Relay task; use separate git worktrees when running different tasks at the same time.
 - Cross-engine continuity includes completed visible text and the working tree, not hidden state.
 - Attachments and rich tool events stay in their native session; they are not translated into the other harness.
 - Native undo, compaction, sharing, and session commands still use native semantics. Relay reconciles explicit OpenCode undo/redo visibility for completed imported turns, but it will not rewrite vendor-owned storage to force two histories to become identical.

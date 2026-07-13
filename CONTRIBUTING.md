@@ -34,7 +34,7 @@ RELAY_DATA_DIR=/tmp/relay-dev bun run relay -- new "Adapter test"
 
 `bun run check` runs formatting, TypeScript, and the automated test suite. Adapter parsing should have fixture-level tests. Changes to a live adapter should also be tested against the corresponding installed CLI, but live model calls must not be part of CI.
 
-`bun run compat:latest` installs nothing and tests the currently resolved Codex and OpenCode executables through real local servers without a model call. The scheduled GitHub workflow first installs both latest stable packages, records their resolved versions, and runs this contract on Linux daily; manual runs also cover macOS.
+`bun run compat:latest` installs nothing and tests the currently resolved Codex and OpenCode executables through real local servers without a model call. The scheduled GitHub workflow first installs both latest stable packages, records their resolved versions, and runs this contract on Linux and macOS daily. Manual runs use the same matrix.
 
 Changes to PTY input, process lifetime, session preparation, hidden injection, active-session resolution, or transcript import must include a focused regression for the failure they could cause. Do not add broad tests that merely repeat type checking or implementation details.
 
