@@ -117,4 +117,40 @@ describe("managed process recovery", () => {
     expect(result.terminated).toBe(1);
     expect(await child.exited).not.toBe(0);
   });
+
+  it("stops a surviving descendant after its registered group leader exits", async () => {
+    const ready = join(directory, "descendant-ready.json");
+    const leader = Bun.spawn(
+      [process.execPath, new URL("fixtures/managed-exiting-leader.ts", import.meta.url).pathname],
+      {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        env: { ...Bun.env, RELAY_TEST_READY: ready },
+        detached: true,
+      },
+    );
+    await trackManagedProcess(leader, "exiting-leader-test");
+    await waitFor(async () => Bun.file(ready).exists());
+    const { descendantPid } = JSON.parse(await readFile(ready, "utf8")) as {
+      descendantPid: number;
+    };
+    await leader.exited;
+    expect(processIsAlive(descendantPid)).toBe(true);
+
+    const processes = join(directory, "processes");
+    const [claimName] = (await readdir(processes)).filter((name) => name.endsWith(".json"));
+    const claimPath = join(processes, claimName!);
+    const claim = JSON.parse(await readFile(claimPath, "utf8")) as {
+      owner: { pid: number; startedAt: string };
+      scope?: string;
+    };
+    claim.owner = { pid: 2_147_483_647, startedAt: "never" };
+    delete claim.scope;
+    await writeFile(claimPath, `${JSON.stringify(claim)}\n`, { mode: 0o600 });
+
+    const result = await cleanupOrphanedProcesses();
+    expect(result.terminated).toBe(1);
+    await waitFor(async () => !processIsAlive(descendantPid));
+  });
 });

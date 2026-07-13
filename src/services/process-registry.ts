@@ -12,7 +12,7 @@ const ProcessClaim = Schema.Struct({
   token: Schema.String,
   owner: Schema.Struct({ pid: Schema.Number, startedAt: Schema.String }),
   child: Schema.Struct({ pid: Schema.Number, pgid: Schema.Number, startedAt: Schema.String }),
-  scope: Schema.Literals(["group", "process"]),
+  scope: Schema.optional(Schema.Literals(["group", "process"])),
   kind: Schema.String,
   createdAt: Schema.String,
 });
@@ -188,18 +188,23 @@ export const cleanupOrphanedProcesses = async () => {
     const owner = await processSnapshot(claim.owner.pid);
     if (owner?.startedAt === claim.owner.startedAt) continue;
     const child = await processSnapshot(claim.child.pid);
-    if (child?.startedAt === claim.child.startedAt && child.pgid === claim.child.pgid) {
-      if (claim.scope === "group" && claim.child.pgid <= 1) {
+    const scope = claim.scope ?? "group";
+    const matchingLeader =
+      child?.startedAt === claim.child.startedAt && child.pgid === claim.child.pgid;
+    const leaderExitedWithLiveGroup =
+      scope === "group" && child === undefined && groupIsAlive(claim.child.pgid);
+    if (matchingLeader || leaderExitedWithLiveGroup) {
+      if (scope === "group" && claim.child.pgid <= 1) {
         discarded += 1;
         await rm(path, { force: true });
         continue;
       }
       const signal = (value: NodeJS.Signals) =>
-        claim.scope === "group"
+        scope === "group"
           ? signalGroup(claim.child.pgid, value)
           : signalProcess(claim.child.pid, value);
       const waitForExit = (timeoutMs: number) =>
-        claim.scope === "group"
+        scope === "group"
           ? waitForGroupExit(claim.child.pgid, timeoutMs)
           : waitForProcessExit(claim.child.pid, claim.child.startedAt, timeoutMs);
       signal("SIGTERM");
