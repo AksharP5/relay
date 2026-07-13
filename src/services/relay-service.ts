@@ -39,6 +39,9 @@ export class RelayService extends Context.Service<
     readonly list: () => Effect.Effect<ReadonlyArray<RelayThread>, unknown>;
     readonly history: () => Effect.Effect<ReadonlyArray<RelayMessage>, unknown>;
     readonly historyFor: (threadId: string) => Effect.Effect<ReadonlyArray<RelayMessage>, unknown>;
+    readonly historyForDisplay: (
+      threadId: string,
+    ) => Effect.Effect<ReadonlyArray<RelayMessage>, unknown>;
     readonly doctor: () => Effect.Effect<ReadonlyArray<HarnessStatus>>;
     readonly dataRoot: string;
   }
@@ -79,12 +82,9 @@ export class RelayService extends Context.Service<
             }
 
             const harness = input.harness ?? thread.activeHarness;
-            const previousMessages = yield* store.messages(thread.id);
             const binding = thread.bindings[harness];
             const model = input.model ?? binding?.model;
-            const handoff = previousMessages.filter(
-              (message) => message.seq > (binding?.lastSyncedSeq ?? 0),
-            );
+            const handoff = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
 
             const nativeResult = yield* harnesses.run(harness, {
               cwd: thread.cwd,
@@ -159,6 +159,10 @@ export class RelayService extends Context.Service<
         store.messages(threadId),
       );
 
+      const historyForDisplay = Effect.fn("RelayService.historyForDisplay")((threadId: string) =>
+        store.recentMessages(threadId, { maxMessages: 200, maxChars: 1_000_000 }),
+      );
+
       const doctor = Effect.fn("RelayService.doctor")(() =>
         Effect.all([harnesses.status("codex"), harnesses.status("opencode")], { concurrency: 2 }),
       );
@@ -172,6 +176,7 @@ export class RelayService extends Context.Service<
         list: store.list,
         history,
         historyFor,
+        historyForDisplay,
         doctor,
         dataRoot: store.root,
       };

@@ -140,17 +140,24 @@ export class ProcessRunner extends Context.Service<
               stdin.end();
             }
 
-            const [stdout, stderr, exitCode] = await Promise.all([
-              readStream(child.stdout, {
-                ...(input.onStdoutLine ? { onLine: input.onStdoutLine } : {}),
-                ...(input.captureLimitChars ? { limit: input.captureLimitChars } : {}),
-                ...(input.lineLimitChars ? { lineLimit: input.lineLimitChars } : {}),
-              }),
-              readStream(child.stderr, {
-                ...(input.captureLimitChars ? { limit: input.captureLimitChars } : {}),
-              }),
-              child.exited,
-            ]);
+            let result: [string, string, number];
+            try {
+              result = await Promise.all([
+                readStream(child.stdout, {
+                  ...(input.onStdoutLine ? { onLine: input.onStdoutLine } : {}),
+                  ...(input.captureLimitChars ? { limit: input.captureLimitChars } : {}),
+                  ...(input.lineLimitChars ? { lineLimit: input.lineLimitChars } : {}),
+                }),
+                readStream(child.stderr, {
+                  ...(input.captureLimitChars ? { limit: input.captureLimitChars } : {}),
+                }),
+                child.exited,
+              ]);
+            } catch (cause) {
+              await terminate();
+              throw cause;
+            }
+            const [stdout, stderr, exitCode] = result;
 
             return { exitCode, stdout, stderr };
           } finally {

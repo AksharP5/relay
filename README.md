@@ -89,6 +89,8 @@ The first submitted message creates a Relay task lazily, so opening and leaving 
 
 The harness name beside the composer is also clickable in terminals with mouse support. Selecting a harness changes only the next turn; its native process is started lazily when you submit.
 
+The workspace keeps its recent conversation window in memory for responsive rendering. The complete canonical transcript remains on disk and is available through `relay history`.
+
 A task stays attached to the directory where it was created. Relay stops a turn with a directory-mismatch message rather than editing the wrong project. The headless commands can create, inspect, and select tasks when needed:
 
 ```bash

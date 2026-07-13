@@ -54,6 +54,7 @@ describe("TUI task routing", () => {
       list: () => Effect.succeed([other, local]),
       history: () => Effect.succeed(histories.get(selected.id) ?? []),
       historyFor: (id) => Effect.succeed(histories.get(id) ?? []),
+      historyForDisplay: (id) => Effect.succeed(histories.get(id) ?? []),
       doctor: () => Effect.succeed([]),
       dataRoot: "/tmp/relay-test",
     };
@@ -91,6 +92,7 @@ describe("TUI task routing", () => {
       list: () => Effect.succeed([other]),
       history: () => Effect.succeed([response]),
       historyFor: () => Effect.succeed([response]),
+      historyForDisplay: () => Effect.succeed([response]),
       doctor: () => Effect.succeed([]),
       dataRoot: "/tmp/relay-test",
     };

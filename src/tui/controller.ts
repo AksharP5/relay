@@ -52,7 +52,7 @@ export const makeTuiController = (
         const relay = yield* RelayService;
         const harnesses = yield* relay.doctor();
         const thread = yield* selectDirectoryTask(relay);
-        const messages = thread ? yield* relay.historyFor(thread.id) : [];
+        const messages = thread ? yield* relay.historyForDisplay(thread.id) : [];
         return { thread, messages, harnesses };
       }),
     ),
@@ -69,7 +69,7 @@ export const makeTuiController = (
           });
         }
         const result = yield* relay.ask(input);
-        const messages = yield* relay.historyFor(result.thread.id);
+        const messages = yield* relay.historyForDisplay(result.thread.id);
         return { thread: result.thread, messages };
       }),
     ),

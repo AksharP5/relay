@@ -16,6 +16,7 @@ export interface HarnessStatus {
 const executable = (harness: Harness) => harness;
 
 const cleanVersion = (value: string) => value.trim().split("\n")[0] ?? value.trim();
+const maxResponseChars = 2_000_000;
 
 export class HarnessService extends Context.Service<
   HarnessService,
@@ -64,13 +65,31 @@ export class HarnessService extends Context.Service<
           input.onProgress?.({ type: "activity", label: `Starting ${harness}` });
           let parsedSessionId = input.sessionId;
           let parsedText = "";
+          let lastPublishedChars = 0;
+          let lastPublishedAt = 0;
+          const publishText = (force = false) => {
+            if (parsedText.length > maxResponseChars) {
+              throw new Error(`Harness response exceeds ${maxResponseChars} characters`);
+            }
+            if (force && parsedText.length === lastPublishedChars) return;
+            const now = Date.now();
+            if (
+              !force &&
+              parsedText.length - lastPublishedChars < 1_024 &&
+              now - lastPublishedAt < 50
+            )
+              return;
+            input.onProgress?.({ type: "text", text: parsedText });
+            lastPublishedChars = parsedText.length;
+            lastPublishedAt = now;
+          };
           const onStdoutLine = (line: string) => {
             if (harness === "codex") {
               const event = parseCodexOutput(line);
               parsedSessionId = event.sessionId ?? parsedSessionId;
               if (event.text) {
                 parsedText = event.text;
-                input.onProgress?.({ type: "text", text: parsedText });
+                publishText();
               }
               return;
             }
@@ -78,7 +97,7 @@ export class HarnessService extends Context.Service<
             parsedSessionId = event.sessionId ?? parsedSessionId;
             if (event.textPart !== undefined) {
               parsedText += event.textPart;
-              input.onProgress?.({ type: "text", text: parsedText });
+              publishText();
             }
           };
           const args =
@@ -139,6 +158,8 @@ export class HarnessService extends Context.Service<
               stderr: `${output.stderr}\n${output.stdout}`.trim().slice(-8_000),
             });
           }
+
+          publishText(true);
 
           const sessionId = parsedSessionId;
           if (!sessionId) {

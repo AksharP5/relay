@@ -29,6 +29,7 @@ const eventsPath = (id: string) => `${threadDir(id)}/events.jsonl`;
 const indexPath = () => `${dataRoot()}/index.json`;
 const pendingPath = (id: string) => `${threadDir(id)}/pending-turn.json`;
 const lockPath = (id: string) => `${dataRoot()}/locks/${id}`;
+const maxEventLineChars = 4_000_000;
 
 const secureDirectory = async (path: string) => {
   await mkdir(path, { recursive: true, mode: 0o700 });
@@ -86,6 +87,73 @@ const readMessages = async (
       }
     }
   }
+  return messages;
+};
+
+const scanMessages = async (id: string, onMessage: (message: RelayMessage) => void) => {
+  const file = Bun.file(eventsPath(id));
+  if (!(await file.exists())) return;
+
+  const reader = file.stream().getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+
+  const consume = (line: string, final: boolean) => {
+    if (!line.trim()) return;
+    try {
+      onMessage(Schema.decodeUnknownSync(RelayMessage)(JSON.parse(line)));
+    } catch (cause) {
+      if (!final) throw cause;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    pending += decoder.decode(value, { stream: true });
+    let newline = pending.indexOf("\n");
+    while (newline >= 0) {
+      consume(pending.slice(0, newline), false);
+      pending = pending.slice(newline + 1);
+      newline = pending.indexOf("\n");
+    }
+    if (pending.length > maxEventLineChars) {
+      throw new Error(`Relay event exceeds ${maxEventLineChars} characters`);
+    }
+  }
+
+  pending += decoder.decode();
+  consume(pending, true);
+};
+
+const readMessagesSince = async (id: string, afterSeq: number) => {
+  const messages: Array<RelayMessage> = [];
+  await scanMessages(id, (message) => {
+    if (message.seq > afterSeq) messages.push(message);
+  });
+  return messages;
+};
+
+const readRecentMessages = async (
+  id: string,
+  options: { readonly maxMessages: number; readonly maxChars: number },
+) => {
+  const messages: Array<RelayMessage> = [];
+  let chars = 0;
+  await scanMessages(id, (message) => {
+    const retained =
+      message.content.length > options.maxChars
+        ? {
+            ...message,
+            content: `…${message.content.slice(-(options.maxChars - 1))}`,
+          }
+        : message;
+    messages.push(retained);
+    chars += retained.content.length;
+    while (messages.length > options.maxMessages || chars > options.maxChars) {
+      chars -= messages.shift()?.content.length ?? 0;
+    }
+  });
   return messages;
 };
 
@@ -245,6 +313,14 @@ export class ThreadStore extends Context.Service<
     readonly get: (id: string) => Effect.Effect<RelayThread, StoreError | ThreadNotFound>;
     readonly list: () => Effect.Effect<ReadonlyArray<RelayThread>, StoreError>;
     readonly messages: (id: string) => Effect.Effect<ReadonlyArray<RelayMessage>, StoreError>;
+    readonly messagesSince: (
+      id: string,
+      afterSeq: number,
+    ) => Effect.Effect<ReadonlyArray<RelayMessage>, StoreError>;
+    readonly recentMessages: (
+      id: string,
+      options: { readonly maxMessages: number; readonly maxChars: number },
+    ) => Effect.Effect<ReadonlyArray<RelayMessage>, StoreError>;
     readonly acquireLock: (
       id: string,
     ) => Effect.Effect<{ readonly release: () => Promise<void> }, StoreError | ThreadBusy>;
@@ -368,6 +444,27 @@ export class ThreadStore extends Context.Service<
         catch: (cause) =>
           new StoreError({ operation: "read messages", message: errorMessage(cause), cause }),
       }),
+    ),
+
+    messagesSince: Effect.fn("ThreadStore.messagesSince")((id: string, afterSeq: number) =>
+      Effect.tryPromise({
+        try: () => readMessagesSince(id, afterSeq),
+        catch: (cause) =>
+          new StoreError({ operation: "read message delta", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    recentMessages: Effect.fn("ThreadStore.recentMessages")(
+      (id: string, options: { readonly maxMessages: number; readonly maxChars: number }) =>
+        Effect.tryPromise({
+          try: () => readRecentMessages(id, options),
+          catch: (cause) =>
+            new StoreError({
+              operation: "read recent messages",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
     ),
 
     acquireLock: Effect.fn("ThreadStore.acquireLock")((id: string) =>
