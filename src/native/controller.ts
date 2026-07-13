@@ -40,6 +40,8 @@ export interface NativeRelayController {
     readonly sessionId: string;
     readonly nativeCursor?: string;
     readonly model?: string;
+    readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+    readonly hiddenTurnIds?: ReadonlyArray<string>;
   }) => Promise<RelayThread>;
   readonly beginHandoff: (input: {
     readonly threadId: string;

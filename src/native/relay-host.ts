@@ -286,22 +286,15 @@ const adoptNativeSession = async (input: {
   const model = input.thread.bindings[harness]?.model ?? input.thread.preferredModels?.[harness];
   await assertNativeCwd(harness, sessionId, input.thread.cwd, transcript.cwd, true);
   const turns = transcript.turns;
-  let thread = await controller.resetContext({
-    threadId: input.thread.id,
-    harness,
-    sessionId,
-    ...(turns.at(-1)?.id ? { nativeCursor: turns.at(-1)!.id } : {}),
-    ...(model ? { model } : {}),
-  });
-  thread = await controller.importTurns({
+  return controller.resetContext({
     threadId: input.thread.id,
     harness,
     sessionId,
     turns,
     hiddenTurnIds: transcript.hiddenTurnIds,
+    ...(turns.at(-1)?.id ? { nativeCursor: turns.at(-1)!.id } : {}),
     ...(model ? { model } : {}),
   });
-  return thread;
 };
 
 const runHarness = async (
@@ -428,19 +421,40 @@ const runHarness = async (
       backend.completedCursor
         ? backend.completedCursor(nativeSessionId)
         : (await backend.read(nativeSessionId)).turns.at(-1)?.id;
+    const captureOneSubmitBaseline = async (): Promise<SubmitBaseline> => {
+      const observedSessionId = await backend.resolveSession(sessionId, true);
+      if (!observedSessionId) return {};
+      const nativeCursor = await completedCursor(observedSessionId);
+      return {
+        sessionId: observedSessionId,
+        ...(nativeCursor ? { nativeCursor } : {}),
+      };
+    };
+    let captureRequested = 0;
+    let captureCompleted = 0;
+    let captureLoop: Promise<void> | undefined;
+    let resolvePendingCapture: ((value: SubmitBaseline | undefined) => void) | undefined;
     let latestSubmitBaseline: Promise<SubmitBaseline | undefined> | undefined;
     const captureSubmitBaseline = async () => {
-      const capture = (async (): Promise<SubmitBaseline> => {
-        const observedSessionId = await backend.resolveSession(sessionId, true);
-        if (!observedSessionId) return {};
-        const nativeCursor = await completedCursor(observedSessionId);
-        return {
-          sessionId: observedSessionId,
-          ...(nativeCursor ? { nativeCursor } : {}),
-        };
-      })().catch(() => undefined);
-      latestSubmitBaseline = capture;
-      await capture;
+      captureRequested += 1;
+      resolvePendingCapture?.(undefined);
+      const result = new Promise<SubmitBaseline | undefined>((resolve) => {
+        resolvePendingCapture = resolve;
+      });
+      latestSubmitBaseline = result;
+      captureLoop ??= (async () => {
+        while (captureCompleted < captureRequested) {
+          const generation = captureRequested;
+          const baseline = await captureOneSubmitBaseline().catch(() => undefined);
+          captureCompleted = generation;
+          if (generation === captureRequested) {
+            const resolve = resolvePendingCapture;
+            resolvePendingCapture = undefined;
+            resolve?.(baseline);
+          }
+        }
+      })().finally(() => (captureLoop = undefined));
+      await result;
     };
 
     const exit = await dependencies.runTui(

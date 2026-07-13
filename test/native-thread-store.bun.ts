@@ -112,6 +112,100 @@ describe("native transcript storage", () => {
     );
   });
 
+  it("finishes a journaled context adoption before accepting a newer turn", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Crash-safe adoption",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        const old = yield* store.commitTurn(created, {
+          harness: "codex",
+          prompt: "old prompt",
+          response: "old response",
+          sessionId: "old-session",
+          bindingCreatedAt: created.createdAt,
+        });
+        const now = new Date().toISOString();
+        const boundary = old.thread.lastSeq;
+        const messages = [
+          {
+            id: "selected-user",
+            seq: boundary + 1,
+            role: "user" as const,
+            content: "selected earlier",
+            harness: "opencode" as const,
+            nativeId: "selected-turn",
+            nativeSessionId: "selected-session",
+            createdAt: now,
+          },
+          {
+            id: "selected-assistant",
+            seq: boundary + 2,
+            role: "assistant" as const,
+            content: "selected response",
+            harness: "opencode" as const,
+            nativeId: "selected-turn",
+            nativeSessionId: "selected-session",
+            createdAt: now,
+          },
+        ];
+        const selected = {
+          ...old.thread,
+          activeHarness: "opencode" as const,
+          contextStartSeq: boundary,
+          lastSeq: boundary + 2,
+          bindings: {
+            opencode: {
+              harness: "opencode" as const,
+              sessionId: "selected-session",
+              lastSyncedSeq: boundary + 2,
+              nativeCursor: "selected-turn",
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+          pendingHandoffs: {},
+          updatedAt: now,
+        };
+        const pending = join(directory, "threads", created.id, "pending-turn.json");
+        yield* Effect.promise(() =>
+          writeFile(
+            pending,
+            `${JSON.stringify({
+              version: 1,
+              messages,
+              thread: selected,
+              replaceEvents: true,
+              visibility: { hidden: [], links: [] },
+            })}\n`,
+            { encoding: "utf8", mode: 0o600 },
+          ),
+        );
+
+        const recovered = yield* store.get(created.id);
+        const next = yield* store.commitTurn(recovered, {
+          harness: "opencode",
+          prompt: "new headless",
+          response: "new response",
+          sessionId: "selected-session",
+          bindingCreatedAt: recovered.bindings.opencode!.createdAt,
+        });
+
+        expect(next.thread.lastSeq).toBe(boundary + 4);
+        expect((yield* store.messages(created.id)).map((message) => message.content)).toEqual([
+          "selected earlier",
+          "selected response",
+          "new headless",
+          "new response",
+        ]);
+        expect(yield* Effect.promise(() => Bun.file(pending).exists())).toBe(false);
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+  });
+
   it("prevents two Relay tasks from running in the same checkout", async () => {
     const checkout = join(directory, "checkout-lease-fixture");
     const nested = join(checkout, "packages", "app");
@@ -348,20 +442,17 @@ describe("native transcript storage", () => {
         const selectedB = yield* store.resetNativeContext(undone, {
           harness: "opencode",
           sessionId: "session-b",
+          turns: [{ id: "native-b", prompt: "other", response: "context" }],
         });
         const recoveredB = yield* store.get(created.id);
         expect(recoveredB.lastSeq).toBe(selectedB.lastSeq);
         expect(recoveredB.contextStartSeq).toBe(selectedB.contextStartSeq);
-        const importedB = yield* store.importNativeTurns(recoveredB, {
-          harness: "opencode",
-          sessionId: "session-b",
-          turns: [{ id: "native-b", prompt: "other", response: "context" }],
-          hiddenTurnIds: [],
-        });
+        const importedB = recoveredB;
         const selectedA = yield* store.resetNativeContext(importedB, {
           harness: "opencode",
           sessionId: "session-a",
           nativeCursor: turns.at(-1)!.id,
+          turns: [],
         });
         yield* Effect.promise(() =>
           writeFile(

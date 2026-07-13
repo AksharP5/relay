@@ -354,6 +354,8 @@ const PendingTurn = Schema.Struct({
   version: Schema.Literal(1),
   messages: Schema.Array(RelayMessage),
   thread: RelayThread,
+  replaceEvents: Schema.optional(Schema.Boolean),
+  visibility: Schema.optional(NativeVisibility),
 });
 type PendingTurn = typeof PendingTurn.Type;
 
@@ -431,6 +433,21 @@ const recoverThreadLocked = async (thread: RelayThread): Promise<RecoveredThread
   const latestPending = await readJson<PendingTurn>(pendingPath(thread.id), PendingTurn);
   const latestMessages = await readRawMessages(thread.id, { repairTail: true });
   if (latestPending) {
+    if (latestPending.replaceEvents) {
+      const eventText =
+        latestPending.messages.length > 0
+          ? `${latestPending.messages.map((message) => JSON.stringify(message)).join("\n")}\n`
+          : "";
+      await atomicTextWrite(eventsPath(thread.id), eventText);
+      await atomicJsonWrite(
+        visibilityPath(thread.id),
+        latestPending.visibility ?? { hidden: [], links: [] },
+      );
+      await writeThread(latestPending.thread);
+      await rm(undoPath(thread.id), { force: true });
+      await rm(pendingPath(thread.id), { force: true });
+      return { thread: latestPending.thread, messages: [...latestPending.messages] };
+    }
     const existingIds = new Set(latestMessages.map((message) => message.id));
     const missing = latestPending.messages.filter((message) => !existingIds.has(message.id));
     if (missing.length > 0) {
@@ -620,6 +637,8 @@ export interface ResetNativeContextInput {
   readonly sessionId: string;
   readonly nativeCursor?: string;
   readonly model?: string;
+  readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+  readonly hiddenTurnIds?: ReadonlyArray<string>;
 }
 
 export interface ImportNativeTurnsInput {
@@ -1169,11 +1188,35 @@ export class ThreadStore extends Context.Service<
         Effect.tryPromise({
           try: async () => {
             const now = new Date().toISOString();
+            let nextSeq = thread.lastSeq;
+            const messages = input.turns.flatMap((turn): ReadonlyArray<RelayMessage> => {
+              const user: RelayMessage = {
+                id: crypto.randomUUID(),
+                seq: ++nextSeq,
+                role: "user",
+                content: turn.prompt,
+                harness: input.harness,
+                nativeId: turn.id,
+                nativeSessionId: input.sessionId,
+                createdAt: now,
+              };
+              const assistant: RelayMessage = {
+                id: crypto.randomUUID(),
+                seq: ++nextSeq,
+                role: "assistant",
+                content: turn.response,
+                harness: input.harness,
+                nativeId: turn.id,
+                nativeSessionId: input.sessionId,
+                createdAt: now,
+              };
+              return [user, assistant];
+            });
             const binding: HarnessBinding = {
               harness: input.harness,
               sessionId: input.sessionId,
               ...(input.model ? { model: input.model } : {}),
-              lastSyncedSeq: thread.lastSeq,
+              lastSyncedSeq: nextSeq,
               ...(input.nativeCursor ? { nativeCursor: input.nativeCursor } : {}),
               createdAt: now,
               updatedAt: now,
@@ -1190,23 +1233,45 @@ export class ThreadStore extends Context.Service<
                 ...thread.preferredModels,
                 ...(binding.model ? { [input.harness]: binding.model } : {}),
               },
+              lastSeq: nextSeq,
+              ...(input.turns.length > 0 &&
+              (thread.title === "New Relay task" || thread.title === "Untitled task")
+                ? {
+                    title:
+                      input.turns[0]!.prompt.length <= 64
+                        ? input.turns[0]!.prompt
+                        : `${input.turns[0]!.prompt.slice(0, 61)}...`,
+                  }
+                : {}),
               updatedAt: now,
             };
-            // Invalidate redo and pending-turn state before publishing the new
-            // context boundary. A stop at any later compaction point can then
-            // recover the new context without restoring pre-adoption metadata.
-            await Promise.all([
-              rm(pendingPath(thread.id), { force: true }),
-              rm(undoPath(thread.id), { force: true }),
-            ]);
+            const visibility: NativeVisibility = {
+              hidden: (input.hiddenTurnIds ?? []).map((nativeId) =>
+                visibilityKey(input.harness, input.sessionId, nativeId),
+              ),
+              links: [],
+            };
+            const pending: PendingTurn = {
+              version: 1,
+              messages: [...messages],
+              thread: updated,
+              replaceEvents: true,
+              visibility,
+            };
+            // The replacement journal is written before any part of the old
+            // context is removed. Recovery replays this exact event set and
+            // metadata, so a crash cannot let a newer turn overtake adoption.
+            await atomicJsonWrite(pendingPath(thread.id), pending);
+            await rm(undoPath(thread.id), { force: true });
+            await atomicTextWrite(
+              eventsPath(thread.id),
+              messages.length > 0
+                ? `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`
+                : "",
+            );
+            await atomicJsonWrite(visibilityPath(thread.id), visibility);
             await writeThread(updated);
-            // A selected native conversation replaces Relay's active context.
-            // Compact the superseded canonical prefix instead of making every
-            // later synchronization reload data that can no longer be handed
-            // off, displayed, exported, or undone. The vendor session remains
-            // the source of truth if the user deliberately adopts it again.
-            await atomicTextWrite(eventsPath(thread.id), "");
-            await atomicJsonWrite(visibilityPath(thread.id), { hidden: [], links: [] });
+            await rm(pendingPath(thread.id), { force: true });
             return updated;
           },
           catch: (cause) =>

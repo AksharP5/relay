@@ -67,10 +67,30 @@ const makeController = () => {
       return thread;
     },
     resetContext: async (input) => {
+      const contextStartSeq = thread.lastSeq;
+      messages.splice(0, messages.length);
+      let nextSeq = contextStartSeq;
+      for (const turn of input.turns) {
+        for (const [role, content] of [
+          ["user", turn.prompt],
+          ["assistant", turn.response],
+        ] as const) {
+          messages.push({
+            id: `${turn.id}-${role}`,
+            seq: ++nextSeq,
+            role,
+            content,
+            harness: input.harness,
+            nativeId: turn.id,
+            nativeSessionId: input.sessionId,
+            createdAt: now,
+          });
+        }
+      }
       const binding = {
         harness: input.harness,
         sessionId: input.sessionId,
-        lastSyncedSeq: thread.lastSeq,
+        lastSyncedSeq: nextSeq,
         ...(input.nativeCursor ? { nativeCursor: input.nativeCursor } : {}),
         createdAt: now,
         updatedAt: now,
@@ -78,7 +98,8 @@ const makeController = () => {
       thread = {
         ...thread,
         activeHarness: input.harness,
-        contextStartSeq: thread.lastSeq,
+        contextStartSeq,
+        lastSeq: nextSeq,
         bindings: input.harness === "codex" ? { codex: binding } : { opencode: binding },
         pendingHandoffs: {},
       };
@@ -458,6 +479,57 @@ describe("native Relay host", () => {
     });
   });
 
+  it("coalesces repeated submit snapshots into one active and one trailing probe", async () => {
+    const { controller } = makeController();
+    await controller.bind({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "warm-session",
+      lastSyncedSeq: 0,
+    });
+    let calls = 0;
+    let active = 0;
+    let maxActive = 0;
+    const releases: Array<() => void> = [];
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ sessionId: "warm-session", handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({ turns: [], hiddenTurnIds: [], cwd: process.cwd() }),
+      completedCursor: async () => {
+        calls += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active -= 1;
+        return "completed-turn";
+      },
+      isMaterialized: async () => true,
+      isIdle: async () => true,
+      sessionCwd: async () => process.cwd(),
+      resolveSession: async (fallback) => fallback,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      runTui: async (_command, _onSwitchRequest, onSubmitObserved) => {
+        const snapshots = Array.from({ length: 25 }, () => onSubmitObserved());
+        for (let attempt = 0; calls < 1 && attempt < 20; attempt += 1) await Bun.sleep(0);
+        expect(calls).toBe(1);
+        expect(maxActive).toBe(1);
+        releases.shift()?.();
+        for (let attempt = 0; calls < 2 && attempt < 20; attempt += 1) await Bun.sleep(0);
+        expect(calls).toBe(2);
+        expect(maxActive).toBe(1);
+        releases.shift()?.();
+        await Promise.all(snapshots);
+        expect(calls).toBe(2);
+        return { reason: "exit", exitCode: 0 };
+      },
+    });
+  });
+
   it("latches repeated direct-toggle input across native process launches", async () => {
     const { controller } = makeController();
     let clock = 0;
@@ -730,12 +802,7 @@ describe("native Relay host", () => {
     });
 
     expect(injections).toEqual([]);
-    expect(messages.map((message) => message.content)).toEqual([
-      "old prompt",
-      "old answer",
-      "new prompt",
-      "new answer",
-    ]);
+    expect(messages.map((message) => message.content)).toEqual(["new prompt", "new answer"]);
     expect(thread().bindings.codex).toMatchObject({
       sessionId: "new-session",
       lastSyncedSeq: 4,

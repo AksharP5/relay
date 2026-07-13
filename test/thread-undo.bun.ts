@@ -79,6 +79,7 @@ describe("canonical undo and redo", () => {
         const adopted = yield* store.resetNativeContext(undone, {
           harness: "opencode",
           sessionId: "selected-session",
+          turns: [],
         });
         expect(yield* store.canRedoLastTurn(adopted, "opencode")).toBe(false);
         const redoExit = yield* Effect.exit(store.redoLastTurn(adopted, "opencode"));

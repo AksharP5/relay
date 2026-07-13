@@ -470,14 +470,6 @@ describe("Relay session transitions", () => {
           harness: "opencode",
           sessionId: "standalone-session",
           nativeCursor: "standalone-turn",
-        });
-        expect(reset.contextStartSeq).toBe(4);
-        expect(reset.bindings.codex).toBeUndefined();
-
-        yield* relay.importNativeTurns({
-          threadId: thread.id,
-          harness: "opencode",
-          sessionId: "standalone-session",
           turns: [
             {
               id: "standalone-turn",
@@ -486,6 +478,8 @@ describe("Relay session transitions", () => {
             },
           ],
         });
+        expect(reset.contextStartSeq).toBe(4);
+        expect(reset.bindings.codex).toBeUndefined();
 
         expect((yield* relay.historyFor(thread.id)).map((message) => message.content)).toEqual([
           "Existing native request",

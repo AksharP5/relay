@@ -101,6 +101,8 @@ export class RelayService extends Context.Service<
       readonly sessionId: string;
       readonly nativeCursor?: string;
       readonly model?: string;
+      readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+      readonly hiddenTurnIds?: ReadonlyArray<string>;
     }) => Effect.Effect<RelayThread, unknown>;
     readonly beginNativeHandoff: (input: {
       readonly threadId: string;
@@ -441,6 +443,8 @@ export class RelayService extends Context.Service<
           readonly sessionId: string;
           readonly nativeCursor?: string;
           readonly model?: string;
+          readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+          readonly hiddenTurnIds?: ReadonlyArray<string>;
         }) =>
           Effect.gen(function* () {
             const lock = yield* store.acquireLock(input.threadId);
