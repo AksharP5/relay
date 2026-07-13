@@ -490,6 +490,56 @@ describe("native Relay host", () => {
     ).resolves.toBe("warm-session");
   });
 
+  it("adopts a materialized native /new session without appending old context behind it", async () => {
+    const { controller, messages, thread } = makeController();
+    await controller.importTurns({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "warm-session",
+      turns: [{ id: "warm-turn", prompt: "old prompt", response: "old answer" }],
+    });
+    let resolvedSession = "warm-session";
+    const injections: Array<Array<string>> = [];
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ sessionId: "warm-session", handoffInjected: false }),
+      inject: async (_sessionId, delta) =>
+        void injections.push(delta.map((message) => message.content)),
+      read: async (sessionId) => ({
+        turns:
+          sessionId === "warm-session"
+            ? [{ id: "warm-turn", prompt: "old prompt", response: "old answer" }]
+            : [{ id: "new-turn", prompt: "new prompt", response: "new answer" }],
+        hiddenTurnIds: [],
+      }),
+      isMaterialized: async () => true,
+      isIdle: async () => true,
+      resolveSession: async () => resolvedSession,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      runTui: async () => {
+        resolvedSession = "new-session";
+        return { reason: "exit", exitCode: 0 };
+      },
+    });
+
+    expect(injections).toEqual([]);
+    expect(messages.map((message) => message.content)).toEqual([
+      "old prompt",
+      "old answer",
+      "new prompt",
+      "new answer",
+    ]);
+    expect(thread().bindings.codex).toMatchObject({
+      sessionId: "new-session",
+      lastSyncedSeq: 4,
+      nativeCursor: "new-turn",
+    });
+  });
+
   it("does not persist an unresumable empty Codex thread", async () => {
     const { controller, thread } = makeController();
     const backend: NativeBackend = {

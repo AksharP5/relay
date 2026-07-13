@@ -123,7 +123,14 @@ describe("OpenCode native backend", () => {
         headers,
       });
       expect(closeEvents.ok).toBe(true);
+      const missedDuringGap = await fetch(new URL(`/session?directory=${process.cwd()}`, baseUrl), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({}),
+      });
+      expect(missedDuringGap.ok).toBe(true);
       await Bun.sleep(150);
+      await expect(backend.resolveSession(sessionId, true)).rejects.toThrow("reconnecting");
       const afterReconnect = await fetch(new URL(`/session?directory=${process.cwd()}`, baseUrl), {
         method: "POST",
         headers,
@@ -131,7 +138,25 @@ describe("OpenCode native backend", () => {
       });
       const reconnectedSession = (await afterReconnect.json()) as { id: string };
       await Bun.sleep(50);
-      expect(await backend.resolveSession(sessionId)).toBe(reconnectedSession.id);
+      expect(await backend.resolveSession(sessionId, true)).toBe(reconnectedSession.id);
+
+      const closeAgain = await fetch(new URL("/test/close-events", baseUrl), {
+        method: "POST",
+        headers,
+      });
+      expect(closeAgain.ok).toBe(true);
+      await Bun.sleep(250);
+      const afterSecondReconnect = await fetch(
+        new URL(`/session?directory=${process.cwd()}`, baseUrl),
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({}),
+        },
+      );
+      const secondReconnectedSession = (await afterSecondReconnect.json()) as { id: string };
+      await Bun.sleep(50);
+      expect(await backend.resolveSession(sessionId, true)).toBe(secondReconnectedSession.id);
     } finally {
       await backend.close();
     }

@@ -64,12 +64,13 @@ export class OpenCodeNativeBackend {
   readonly #executable: string;
   readonly #cwd: string;
   readonly #eventAbort = new AbortController();
+  readonly #requestAbort = new AbortController();
   readonly #sessionParents = new Map<string, string>();
   #eventLoop: Promise<void> | undefined;
   #observeTui = false;
   #observerHealthy = false;
+  #observerGap = false;
   #observedRoot: string | undefined;
-  #tuiStartedAt: number | undefined;
 
   private constructor(server: RunningOpenCodeServer, executable: string, cwd: string) {
     this.#server = server;
@@ -131,19 +132,22 @@ export class OpenCodeNativeBackend {
     let stream = firstStream;
     let retryMs = 50;
     while (!this.#eventAbort.signal.aborted) {
+      const connectedAt = Date.now();
       try {
         await this.#consumeEvents(stream);
       } catch {
         // Reconnect below unless close() deliberately aborted the stream.
       }
       this.#observerHealthy = false;
+      this.#observerGap = true;
       if (this.#eventAbort.signal.aborted) return;
+      retryMs =
+        Date.now() - connectedAt >= 1_000 ? 50 : Math.min(1_000, Math.max(100, retryMs * 2));
       while (!this.#eventAbort.signal.aborted) {
         await Bun.sleep(retryMs);
         try {
           stream = await this.#openEventStream();
           this.#observerHealthy = true;
-          retryMs = 50;
           break;
         } catch {
           if (this.#eventAbort.signal.aborted) return;
@@ -207,6 +211,7 @@ export class OpenCodeNativeBackend {
         event?.type === "message.updated"
       ) {
         this.#observedRoot = this.#rootSession(sessionId);
+        this.#observerGap = false;
       }
     }
   }
@@ -223,20 +228,35 @@ export class OpenCodeNativeBackend {
 
   async #get(path: string, timeoutMs: number) {
     let lastFailure: unknown;
+    const deadline = Date.now() + timeoutMs;
     for (let attempt = 0; attempt < 4; attempt += 1) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0)
+        throw lastFailure ?? new DOMException("The operation timed out", "TimeoutError");
       try {
         const response = await fetch(this.#url(path), {
           headers: this.#headers(),
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: AbortSignal.any([
+            this.#requestAbort.signal,
+            AbortSignal.timeout(Math.max(1, remaining)),
+          ]),
         });
         const retryable = response.status >= 500 && response.status <= 504;
         if (!retryable || attempt === 3) return response;
+        const retryDelay = [100, 250, 500][attempt] ?? 500;
+        if (Date.now() + retryDelay >= deadline) {
+          await response.body?.cancel();
+          return response;
+        }
         await response.body?.cancel();
       } catch (cause) {
         lastFailure = cause;
-        if (attempt === 3) throw cause;
+        if (this.#requestAbort.signal.aborted || attempt === 3 || Date.now() >= deadline)
+          throw cause;
       }
-      await Bun.sleep([100, 250, 500][attempt] ?? 500);
+      await Bun.sleep(
+        Math.max(0, Math.min([100, 250, 500][attempt] ?? 500, deadline - Date.now())),
+      );
     }
     throw lastFailure;
   }
@@ -262,7 +282,7 @@ export class OpenCodeNativeBackend {
       method: "POST",
       headers: this.#headers(true),
       body: JSON.stringify({ title: input.title }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.any([this.#requestAbort.signal, AbortSignal.timeout(15_000)]),
     });
     if (!response.ok)
       throw new Error(`OpenCode session creation failed with HTTP ${response.status}`);
@@ -280,7 +300,7 @@ export class OpenCodeNativeBackend {
         noReply: true,
         parts: [{ type: "text", text: buildHandoff(messages, omittedMessages), synthetic: true }],
       }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.any([this.#requestAbort.signal, AbortSignal.timeout(30_000)]),
     });
     if (!response.ok) throw new Error(`OpenCode handoff failed with HTTP ${response.status}`);
     await response.body?.cancel();
@@ -316,7 +336,7 @@ export class OpenCodeNativeBackend {
   }
 
   async isIdle(sessionId: string) {
-    const response = await this.#get("/session/status", 15_000);
+    const response = await this.#get("/session/status", 2_000);
     if (!response.ok) throw new Error(`OpenCode status failed with HTTP ${response.status}`);
     const statuses = asObject(await response.json());
     const type = asObject(statuses?.[sessionId])?.type;
@@ -327,7 +347,7 @@ export class OpenCodeNativeBackend {
     const response = await fetch(this.#url(`/session/${encodeURIComponent(sessionId)}`), {
       method: "DELETE",
       headers: this.#headers(),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.any([this.#requestAbort.signal, AbortSignal.timeout(15_000)]),
     });
     if (!response.ok)
       throw new Error(`OpenCode session deletion failed with HTTP ${response.status}`);
@@ -335,38 +355,16 @@ export class OpenCodeNativeBackend {
   }
 
   /** Detects sessions created or used through native /new and /sessions commands. */
-  async resolveSession(fallbackSessionId?: string) {
-    if (!this.#observerHealthy && this.#tuiStartedAt !== undefined) {
-      const response = await this.#get("/session", 15_000);
-      if (!response.ok)
-        throw new Error(`OpenCode session tracking failed with HTTP ${response.status}`);
-      const sessions: unknown = await response.json();
-      const recent = Array.isArray(sessions)
-        ? sessions
-            .flatMap((candidate) => {
-              const session = asObject(candidate);
-              const time = asObject(session?.time);
-              const updated =
-                typeof time?.updated === "number"
-                  ? time.updated
-                  : typeof time?.created === "number"
-                    ? time.created
-                    : 0;
-              return typeof session?.id === "string" && updated >= this.#tuiStartedAt!
-                ? [{ id: session.id, updated }]
-                : [];
-            })
-            .sort((left, right) => right.updated - left.updated)[0]?.id
-        : undefined;
-      if (recent) this.#observedRoot = this.#rootSession(recent);
-    }
+  async resolveSession(fallbackSessionId?: string, requireCurrentObservation = false) {
+    if ((!this.#observerHealthy || this.#observerGap) && requireCurrentObservation)
+      throw new Error("OpenCode session observation is reconnecting");
     return this.#observedRoot ?? fallbackSessionId;
   }
 
   command(sessionId?: string): NativeTuiCommand {
     this.#observeTui = true;
     this.#observedRoot = sessionId;
-    this.#tuiStartedAt = Date.now();
+    if (this.#observerHealthy) this.#observerGap = false;
     return {
       executable: this.#executable,
       args: [
@@ -383,6 +381,7 @@ export class OpenCodeNativeBackend {
 
   async close() {
     this.#eventAbort.abort();
+    this.#requestAbort.abort();
     await this.#eventLoop?.catch(() => undefined);
     await this.#server.close();
   }

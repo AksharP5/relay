@@ -162,7 +162,8 @@ export class RelayService extends Context.Service<
                 thread = yield* store.abandonNativeHandoff(thread, harness);
               }
               const binding = thread.bindings[harness];
-              const model = input.model ?? binding?.model ?? thread.preferredModels?.[harness];
+              const model =
+                input.model ?? (binding ? undefined : thread.preferredModels?.[harness]);
               const handoff = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
 
               const nativeResult = yield* harnesses

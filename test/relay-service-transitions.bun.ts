@@ -205,6 +205,7 @@ describe("Relay session transitions", () => {
     );
 
     expect(attempts[1]?.sessionId).toBe("session-1");
+    expect(attempts[1]?.model).toBeUndefined();
     expect(attempts[2]?.sessionId).toBeUndefined();
     expect(attempts[2]?.model).toBe("gpt-test");
     expect(attempts[2]?.handoff.map((message) => message.content)).toEqual(["First", "response-1"]);

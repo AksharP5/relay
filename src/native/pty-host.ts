@@ -56,6 +56,8 @@ export interface NativePtyOptions {
   readonly preserveInputOnSwitch?: boolean;
   /** Maximum input retained while the next harness starts. */
   readonly handoffInputLimitBytes?: number;
+  /** Maximum queued input or output retained under PTY backpressure. */
+  readonly ioQueueLimitBytes?: number;
   /** Return false to leave the native TUI running (for example, during an active turn). */
   readonly onSwitchRequest?: (recentSubmit?: boolean) => boolean | Promise<boolean>;
 }
@@ -87,6 +89,7 @@ interface NativeInputPump extends BoundedInputBuffer {
 }
 
 const DEFAULT_HANDOFF_INPUT_LIMIT_BYTES = 256 * 1024;
+const DEFAULT_IO_QUEUE_LIMIT_BYTES = 4 * 1024 * 1024;
 const nativeInputPumps = new WeakMap<HostInput, NativeInputPump>();
 
 const bytesFrom = (chunk: Buffer | Uint8Array | string) =>
@@ -163,6 +166,7 @@ export const runNativeTui = async (
     0,
     options.handoffInputLimitBytes ?? DEFAULT_HANDOFF_INPUT_LIMIT_BYTES,
   );
+  const ioQueueLimitBytes = Math.max(0, options.ioQueueLimitBytes ?? DEFAULT_IO_QUEUE_LIMIT_BYTES);
   const pendingSwitchInput: BoundedInputBuffer = {
     buffered: [],
     bufferedBytes: 0,
@@ -174,17 +178,26 @@ export const runNativeTui = async (
   const ptyEof = new Promise<void>((resolve) => (resolvePtyEof = resolve));
   const inputQueue: Array<Uint8Array> = [];
   const outputQueue: Array<Uint8Array> = [];
+  let inputQueueBytes = 0;
+  let outputQueueBytes = 0;
   const outputDrainWaiters = new Set<() => void>();
   let outputBlocked = false;
+
+  const failHost = (message: string) => {
+    if (hostFailure || parentSignal) return;
+    hostFailure = new Error(message);
+    if (child) stopping = stopProcessTree(child);
+  };
 
   const flushInput = () => {
     if (!terminal || terminal.closed) return;
     while (inputQueue.length > 0) {
       const next = inputQueue[0]!;
-      const written = terminal.write(next);
+      const written = Math.max(0, Math.min(next.byteLength, terminal.write(next)));
+      inputQueueBytes -= written;
       if (written >= next.byteLength) inputQueue.shift();
       else {
-        inputQueue[0] = next.slice(Math.max(0, written));
+        inputQueue[0] = next.slice(written);
         return;
       }
     }
@@ -192,13 +205,26 @@ export const runNativeTui = async (
 
   const writeInput = (data: Uint8Array) => {
     if (data.byteLength === 0) return;
-    inputQueue.push(data.slice());
+    let remaining = data;
+    if (inputQueue.length === 0 && terminal && !terminal.closed) {
+      const written = Math.max(0, Math.min(data.byteLength, terminal.write(data)));
+      if (written >= data.byteLength) return;
+      remaining = data.slice(written);
+    }
+    if (inputQueueBytes + remaining.byteLength > ioQueueLimitBytes) {
+      failHost("Relay input backpressure exceeded its memory limit");
+      return;
+    }
+    inputQueue.push(remaining.slice());
+    inputQueueBytes += remaining.byteLength;
     flushInput();
   };
   const flushOutput = () => {
     outputBlocked = false;
     while (outputQueue.length > 0) {
-      const accepted = io.output.write(outputQueue.shift()!);
+      const next = outputQueue.shift()!;
+      outputQueueBytes -= next.byteLength;
+      const accepted = io.output.write(next);
       if (accepted === false) {
         outputBlocked = true;
         io.output.once?.("drain", flushOutput);
@@ -210,7 +236,12 @@ export const runNativeTui = async (
   };
   const writeOutput = (data: Uint8Array) => {
     if (outputBlocked) {
+      if (outputQueueBytes + data.byteLength > ioQueueLimitBytes) {
+        failHost("Relay output backpressure exceeded its memory limit");
+        return;
+      }
       outputQueue.push(data.slice());
+      outputQueueBytes += data.byteLength;
       return;
     }
     const accepted = io.output.write(data);
@@ -232,7 +263,14 @@ export const runNativeTui = async (
     }
     if (parentSignal) return;
     if (switchCheckPending) {
-      bufferBoundedInput(pendingSwitchInput, bytes, handoffInputLimitBytes);
+      let sawInterrupt = false;
+      const filtered = bytes.filter((byte) => {
+        if (byte !== 0x03) return true;
+        sawInterrupt = true;
+        return false;
+      });
+      if (sawInterrupt) io.resizeSource.emit("SIGINT");
+      bufferBoundedInput(pendingSwitchInput, filtered, handoffInputLimitBytes);
       return;
     }
     const routed = router.route(bytes);

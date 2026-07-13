@@ -52,6 +52,15 @@ class TestOutput {
   }
 }
 
+class BlockedOutput extends TestOutput {
+  override write(data: string | Uint8Array) {
+    super.write(data);
+    return false;
+  }
+
+  once(_event: "drain", _listener: () => void) {}
+}
+
 const running: Array<Promise<unknown>> = [];
 
 afterEach(async () => {
@@ -610,5 +619,44 @@ describe("native PTY host", () => {
     expect(output.chunks.some((chunk) => chunk.includes(0x07))).toBe(true);
     resize.emit("SIGTERM");
     expect(await result).toEqual({ reason: "signal", signal: "SIGTERM" });
+  });
+
+  it("allows Ctrl+C to interrupt an asynchronous switch guard", async () => {
+    const input = new TestInput();
+    const resize = new EventEmitter();
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output: new TestOutput(), resizeSource: resize },
+      { onSwitchRequest: () => new Promise<boolean>(() => undefined) },
+    );
+    running.push(result);
+
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from("\u001b[17~"));
+    input.emit("data", Buffer.from([0x03]));
+    expect(await result).toEqual({ reason: "signal", signal: "SIGINT" });
+  });
+
+  it("terminates instead of accumulating unbounded output under backpressure", async () => {
+    const input = new TestInput();
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+        env: { FAKE_NATIVE_OUTPUT_BYTES: "32" },
+      },
+      { input, output: new BlockedOutput(), resizeSource: new EventEmitter() },
+      { ioQueueLimitBytes: 8 },
+    );
+    running.push(result);
+
+    await expect(result).rejects.toThrow("output backpressure exceeded");
+    expect(input.isRaw).toBe(false);
+    expect(input.listenerCount("data")).toBe(0);
   });
 });

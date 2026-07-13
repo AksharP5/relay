@@ -37,7 +37,10 @@ export interface NativeBackend {
   readonly read: (sessionId: string) => Promise<NativeTranscript>;
   readonly isMaterialized?: (sessionId: string) => Promise<boolean>;
   readonly isIdle: (sessionId: string) => Promise<boolean>;
-  readonly resolveSession: (fallbackSessionId?: string) => Promise<string | undefined>;
+  readonly resolveSession: (
+    fallbackSessionId?: string,
+    requireCurrentObservation?: boolean,
+  ) => Promise<string | undefined>;
   readonly command: (sessionId?: string, model?: string) => NativeTuiCommand;
   readonly close: () => Promise<void>;
 }
@@ -96,7 +99,8 @@ const startBackend = async (
     read: (sessionId) => backend.read(sessionId),
     isMaterialized: async () => true,
     isIdle: (sessionId) => backend.isIdle(sessionId),
-    resolveSession: (sessionId) => backend.resolveSession(sessionId),
+    resolveSession: (sessionId, requireCurrentObservation) =>
+      backend.resolveSession(sessionId, requireCurrentObservation),
     command: (sessionId) => backend.command(sessionId),
     close: () => backend.close(),
   };
@@ -196,6 +200,37 @@ const synchronize = async (input: {
     ...(model ? { model } : {}),
   });
 
+  thread = await controller.importTurns({
+    threadId: input.thread.id,
+    harness,
+    sessionId,
+    turns,
+    hiddenTurnIds: transcript.hiddenTurnIds,
+    ...(model ? { model } : {}),
+  });
+  return thread;
+};
+
+const adoptNativeSession = async (input: {
+  readonly controller: NativeRelayController;
+  readonly thread: RelayThread;
+  readonly harness: Harness;
+  readonly sessionId: string;
+  readonly transcript: NativeTranscript;
+}) => {
+  const { controller, harness, sessionId, transcript } = input;
+  const model = input.thread.bindings[harness]?.model ?? input.thread.preferredModels?.[harness];
+  const turns = transcript.turns;
+  let thread = await controller.bind({
+    threadId: input.thread.id,
+    harness,
+    sessionId,
+    // Native navigation is an intentional context reset. Do not append the
+    // prior canonical log behind turns already completed in the selected session.
+    lastSyncedSeq: input.thread.lastSeq,
+    ...(turns.at(-1)?.id ? { nativeCursor: turns.at(-1)!.id } : {}),
+    ...(model ? { model } : {}),
+  });
   thread = await controller.importTurns({
     threadId: input.thread.id,
     harness,
@@ -337,7 +372,7 @@ const runHarness = async (
         try {
           for (let sample = 0; sample < 3; sample += 1) {
             await dependencies.wait(80);
-            sessionId = await backend.resolveSession(sessionId);
+            sessionId = await backend.resolveSession(sessionId, true);
             const sessionBecameCold =
               launchSessionId === undefined || sessionId !== launchSessionId;
             if (recentSubmit && sessionBecameCold) {
@@ -367,14 +402,23 @@ const runHarness = async (
         const materialized =
           turns.length > 0 || (await backend.isMaterialized?.(resolvedSessionId)) === true;
         if (resolvedSessionId === boundSessionId || materialized) {
-          thread = await synchronize({
-            controller,
-            backend,
-            thread,
-            harness,
-            sessionId: resolvedSessionId,
-            sessionChanged: resolvedSessionId !== boundSessionId,
-          });
+          thread =
+            resolvedSessionId === boundSessionId
+              ? await synchronize({
+                  controller,
+                  backend,
+                  thread,
+                  harness,
+                  sessionId: resolvedSessionId,
+                  sessionChanged: false,
+                })
+              : await adoptNativeSession({
+                  controller,
+                  thread,
+                  harness,
+                  sessionId: resolvedSessionId,
+                  transcript,
+                });
         }
       }
     } catch (cause) {

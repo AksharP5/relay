@@ -114,7 +114,7 @@ Relay refuses to detach while a turn is active, because doing so could strand an
 
 Relay cannot safely add `/harness` to both native command palettes today. Codex and OpenCode own different composer implementations, and Relay sees terminal bytes rather than semantic editor state. Intercepting the text would break native completion, Vim mode, dialogs, history editing, or external editors. Relay therefore leaves every slash command native and reserves only distinct keyboard sequences outside ordinary text entry.
 
-Native session navigation remains native. Relay detects a Codex thread created or resumed inside the Codex TUI, and an OpenCode session that becomes active through native work, then updates the task binding and imports its completed turns. Merely highlighting a different OpenCode session and switching away before any activity may not produce a server event; in that narrow case Relay can reopen the prior binding.
+Native session navigation remains native. Relay detects a Codex thread created or resumed inside the Codex TUI, and an OpenCode session that becomes active through native work, then updates the task binding and imports its completed turns. Moving to another native session is an intentional context reset: Relay never appends older task history behind turns already completed there. Merely highlighting a different OpenCode session and switching away before any activity—or navigating during a rare event-stream gap—may not produce a trustworthy server event; Relay keeps the prior binding rather than guessing.
 
 ## Headless commands
 

@@ -54,9 +54,9 @@ Before opening a bound destination, Relay:
 
 Computing the delta before importing out-of-band native turns is intentional. Importing first could advance the destination cursor past cross-harness messages that still need delivery.
 
-After the frontend exits, Relay resolves the session that was actually active and performs the same synchronization again. Headless turns are linked to their native turn IDs on first attachment rather than duplicated. OpenCode turns hidden by native undo remain in the append-only log with a visibility tombstone, so redo can restore them without reusing or renumbering message sequences.
+After the frontend exits, Relay resolves the session that was actually active and synchronizes it. Headless turns are linked to their native turn IDs on first attachment rather than duplicated. OpenCode turns hidden by native undo remain in the append-only log with a visibility tombstone, so redo can restore them without reusing or renumbering message sequences.
 
-If native `/new`, `/resume`, or session navigation moves to another materialized session, Relay rebinds the current task and avoids reinjecting messages already present in that native transcript. A selection that produces no server-visible activity can be impossible to distinguish from the prior session; Relay keeps the previous binding rather than guessing.
+If native `/new`, `/resume`, or session navigation moves to another materialized session, Relay treats that native action as an intentional context reset. It rebinds the current task and imports completed turns, but does not retroactively append the prior task log behind them. Future completed turns remain part of the canonical task and can cross to the other harness normally. A selection that produces no trustworthy server-visible activity can be impossible to distinguish from the prior session; Relay keeps the previous binding rather than guessing.
 
 ## What is injected
 
