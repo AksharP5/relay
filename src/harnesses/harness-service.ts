@@ -248,6 +248,7 @@ export class HarnessService extends Context.Service<
                   harness,
                   message: cause instanceof Error ? cause.message : String(cause),
                   stderr: cause instanceof Error ? cause.stack : String(cause),
+                  sessionState: "uncertain",
                 }),
             });
           }
@@ -271,6 +272,7 @@ export class HarnessService extends Context.Service<
                 new HarnessError({
                   harness,
                   message: cause instanceof Error ? cause.message : String(cause),
+                  sessionState: "uncertain",
                 }),
             });
           }
@@ -358,6 +360,7 @@ export class HarnessService extends Context.Service<
                     harness,
                     message: cause.message,
                     stderr: cause.stack ?? cause.message,
+                    sessionState: "uncertain",
                   }),
               ),
             );
@@ -374,6 +377,7 @@ export class HarnessService extends Context.Service<
                 : `${harness} exited before completing the turn`,
               exitCode: output.exitCode,
               stderr: diagnostic,
+              sessionState: contextLimit ? "preserve" : "uncertain",
             });
           }
 
@@ -385,6 +389,7 @@ export class HarnessService extends Context.Service<
               harness,
               message: `Could not find a native ${harness} session id in the command output`,
               stderr: output.stderr.trim().slice(-8_000),
+              sessionState: "uncertain",
             });
           }
           if (!parsedText.trim()) {
@@ -392,6 +397,7 @@ export class HarnessService extends Context.Service<
               harness,
               message: `${harness} completed without a text response`,
               stderr: output.stderr.trim().slice(-8_000),
+              sessionState: "uncertain",
             });
           }
 

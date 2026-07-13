@@ -135,6 +135,95 @@ describe("Relay session transitions", () => {
     ]);
   });
 
+  it("abandons an uncertain warm session so retry cannot duplicate a native append", async () => {
+    directory = await mkdtemp(join(tmpdir(), "relay-warm-retry-"));
+    process.env.RELAY_DATA_DIR = directory;
+    const attempts: Array<HarnessTurnInput> = [];
+    let call = 0;
+    const harnesses: typeof HarnessService.Service = {
+      run: (harness, input) => {
+        attempts.push(input);
+        call += 1;
+        if (call === 2) {
+          return Effect.fail(
+            new HarnessError({
+              harness,
+              message: "native state may have advanced",
+              sessionState: "uncertain",
+            }),
+          );
+        }
+        return Effect.succeed({ sessionId: `session-${call}`, text: `response-${call}` });
+      },
+      control: () => Effect.succeed({ message: "ok" }),
+      status: (harness) => Effect.succeed({ harness, installed: true, healthy: true }),
+      capabilities: (harness) => Effect.succeed({ harness, models: [], commands: [] }),
+    };
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const relay = yield* RelayService;
+        const thread = yield* relay.newThread({
+          title: "Warm retry",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        yield* relay.ask({ threadId: thread.id, prompt: "First" });
+        yield* relay.ask({ threadId: thread.id, prompt: "Second" }).pipe(Effect.flip);
+        expect((yield* relay.current()).bindings.codex).toBeUndefined();
+        yield* relay.ask({ threadId: thread.id, prompt: "Second" });
+      }).pipe(Effect.provide(makeLayer(harnesses))),
+    );
+
+    expect(attempts[1]?.sessionId).toBe("session-1");
+    expect(attempts[2]?.sessionId).toBeUndefined();
+    expect(attempts[2]?.handoff.map((message) => message.content)).toEqual(["First", "response-1"]);
+  });
+
+  it("preserves a context-limited warm session so compact targets the same binding", async () => {
+    directory = await mkdtemp(join(tmpdir(), "relay-context-compact-"));
+    process.env.RELAY_DATA_DIR = directory;
+    let calls = 0;
+    const compactedSessions: Array<string> = [];
+    const harnesses: typeof HarnessService.Service = {
+      run: (harness) => {
+        calls += 1;
+        return calls === 1
+          ? Effect.succeed({ sessionId: "context-session", text: "first response" })
+          : Effect.fail(
+              new HarnessError({
+                harness,
+                message: "context limit",
+                sessionState: "preserve",
+              }),
+            );
+      },
+      control: (_harness, input) => {
+        compactedSessions.push(input.sessionId);
+        return Effect.succeed({ message: "compacted" });
+      },
+      status: (harness) => Effect.succeed({ harness, installed: true, healthy: true }),
+      capabilities: (harness) => Effect.succeed({ harness, models: [], commands: [] }),
+    };
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const relay = yield* RelayService;
+        const thread = yield* relay.newThread({
+          title: "Context compact",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        yield* relay.ask({ threadId: thread.id, prompt: "First" });
+        yield* relay.ask({ threadId: thread.id, prompt: "Too large" }).pipe(Effect.flip);
+        expect((yield* relay.current()).bindings.codex?.sessionId).toBe("context-session");
+        yield* relay.control({ threadId: thread.id, harness: "codex", action: "compact" });
+      }).pipe(Effect.provide(makeLayer(harnesses))),
+    );
+
+    expect(compactedSessions).toEqual(["context-session"]);
+  });
+
   it("rejects an interleaved OpenCode undo before mutating the native session", async () => {
     directory = await mkdtemp(join(tmpdir(), "relay-interleaved-undo-"));
     process.env.RELAY_DATA_DIR = directory;

@@ -403,6 +403,10 @@ export class ThreadStore extends Context.Service<
       thread: RelayThread,
       harness: Harness,
     ) => Effect.Effect<RelayThread, StoreError>;
+    readonly dropBinding: (
+      thread: RelayThread,
+      harness: Harness,
+    ) => Effect.Effect<RelayThread, StoreError>;
     readonly undoLastTurn: (
       thread: RelayThread,
       harness: Harness,
@@ -679,6 +683,28 @@ export class ThreadStore extends Context.Service<
         },
         catch: (cause) =>
           new StoreError({ operation: "set harness", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    dropBinding: Effect.fn("ThreadStore.dropBinding")((thread: RelayThread, harness: Harness) =>
+      Effect.tryPromise({
+        try: async () => {
+          const bindings = { ...thread.bindings };
+          delete bindings[harness];
+          const updated: RelayThread = {
+            ...thread,
+            bindings,
+            updatedAt: new Date().toISOString(),
+          };
+          await atomicJsonWrite(metadataPath(thread.id), updated);
+          return updated;
+        },
+        catch: (cause) =>
+          new StoreError({
+            operation: "drop uncertain binding",
+            message: errorMessage(cause),
+            cause,
+          }),
       }),
     ),
 

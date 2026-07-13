@@ -34,6 +34,7 @@ export class HarnessError extends Schema.TaggedErrorClass<HarnessError>()("Harne
   message: Schema.String,
   exitCode: Schema.optional(Schema.Number),
   stderr: Schema.optional(Schema.String),
+  sessionState: Schema.optional(Schema.Literals(["preserve", "uncertain"])),
 }) {}
 
 export class CliError extends Schema.TaggedErrorClass<CliError>()("CliError", {

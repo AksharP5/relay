@@ -122,18 +122,28 @@ export class RelayService extends Context.Service<
             const model = input.model ?? binding?.model;
             const handoff = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
 
-            const nativeResult = yield* harnesses.run(harness, {
-              cwd: thread.cwd,
-              prompt: input.prompt,
-              handoff: handoff.messages,
-              ...(handoff.omittedMessages
-                ? { handoffOmittedMessages: handoff.omittedMessages }
-                : {}),
-              ...(binding ? { sessionId: binding.sessionId } : {}),
-              ...(model ? { model } : {}),
-              ...(input.command ? { command: input.command } : {}),
-              ...(input.onProgress ? { onProgress: input.onProgress } : {}),
-            });
+            const nativeResult = yield* harnesses
+              .run(harness, {
+                cwd: thread.cwd,
+                prompt: input.prompt,
+                handoff: handoff.messages,
+                ...(handoff.omittedMessages
+                  ? { handoffOmittedMessages: handoff.omittedMessages }
+                  : {}),
+                ...(binding ? { sessionId: binding.sessionId } : {}),
+                ...(model ? { model } : {}),
+                ...(input.command ? { command: input.command } : {}),
+                ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+              })
+              .pipe(
+                Effect.catchTag("HarnessError", (error) =>
+                  binding && error.sessionState === "uncertain"
+                    ? store
+                        .dropBinding(thread, harness)
+                        .pipe(Effect.flatMap(() => Effect.fail(error)))
+                    : Effect.fail(error),
+                ),
+              );
 
             const committed = yield* store.commitTurn(thread, {
               harness,
