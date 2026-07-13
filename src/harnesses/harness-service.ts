@@ -34,6 +34,11 @@ const cleanVersion = (value: string) => value.trim().split("\n")[0] ?? value.tri
 const maxResponseChars = 2_000_000;
 const contextLimitPattern =
   /(context (?:window|length|limit)|maximum context|too many (?:input )?tokens|prompt is too long|input is too long)/i;
+export const sessionStateForFailure = (cause: unknown): "preserve" | "uncertain" => {
+  const diagnostic =
+    cause instanceof Error ? `${cause.message}\n${cause.stack ?? ""}` : String(cause);
+  return contextLimitPattern.test(diagnostic) ? "preserve" : "uncertain";
+};
 
 const relayCommands: ReadonlyArray<HarnessCommand> = [
   { name: "model", description: "Choose the model for this harness", source: "relay" },
@@ -248,7 +253,7 @@ export class HarnessService extends Context.Service<
                   harness,
                   message: cause instanceof Error ? cause.message : String(cause),
                   stderr: cause instanceof Error ? cause.stack : String(cause),
-                  sessionState: "uncertain",
+                  sessionState: sessionStateForFailure(cause),
                 }),
             });
           }
@@ -272,7 +277,7 @@ export class HarnessService extends Context.Service<
                 new HarnessError({
                   harness,
                   message: cause instanceof Error ? cause.message : String(cause),
-                  sessionState: "uncertain",
+                  sessionState: sessionStateForFailure(cause),
                 }),
             });
           }
@@ -360,7 +365,7 @@ export class HarnessService extends Context.Service<
                     harness,
                     message: cause.message,
                     stderr: cause.stack ?? cause.message,
-                    sessionState: "uncertain",
+                    sessionState: sessionStateForFailure(cause),
                   }),
               ),
             );

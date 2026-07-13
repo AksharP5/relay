@@ -614,4 +614,23 @@ describe("Relay TUI", () => {
     await renderer.waitFor(() => asks.length === 1);
     expect(asks).toEqual([{ harness: "opencode", model: "openai/gpt-5.6-sol" }]);
   });
+
+  it.each(["quit", "exit"])("closes the renderer through /%s", async (command) => {
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => initial,
+      switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
+      ask: async () => ({ thread: makeThread("codex"), messages: [] }),
+    };
+    renderer = await testRender(() => <RelayApp controller={controller} initial={initial} />, {
+      width: 88,
+      height: 28,
+    });
+    await renderer.mockInput.typeText(`/${command}`);
+    renderer.mockInput.pressEnter();
+    await renderer.waitFor(() => renderer?.renderer.isDestroyed === true);
+    expect(renderer.renderer.isDestroyed).toBe(true);
+  });
 });

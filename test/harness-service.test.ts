@@ -1,6 +1,6 @@
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
-import { HarnessService } from "../src/harnesses/harness-service.ts";
+import { HarnessService, sessionStateForFailure } from "../src/harnesses/harness-service.ts";
 import { ProcessRunner, type ProcessInput } from "../src/services/process-runner.ts";
 
 const runWithFake = async (harness: "codex" | "opencode", sessionId?: string, model?: string) => {
@@ -56,6 +56,11 @@ const runWithFake = async (harness: "codex" | "opencode", sessionId?: string, mo
 };
 
 describe("HarnessService", () => {
+  it("preserves bindings only for recognizable context-limit failures", () => {
+    expect(sessionStateForFailure(new Error("maximum context length exceeded"))).toBe("preserve");
+    expect(sessionStateForFailure(new Error("transport closed after request"))).toBe("uncertain");
+  });
+
   it("sends OpenCode prompts over stdin instead of argv", async () => {
     const { result, received, progress } = await runWithFake("opencode");
     expect(received.stdin).toBe("Current request");

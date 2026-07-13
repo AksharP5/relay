@@ -61,6 +61,11 @@ describe("Relay CLI storage", () => {
       RELAY_TEST_TRACE: trace,
     };
 
+    const doctor = await runRelay(root, ["doctor"], projectRoot, env);
+    expect(doctor.exitCode).toBe(0);
+    expect(doctor.stdout).toContain("codex      ready");
+    expect(doctor.stdout).toContain("opencode   ready");
+
     expect((await runRelay(root, ["new", "Cross-harness flow"], projectRoot, env)).exitCode).toBe(
       0,
     );

@@ -2,6 +2,10 @@
 
 const trace = Bun.env.RELAY_TEST_TRACE;
 if (!trace) throw new Error("RELAY_TEST_TRACE is required");
+if (process.argv.includes("--version")) {
+  process.stdout.write("codex-cli test\n");
+  process.exit(0);
+}
 
 const prompt = await Bun.stdin.text();
 await Bun.write(
