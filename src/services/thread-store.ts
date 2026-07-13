@@ -448,7 +448,10 @@ const recoverThreadLocked = async (thread: RelayThread): Promise<RecoveredThread
     };
   }
 
-  const repairedSeq = latestMessages.at(-1)?.seq ?? 0;
+  // A native-context adoption compacts the superseded event prefix while
+  // retaining its sequence boundary. If Relay stops before importing the
+  // selected transcript, an empty active log must not rewind that boundary.
+  const repairedSeq = Math.max(latest.contextStartSeq ?? 0, latestMessages.at(-1)?.seq ?? 0);
   if (repairedSeq === latest.lastSeq) return { thread: latest, messages: latestMessages };
   const repaired = { ...latest, lastSeq: repairedSeq };
   await writeThread(repaired);
@@ -1190,7 +1193,17 @@ export class ThreadStore extends Context.Service<
               updatedAt: now,
             };
             await writeThread(updated);
-            await rm(undoPath(thread.id), { force: true });
+            // A selected native conversation replaces Relay's active context.
+            // Compact the superseded canonical prefix instead of making every
+            // later synchronization reload data that can no longer be handed
+            // off, displayed, exported, or undone. The vendor session remains
+            // the source of truth if the user deliberately adopts it again.
+            await atomicTextWrite(eventsPath(thread.id), "");
+            await atomicJsonWrite(visibilityPath(thread.id), { hidden: [], links: [] });
+            await Promise.all([
+              rm(pendingPath(thread.id), { force: true }),
+              rm(undoPath(thread.id), { force: true }),
+            ]);
             return updated;
           },
           catch: (cause) =>
@@ -1381,6 +1394,15 @@ export class ThreadStore extends Context.Service<
             const hidden = new Set(visibility.hidden);
             const hiddenIds = new Set(input.hiddenTurnIds ?? []);
             const currentIds = new Set([...input.turns.map((turn) => turn.id), ...hiddenIds]);
+            // Reconcile the native transcript itself, not only messages that
+            // were already present in the current Relay context. Otherwise a
+            // tombstone from an older adopted context can hide a freshly
+            // re-imported OpenCode turn after native redo.
+            for (const nativeId of currentIds) {
+              const key = visibilityKey(input.harness, input.sessionId, nativeId);
+              if (hiddenIds.has(nativeId)) hidden.add(key);
+              else hidden.delete(key);
+            }
             for (const message of contextMessages) {
               if (message.harness !== input.harness) continue;
               const key =

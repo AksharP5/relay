@@ -408,6 +408,47 @@ describe("native Relay host", () => {
     expect(checks).toBe(2);
   });
 
+  it("vetoes a recent warm submit until its completed native cursor advances", async () => {
+    const { controller } = makeController();
+    await controller.bind({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "warm-session",
+      lastSyncedSeq: 0,
+      nativeCursor: "old-turn",
+    });
+    let cursor = "old-turn";
+    let clock = 0;
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ sessionId: "warm-session", handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({
+        turns: [{ id: cursor, prompt: "prompt", response: "response" }],
+        hiddenTurnIds: [],
+        cwd: process.cwd(),
+      }),
+      isMaterialized: async () => true,
+      isIdle: async () => true,
+      sessionCwd: async () => process.cwd(),
+      resolveSession: async (fallback) => fallback,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      now: () => clock,
+      wait: async () => {},
+      runTui: async (_command, onSwitchRequest) => {
+        expect(await onSwitchRequest(true)).toBe(false);
+        cursor = "completed-turn";
+        clock = 1_001;
+        expect(await onSwitchRequest(true)).toBe(true);
+        return { reason: "exit", exitCode: 0 };
+      },
+    });
+  });
+
   it("latches repeated direct-toggle input across native process launches", async () => {
     const { controller } = makeController();
     let clock = 0;

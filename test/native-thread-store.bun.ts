@@ -319,6 +319,84 @@ describe("native transcript storage", () => {
     );
   });
 
+  it("re-adopts a redone OpenCode transcript without stale context tombstones", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Re-adopt native redo",
+          cwd: process.cwd(),
+          harness: "opencode",
+        });
+        const turns = [
+          { id: "native-1", prompt: "keep", response: "kept" },
+          { id: "native-2", prompt: "redo", response: "redone" },
+        ];
+        const imported = yield* store.importNativeTurns(created, {
+          harness: "opencode",
+          sessionId: "session-a",
+          turns,
+          hiddenTurnIds: [],
+        });
+        const undone = yield* store.importNativeTurns(imported, {
+          harness: "opencode",
+          sessionId: "session-a",
+          turns: [turns[0]!],
+          hiddenTurnIds: [turns[1]!.id],
+        });
+
+        const selectedB = yield* store.resetNativeContext(undone, {
+          harness: "opencode",
+          sessionId: "session-b",
+        });
+        const recoveredB = yield* store.get(created.id);
+        expect(recoveredB.lastSeq).toBe(selectedB.lastSeq);
+        expect(recoveredB.contextStartSeq).toBe(selectedB.contextStartSeq);
+        const importedB = yield* store.importNativeTurns(recoveredB, {
+          harness: "opencode",
+          sessionId: "session-b",
+          turns: [{ id: "native-b", prompt: "other", response: "context" }],
+          hiddenTurnIds: [],
+        });
+        const selectedA = yield* store.resetNativeContext(importedB, {
+          harness: "opencode",
+          sessionId: "session-a",
+          nativeCursor: turns.at(-1)!.id,
+        });
+        yield* Effect.promise(() =>
+          writeFile(
+            join(directory, "threads", created.id, "native-visibility.json"),
+            `${JSON.stringify({ hidden: ["opencode:session-a:native-2"], links: [] })}\n`,
+            { encoding: "utf8", mode: 0o600 },
+          ),
+        );
+        const redone = yield* store.importNativeTurns(selectedA, {
+          harness: "opencode",
+          sessionId: "session-a",
+          turns,
+          hiddenTurnIds: [],
+        });
+
+        expect(redone.contextStartSeq).toBe(6);
+        expect((yield* store.messages(created.id)).map((message) => message.content)).toEqual([
+          "keep",
+          "kept",
+          "redo",
+          "redone",
+        ]);
+        expect(
+          (yield* store.messagesSince(created.id, 0)).messages.map((message) => message.content),
+        ).toEqual(["keep", "kept", "redo", "redone"]);
+
+        const events = yield* Effect.promise(() =>
+          readFile(join(directory, "threads", created.id, "events.jsonl"), "utf8"),
+        );
+        expect(events).not.toContain("other");
+        expect(events.trimEnd().split("\n")).toHaveLength(4);
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+  });
+
   it("links a headless turn to its native id instead of importing it twice", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {

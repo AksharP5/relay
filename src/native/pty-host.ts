@@ -51,7 +51,7 @@ export interface NativePtyOptions {
   readonly sequenceTimeoutMs?: number;
   /** Prevent a just-submitted cold turn from being detached before backend status materializes. */
   readonly submitGraceMs?: number;
-  /** Tell the switch guard that a recent Enter may still be materializing a cold session. */
+  /** Tell the switch guard that a recent Enter may still be materializing a native request. */
   readonly submitProtectionMs?: number;
   readonly now?: () => number;
   /** Keep the outer TTY flowing while Relay starts the next native harness. */

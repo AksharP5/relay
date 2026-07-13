@@ -60,7 +60,7 @@ export const RelayThread = Schema.Struct({
       opencode: Schema.optional(PendingNativeHandoff),
     }),
   ),
-  /** Messages at or below this sequence remain archived but are outside the active context. */
+  /** Messages at or below this sequence belong to a superseded active context. */
   contextStartSeq: Schema.optional(Schema.Number),
   lastSeq: Schema.Number,
   createdAt: Schema.String,

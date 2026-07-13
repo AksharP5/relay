@@ -411,6 +411,7 @@ const runHarness = async (
     if (preparedSignal) return { thread, exit: { reason: "signal", signal: preparedSignal } };
     const boundSessionId = thread.bindings[harness]?.sessionId;
     const launchSessionId = sessionId;
+    const launchCursor = thread.bindings[harness]?.nativeCursor;
     const coldLaunch = sessionId === undefined;
     if (armToggleLatch) allowSwitchAttempt();
 
@@ -438,6 +439,14 @@ const runHarness = async (
               !(await backend.isMaterialized(sessionId))
             )
               return false;
+            if (recentSubmit && !sessionBecameCold && sessionId) {
+              const observedCursor = (await backend.read(sessionId)).turns.at(-1)?.id;
+              // For a warm session, an Enter immediately before the switch may
+              // still be becoming a model request. Do not detach until that
+              // submission has either produced a completed native turn or has
+              // aged out of the PTY's conservative protection window.
+              if (!observedCursor || observedCursor === launchCursor) return false;
+            }
             if (sessionId && backend.sessionCwd) {
               const nativeCwd = await backend.sessionCwd(sessionId);
               if (!nativeCwd || !(await nativeCwdMatches(thread.cwd, nativeCwd))) return false;
