@@ -254,7 +254,7 @@ export class WebSocketAppServerConnection {
         "initialize",
         {
           clientInfo: { name: "relay", title: "Relay", version: packageJson.version },
-          capabilities: null,
+          capabilities: { experimentalApi: true },
         },
         timeoutMs,
       );

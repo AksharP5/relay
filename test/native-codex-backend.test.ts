@@ -1,10 +1,29 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  codexCompletedCursor,
   codexThreadAllowsDetach,
   parseCodexNativeTurns,
   selectResolvedCodexSession,
 } from "../src/native/codex-backend.ts";
+
+describe("Codex native completed cursor", () => {
+  it("selects the newest completed turn from a descending bounded page", () => {
+    expect(
+      codexCompletedCursor({
+        data: [
+          { id: "active", status: "inProgress" },
+          { id: "failed", status: "failed" },
+          { id: "completed-newest", status: "completed" },
+          { id: "completed-older", status: "completed" },
+        ],
+      }),
+    ).toBe("completed-newest");
+    expect(
+      codexCompletedCursor({ data: [{ id: "active", status: "inProgress" }] }),
+    ).toBeUndefined();
+  });
+});
 
 describe("Codex native transcript", () => {
   it("imports completed user/final-answer turns and ignores commentary or controls", () => {

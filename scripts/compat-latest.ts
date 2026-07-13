@@ -74,6 +74,7 @@ requireText(
     "thread/start",
     "thread/resume",
     "thread/read",
+    "thread/turns/list",
     "thread/delete",
     "thread/inject_items",
     "thread/loaded/list",
@@ -124,6 +125,7 @@ try {
     throw new Error("Codex changed the resumed session id");
   }
   await resumedCodex.read(codexSessionId);
+  await resumedCodex.completedCursor(codexSessionId);
   await resumedCodex.delete(codexSessionId);
   const missing = await resumedCodex
     .ensureSession({ sessionId: codexSessionId })

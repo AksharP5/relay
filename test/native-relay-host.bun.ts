@@ -6,6 +6,7 @@ import type { NativeRelayController } from "../src/native/controller.ts";
 import { NativeSessionUnavailable } from "../src/native/errors.ts";
 import {
   launchNativeRelay,
+  nativeSubmitProtectionMs,
   openCodeSessionIdFromExit,
   type NativeBackend,
 } from "../src/native/relay-host.ts";
@@ -162,6 +163,12 @@ const makeController = () => {
 };
 
 describe("native Relay host", () => {
+  it("keeps cold OpenCode picker selection responsive without weakening prompt guards", () => {
+    expect(nativeSubmitProtectionMs(true, "opencode")).toBe(2_000);
+    expect(nativeSubmitProtectionMs(false, "opencode")).toBe(10_000);
+    expect(nativeSubmitProtectionMs(true, "codex")).toBe(10_000);
+  });
+
   it("extracts only OpenCode's graceful continuation session id", () => {
     const output = [
       "A chat mentioned Continue opencode -s ses_not_selected",

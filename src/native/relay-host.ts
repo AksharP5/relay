@@ -37,6 +37,8 @@ export interface NativeBackend {
     omittedMessages?: number,
   ) => Promise<void>;
   readonly read: (sessionId: string) => Promise<NativeTranscript>;
+  /** Return the newest completed native turn without loading the full transcript. */
+  readonly completedCursor?: (sessionId: string) => Promise<string | undefined>;
   readonly isMaterialized?: (sessionId: string) => Promise<boolean>;
   /** With no id, return whether detaching an unresolved native selection is safe. */
   readonly isIdle: (sessionId?: string) => Promise<boolean>;
@@ -75,6 +77,9 @@ export const openCodeSessionIdFromExit = (outputTail: string) => {
   return matches.at(-1)?.[1];
 };
 
+export const nativeSubmitProtectionMs = (coldLaunch: boolean, harness: Harness) =>
+  coldLaunch && harness === "opencode" ? 2_000 : 10_000;
+
 const startBackend = async (
   harness: Harness,
   cwd: string,
@@ -95,6 +100,7 @@ const startBackend = async (
       inject: (sessionId, messages, omittedMessages) =>
         backend.inject(sessionId, messages, omittedMessages),
       read: (sessionId) => backend.read(sessionId),
+      completedCursor: (sessionId) => backend.completedCursor(sessionId),
       isMaterialized: (sessionId) => backend.isMaterialized(sessionId),
       isIdle: (sessionId) => backend.isIdle(sessionId),
       sessionCwd: (sessionId) => backend.sessionCwd(sessionId),
@@ -119,6 +125,7 @@ const startBackend = async (
     inject: (sessionId, messages, omittedMessages) =>
       backend.inject(sessionId, messages, omittedMessages),
     read: (sessionId) => backend.read(sessionId),
+    completedCursor: (sessionId) => backend.completedCursor(sessionId),
     isMaterialized: async () => true,
     isIdle: (sessionId) => backend.isIdle(sessionId),
     sessionCwd: (sessionId) => backend.sessionCwd(sessionId),
@@ -157,7 +164,7 @@ const defaultDependencies: NativeRelayHostDependencies = {
         onSwitchRequest,
         onSubmitObserved,
         submitGraceMs: coldLaunch ? 2_000 : 0,
-        submitProtectionMs: 10_000,
+        submitProtectionMs: nativeSubmitProtectionMs(coldLaunch, harness),
         preserveInputOnSwitch: true,
         ...(harness === "opencode"
           ? { sessionIdHint: { extract: openCodeSessionIdFromExit } }
@@ -417,15 +424,19 @@ const runHarness = async (
     if (armToggleLatch) allowSwitchAttempt();
 
     type SubmitBaseline = { readonly sessionId?: string; readonly nativeCursor?: string };
+    const completedCursor = async (nativeSessionId: string) =>
+      backend.completedCursor
+        ? backend.completedCursor(nativeSessionId)
+        : (await backend.read(nativeSessionId)).turns.at(-1)?.id;
     let latestSubmitBaseline: Promise<SubmitBaseline | undefined> | undefined;
     const captureSubmitBaseline = async () => {
       const capture = (async (): Promise<SubmitBaseline> => {
         const observedSessionId = await backend.resolveSession(sessionId, true);
         if (!observedSessionId) return {};
-        const transcript = await backend.read(observedSessionId);
+        const nativeCursor = await completedCursor(observedSessionId);
         return {
           sessionId: observedSessionId,
-          ...(transcript.turns.at(-1)?.id ? { nativeCursor: transcript.turns.at(-1)!.id } : {}),
+          ...(nativeCursor ? { nativeCursor } : {}),
         };
       })().catch(() => undefined);
       latestSubmitBaseline = capture;
@@ -458,7 +469,7 @@ const runHarness = async (
             )
               return false;
             if (recentSubmit && sessionId && submitBaseline?.sessionId === sessionId) {
-              const observedCursor = (await backend.read(sessionId)).turns.at(-1)?.id;
+              const observedCursor = await completedCursor(sessionId);
               // For a warm session, an Enter immediately before the switch may
               // still be becoming a model request. Do not detach until that
               // submission has either produced a completed native turn or has

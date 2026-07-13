@@ -72,6 +72,15 @@ export const codexThreadAllowsDetach = (value: unknown) => {
   return status === "idle" || status === "notLoaded" || status === "systemError";
 };
 
+export const codexCompletedCursor = (value: unknown) => {
+  const data = asObject(value)?.data;
+  if (!Array.isArray(data)) return undefined;
+  return data.flatMap((candidate) => {
+    const turn = asObject(candidate);
+    return typeof turn?.id === "string" && turn.status === "completed" ? [turn.id] : [];
+  })[0];
+};
+
 const threadCwdFrom = (value: unknown) => {
   const cwd = asObject(asObject(value)?.thread)?.cwd;
   return typeof cwd === "string" ? cwd : undefined;
@@ -381,6 +390,22 @@ export class CodexNativeBackend {
         hiddenTurnIds: [],
         ...(cwd ? { cwd } : {}),
       };
+    } finally {
+      await connection.close();
+    }
+  }
+
+  async completedCursor(sessionId: string) {
+    const connection = await this.#connect();
+    try {
+      return codexCompletedCursor(
+        await connection.request("thread/turns/list", {
+          threadId: sessionId,
+          limit: 5,
+          sortDirection: "desc",
+          itemsView: "summary",
+        }),
+      );
     } finally {
       await connection.close();
     }

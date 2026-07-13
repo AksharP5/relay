@@ -4,13 +4,51 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "bun:test";
 
-import { OpenCodeNativeBackend, parseOpenCodeNativeTurns } from "../src/native/opencode-backend.ts";
+import {
+  OpenCodeNativeBackend,
+  openCodeCompletedCursor,
+  parseOpenCodeNativeTurns,
+} from "../src/native/opencode-backend.ts";
 
 const executable = fileURLToPath(new URL("./fixtures/fake-opencode-server.ts", import.meta.url));
 
 beforeAll(() => chmod(executable, 0o755));
 
 describe("OpenCode native backend", () => {
+  it("finds the newest completed cursor without treating a streaming turn as complete", () => {
+    expect(
+      openCodeCompletedCursor([
+        {
+          info: { id: "completed-user", role: "user" },
+          parts: [{ type: "text", text: "Completed prompt" }],
+        },
+        {
+          info: {
+            id: "completed-assistant",
+            role: "assistant",
+            parentID: "completed-user",
+            finish: "stop",
+            time: { completed: 2 },
+          },
+          parts: [{ type: "text", text: "Completed response" }],
+        },
+        {
+          info: { id: "streaming-user", role: "user" },
+          parts: [{ type: "text", text: "Streaming prompt" }],
+        },
+        {
+          info: {
+            id: "streaming-assistant",
+            role: "assistant",
+            parentID: "streaming-user",
+            time: { created: 3 },
+          },
+          parts: [{ type: "text", text: "Still streaming" }],
+        },
+      ]),
+    ).toBe("completed-user");
+  });
+
   it("imports only completed visible user/assistant turns", () => {
     expect(
       parseOpenCodeNativeTurns([

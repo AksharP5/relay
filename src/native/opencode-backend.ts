@@ -122,6 +122,9 @@ export const parseOpenCodeNativeTurns = (
 ): ReadonlyArray<NativeTranscriptTurn> =>
   parseCompactTurns(compactOpenCodeMessages(value), revertedMessageId);
 
+export const openCodeCompletedCursor = (value: unknown) =>
+  parseCompactTurns(compactOpenCodeMessages(value)).at(-1)?.id;
+
 const transcriptFrom = (session: unknown, messages: ReadonlyArray<OpenCodeVisibleMessage>) => {
   const sessionObject = asObject(session);
   const revertedMessageId = asObject(sessionObject?.revert)?.messageID;
@@ -456,6 +459,26 @@ export class OpenCodeNativeBackend {
         await recovery.close();
       }
     }
+  }
+
+  async completedCursor(sessionId: string) {
+    const query = new URLSearchParams({ limit: "20" });
+    const response = await this.#get(
+      `/session/${encodeURIComponent(sessionId)}/message?${query}`,
+      2_000,
+    );
+    if (response.status === 404 || response.status === 410) {
+      await response.body?.cancel();
+      throw new NativeSessionUnavailable("opencode", sessionId);
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new OpenCodeReadError(
+        `OpenCode recent history failed with HTTP ${response.status}`,
+        response.status,
+      );
+    }
+    return openCodeCompletedCursor(await response.json());
   }
 
   async isIdle(sessionId?: string) {
