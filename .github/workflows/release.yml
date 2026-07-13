@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Existing vX.Y.Z tag to rebuild and publish after a failed release.
+        description: Version whose existing vX.Y.Z tag should be rebuilt after a failed release.
         required: false
         type: string
 
