@@ -101,7 +101,8 @@ export interface NativeRelayHostDependencies {
   readonly startBackend: (harness: Harness, cwd: string) => Promise<NativeBackend>;
   readonly runTui: (
     command: NativeTuiCommand,
-    onSwitchRequest: () => Promise<boolean>,
+    onSwitchRequest: (recentSubmit?: boolean) => Promise<boolean>,
+    coldLaunch: boolean,
   ) => Promise<NativeTuiExit>;
   readonly signalSource: EventEmitter;
   readonly wait: (milliseconds: number) => Promise<void>;
@@ -110,11 +111,15 @@ export interface NativeRelayHostDependencies {
 
 const defaultDependencies: NativeRelayHostDependencies = {
   startBackend,
-  runTui: (command, onSwitchRequest) =>
+  runTui: (command, onSwitchRequest, coldLaunch) =>
     runNativeTui(
       command,
       { input: process.stdin, output: process.stdout, resizeSource: process },
-      { onSwitchRequest },
+      {
+        onSwitchRequest,
+        submitGraceMs: coldLaunch ? 2_000 : 0,
+        submitProtectionMs: 10_000,
+      },
     ),
   signalSource: process,
   wait: Bun.sleep,
@@ -271,21 +276,32 @@ const runHarness = async (
     const preparedSignal = getSignal();
     if (preparedSignal) return { thread, exit: { reason: "signal", signal: preparedSignal } };
     const boundSessionId = thread.bindings[harness]?.sessionId;
+    const launchSessionId = sessionId;
+    const coldLaunch = sessionId === undefined;
     if (armToggleLatch) allowSwitchAttempt();
 
-    const exit = await dependencies.runTui(backend.command(sessionId, launchModel), async () => {
-      if (!allowSwitchAttempt()) return false;
+    const exit = await dependencies.runTui(
+      backend.command(sessionId, launchModel),
+      async (recentSubmit = false) => {
+        if (!allowSwitchAttempt()) return false;
 
-      // A native TUI forwards Enter before Relay sees the switch key. Sample
-      // the backend across a short settling window so a newly-starting turn
-      // cannot be mistaken for an idle session and terminated mid-request.
-      for (let sample = 0; sample < 3; sample += 1) {
-        await dependencies.wait(80);
-        sessionId = await backend.resolveSession(sessionId);
-        if (sessionId && !(await backend.isIdle(sessionId))) return false;
-      }
-      return true;
-    });
+        // A native TUI forwards Enter before Relay sees the switch key. Sample
+        // the backend across a short settling window so a newly-starting turn
+        // cannot be mistaken for an idle session and terminated mid-request.
+        for (let sample = 0; sample < 3; sample += 1) {
+          await dependencies.wait(80);
+          sessionId = await backend.resolveSession(sessionId);
+          const sessionBecameCold = launchSessionId === undefined || sessionId !== launchSessionId;
+          if (recentSubmit && sessionBecameCold) {
+            if (!sessionId) return false;
+            if (backend.isMaterialized && !(await backend.isMaterialized(sessionId))) return false;
+          }
+          if (sessionId && !(await backend.isIdle(sessionId))) return false;
+        }
+        return true;
+      },
+      coldLaunch,
+    );
 
     const tuiSignal = exit.reason === "signal" ? exit.signal : getSignal();
     if (tuiSignal) return { thread, exit: { reason: "signal", signal: tuiSignal } };

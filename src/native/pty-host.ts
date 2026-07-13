@@ -47,9 +47,11 @@ export interface NativePtyOptions {
   readonly sequenceTimeoutMs?: number;
   /** Prevent a just-submitted cold turn from being detached before backend status materializes. */
   readonly submitGraceMs?: number;
+  /** Tell the switch guard that a recent Enter may still be materializing a cold session. */
+  readonly submitProtectionMs?: number;
   readonly now?: () => number;
   /** Return false to leave the native TUI running (for example, during an active turn). */
-  readonly onSwitchRequest?: () => boolean | Promise<boolean>;
+  readonly onSwitchRequest?: (recentSubmit?: boolean) => boolean | Promise<boolean>;
 }
 
 const defaultIo = (): NativePtyIo => ({
@@ -150,7 +152,7 @@ export const runNativeTui = async (
     }
     const routed = router.route(bytes);
     writeInput(routed.forward);
-    if (routed.forward.some((byte) => byte === 0x0a || byte === 0x0d)) lastSubmitAt = now();
+    if (routed.submitObserved) lastSubmitAt = now();
     if (!routed.switchRequested) {
       if (router.hasPendingSequence)
         sequenceTimer = setTimeout(
@@ -159,14 +161,17 @@ export const runNativeTui = async (
         );
       return;
     }
-    if (lastSubmitAt !== undefined && now() - lastSubmitAt < (options.submitGraceMs ?? 1_000)) {
+    if (lastSubmitAt !== undefined && now() - lastSubmitAt < (options.submitGraceMs ?? 0)) {
       writeInput(routed.afterSwitch);
       writeOutput(Uint8Array.of(0x07));
       return;
     }
+    const recentSubmit =
+      lastSubmitAt !== undefined &&
+      now() - lastSubmitAt < (options.submitProtectionMs ?? options.submitGraceMs ?? 0);
     pendingSwitchInput.push(routed.afterSwitch);
     switchCheckPending = true;
-    void Promise.resolve(options.onSwitchRequest?.() ?? true)
+    void Promise.resolve(options.onSwitchRequest?.(recentSubmit) ?? true)
       .then((allowed) => {
         if (!allowed || switchRequested || parentSignal) {
           if (!allowed) {

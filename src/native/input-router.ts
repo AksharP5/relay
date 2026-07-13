@@ -50,6 +50,25 @@ const enhancedToggleLengthAt = (chunk: Uint8Array, offset: number) => {
   return undefined;
 };
 
+const enhancedSubmitAt = (chunk: Uint8Array, offset: number) => {
+  if (chunk[offset] !== 0x1b || chunk[offset + 1] !== 0x5b) return false;
+  let final = offset + 2;
+  while (final < chunk.length) {
+    const byte = chunk[final]!;
+    if (byte >= 0x40 && byte <= 0x7e) break;
+    final += 1;
+  }
+  if (final >= chunk.length || chunk[final] !== "u".charCodeAt(0)) return false;
+  const fields = Buffer.from(chunk.slice(offset + 2, final))
+    .toString()
+    .split(";");
+  const key = Number(fields[0]?.split(":", 1)[0]);
+  const [modifierText = "1", eventText = "1"] = (fields[1] ?? "1").split(":");
+  const modifier = Number(modifierText);
+  const event = Number(eventText);
+  return key === 13 && modifier === 1 && event === 1;
+};
+
 const isIncompleteCsiAt = (chunk: Uint8Array, offset: number) => {
   if (chunk[offset] !== 0x1b || chunk[offset + 1] !== 0x5b) return false;
   for (let index = offset + 2; index < chunk.length; index += 1) {
@@ -63,6 +82,7 @@ export interface RoutedInput {
   readonly forward: Uint8Array;
   readonly afterSwitch: Uint8Array;
   readonly switchRequested: boolean;
+  readonly submitObserved: boolean;
 }
 
 /**
@@ -99,6 +119,7 @@ export class NativeInputRouter {
     this.#pendingCsi = undefined;
     this.#pendingEscape = undefined;
     const forward: Array<number> = [];
+    let submitObserved = false;
 
     for (let index = 0; index < input.length; index += 1) {
       const byte = input[index]!;
@@ -107,6 +128,7 @@ export class NativeInputRouter {
         continue;
       }
 
+      if (enhancedSubmitAt(input, index)) submitObserved = true;
       const enhancedToggleLength = enhancedToggleLengthAt(input, index);
       const toggleLength = matchesAt(input, index, legacyF6)
         ? legacyF6.length
@@ -116,6 +138,7 @@ export class NativeInputRouter {
           forward: Uint8Array.from(forward),
           afterSwitch: input.slice(index + toggleLength),
           switchRequested: true,
+          submitObserved,
         };
       }
 
@@ -131,6 +154,7 @@ export class NativeInputRouter {
         break;
       }
 
+      if (byte === 0x0a || byte === 0x0d) submitObserved = true;
       this.#record(byte, forward);
     }
 
@@ -138,6 +162,7 @@ export class NativeInputRouter {
       forward: Uint8Array.from(forward),
       afterSwitch: new Uint8Array(),
       switchRequested: false,
+      submitObserved,
     };
   }
 

@@ -51,7 +51,10 @@ const makeController = () => {
         ...thread,
         activeHarness: input.harness,
         bindings: { ...thread.bindings, [input.harness]: binding },
-        pendingHandoffs: { ...thread.pendingHandoffs, [input.harness]: undefined },
+        pendingHandoffs: {
+          ...thread.pendingHandoffs,
+          [input.harness]: undefined,
+        },
       };
       return thread;
     },
@@ -265,7 +268,10 @@ describe("native Relay host", () => {
     let waits = 0;
     let checks = 0;
     const backend: NativeBackend = {
-      prepareSession: async () => ({ sessionId: "codex-session", handoffInjected: false }),
+      prepareSession: async () => ({
+        sessionId: "codex-session",
+        handoffInjected: false,
+      }),
       inject: async () => {},
       read: async () => ({ turns: [], hiddenTurnIds: [] }),
       isMaterialized: async () => true,
@@ -298,7 +304,10 @@ describe("native Relay host", () => {
     let clock = 0;
     let launches = 0;
     const backend = (harness: Harness): NativeBackend => ({
-      prepareSession: async () => ({ sessionId: `${harness}-session`, handoffInjected: false }),
+      prepareSession: async () => ({
+        sessionId: `${harness}-session`,
+        handoffInjected: false,
+      }),
       inject: async () => {},
       read: async () => ({ turns: [], hiddenTurnIds: [] }),
       isMaterialized: async () => true,
@@ -367,6 +376,72 @@ describe("native Relay host", () => {
     expect(messages.map((message) => message.content)).toEqual(["first turn", "first answer"]);
   });
 
+  it("vetoes a cold-session switch while its first submitted turn materializes", async () => {
+    const { controller } = makeController();
+    const protectionModes: Array<boolean> = [];
+    let clock = 0;
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      isMaterialized: async () => false,
+      isIdle: async () => true,
+      resolveSession: async () => "materializing-session",
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      wait: async () => {},
+      now: () => clock,
+      runTui: async (_command, onSwitchRequest, coldLaunch) => {
+        protectionModes.push(coldLaunch);
+        expect(await onSwitchRequest(true)).toBe(false);
+        clock = 1_001;
+        expect(await onSwitchRequest(false)).toBe(true);
+        return { reason: "exit", exitCode: 0 };
+      },
+    });
+
+    expect(protectionModes).toEqual([true]);
+  });
+
+  it("protects a warm TUI after native /new creates an unmaterialized session", async () => {
+    const { controller } = makeController();
+    await controller.bind({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "warm-session",
+      lastSyncedSeq: 0,
+    });
+    let resolvedSession = "warm-session";
+    const coldLaunchModes: Array<boolean> = [];
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ sessionId: "warm-session", handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      isMaterialized: async (sessionId) => sessionId === "warm-session",
+      isIdle: async () => true,
+      resolveSession: async () => resolvedSession,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      wait: async () => {},
+      runTui: async (_command, onSwitchRequest, coldLaunch) => {
+        coldLaunchModes.push(coldLaunch);
+        resolvedSession = "new-session";
+        expect(await onSwitchRequest(true)).toBe(false);
+        return { reason: "exit", exitCode: 0 };
+      },
+    });
+
+    expect(coldLaunchModes).toEqual([false]);
+  });
+
   it("does not persist an unresumable empty Codex thread", async () => {
     const { controller, thread } = makeController();
     const backend: NativeBackend = {
@@ -419,6 +494,7 @@ describe("native Relay host", () => {
     });
     const preparedModels: Array<string | undefined> = [];
     const commandModels: Array<string | undefined> = [];
+    const protectionModes: Array<boolean> = [];
     const backend: NativeBackend = {
       prepareSession: async (input) => {
         preparedModels.push(input.model);
@@ -437,11 +513,15 @@ describe("native Relay host", () => {
 
     await launchNativeRelay(controller, {
       startBackend: async () => backend,
-      runTui: async () => ({ reason: "exit", exitCode: 0 }),
+      runTui: async (_command, _onSwitchRequest, protectColdSubmit) => {
+        protectionModes.push(protectColdSubmit);
+        return { reason: "exit", exitCode: 0 };
+      },
     });
 
     expect(preparedModels).toEqual([undefined]);
     expect(commandModels).toEqual([undefined]);
+    expect(protectionModes).toEqual([false]);
   });
 
   it("replaces a definitively deleted binding with the complete canonical handoff", async () => {

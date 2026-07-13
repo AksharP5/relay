@@ -132,6 +132,33 @@ describe("native input routing", () => {
     expect(router.route(Buffer.from("\u001b[17~")).switchRequested).toBe(true);
   });
 
+  it("observes real Enter presses without treating pasted newlines or key events as submits", () => {
+    for (const input of ["prompt\r", "prompt\n", "prompt\r\n", "\u001b[13u", "\u001b[13;1:1u"]) {
+      expect(new NativeInputRouter().route(Buffer.from(input)).submitObserved).toBe(true);
+    }
+    for (const input of [
+      "\u001b[200~first\nsecond\u001b[201~",
+      "\u001b[13;2:1u",
+      "\u001b[13;3:1u",
+      "\u001b[13;5:1u",
+      "\u001b[13;1:2u",
+      "\u001b[13;1:3u",
+    ]) {
+      expect(new NativeInputRouter().route(Buffer.from(input)).submitObserved).toBe(false);
+    }
+
+    const sameChunk = new NativeInputRouter().route(Buffer.from("prompt\r\u001b[104;6u"));
+    expect(sameChunk.submitObserved).toBe(true);
+    expect(sameChunk.switchRequested).toBe(true);
+
+    const fragmentedPaste = new NativeInputRouter();
+    expect(fragmentedPaste.route(Buffer.from("\u001b[20")).submitObserved).toBe(false);
+    expect(fragmentedPaste.route(Buffer.from("0~first\nsecond\u001b[20")).submitObserved).toBe(
+      false,
+    );
+    expect(fragmentedPaste.route(Buffer.from("1~")).submitObserved).toBe(false);
+  });
+
   it("forwards the retired Ctrl+] encodings byte-for-byte", () => {
     const router = new NativeInputRouter();
     const complete = "\u001b[93;5ur";
@@ -224,6 +251,7 @@ describe("native PTY host", () => {
       { input, output, resizeSource: resize },
       {
         now: () => clock,
+        submitGraceMs: 1_000,
         onSwitchRequest: () => {
           statusChecks += 1;
           return true;
@@ -244,6 +272,72 @@ describe("native PTY host", () => {
     input.emit("data", Buffer.from("\u001b[104;6u"));
     expect(await result).toEqual({ reason: "switch" });
     expect(statusChecks).toBe(1);
+  });
+
+  it("reports recent submits to the cold-session guard after the immediate grace window", async () => {
+    const input = new TestInput();
+    const output = new TestOutput();
+    const resize = new EventEmitter();
+    let clock = 100;
+    const recentSubmits: Array<boolean | undefined> = [];
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output, resizeSource: resize },
+      {
+        now: () => clock,
+        submitGraceMs: 1_000,
+        submitProtectionMs: 10_000,
+        onSwitchRequest: (recentSubmit) => {
+          recentSubmits.push(recentSubmit);
+          return recentSubmits.length > 1;
+        },
+      },
+    );
+    running.push(result);
+
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from("first prompt\r"));
+    clock = 1_100;
+    input.emit("data", Buffer.from("\u001b[104;6u"));
+    await Bun.sleep(25);
+    clock = 10_100;
+    input.emit("data", Buffer.from("\u001b[104;6u"));
+
+    expect(await result).toEqual({ reason: "switch" });
+    expect(recentSubmits).toEqual([true, false]);
+  });
+
+  it("does not delay switching after Enter when cold-session protection is disabled", async () => {
+    const input = new TestInput();
+    const output = new TestOutput();
+    const resize = new EventEmitter();
+    const recentSubmits: Array<boolean | undefined> = [];
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output, resizeSource: resize },
+      {
+        onSwitchRequest: (recentSubmit) => {
+          recentSubmits.push(recentSubmit);
+          return true;
+        },
+      },
+    );
+    running.push(result);
+
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from("warm prompt\r"));
+    input.emit("data", Buffer.from("\u001b[104;6u"));
+
+    expect(await result).toEqual({ reason: "switch" });
+    expect(recentSubmits).toEqual([false]);
   });
 
   it("keeps the native frontend alive when an active turn vetoes switching", async () => {
