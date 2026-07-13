@@ -137,7 +137,16 @@ export const RelayApp = (props: RelayAppProps) => {
         <text fg={theme.subtle}>relay</text>
       </box>
 
-      <scrollbox flexGrow={1} width="100%" paddingTop={1} stickyScroll stickyStart="bottom">
+      <scrollbox
+        flexGrow={1}
+        flexShrink={1}
+        flexBasis={0}
+        minHeight={1}
+        width="100%"
+        paddingTop={1}
+        stickyScroll
+        stickyStart="bottom"
+      >
         <Show
           when={snapshot().messages.length > 0}
           fallback={
@@ -152,7 +161,7 @@ export const RelayApp = (props: RelayAppProps) => {
         >
           <For each={snapshot().messages}>{(message) => <Message message={message} />}</For>
         </Show>
-        <Show when={pendingPrompt()}>
+        <Show when={pendingPrompt().length > 0}>
           <box flexDirection="column" paddingBottom={1}>
             <text fg={theme.text}>
               <strong>You</strong>
@@ -171,7 +180,7 @@ export const RelayApp = (props: RelayAppProps) => {
 
       <Show when={error()}>
         {(message) => (
-          <box border={["left"]} borderColor={theme.error} paddingLeft={1} marginBottom={1}>
+          <box border={["left"]} borderColor={theme.error} paddingLeft={1}>
             <text fg={theme.error}>{message()}</text>
           </box>
         )}
