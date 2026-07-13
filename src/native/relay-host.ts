@@ -77,24 +77,23 @@ const startBackend = async (harness: Harness, cwd: string): Promise<NativeBacken
 
   const backend = await OpenCodeNativeBackend.start(executable, cwd);
   return {
-    prepareSession: async ({ sessionId, title }) => ({
-      sessionId: await backend.ensureSession({
-        ...(sessionId ? { sessionId } : {}),
-        title,
-      }),
-      handoffInjected: false,
-    }),
+    prepareSession: async ({ sessionId, title, handoff }) =>
+      !sessionId && handoff.length === 0
+        ? { handoffInjected: false }
+        : {
+            sessionId: await backend.ensureSession({
+              ...(sessionId ? { sessionId } : {}),
+              title,
+            }),
+            handoffInjected: false,
+          },
     inject: (sessionId, messages, omittedMessages) =>
       backend.inject(sessionId, messages, omittedMessages),
     read: (sessionId) => backend.read(sessionId),
     isMaterialized: async () => true,
     isIdle: (sessionId) => backend.isIdle(sessionId),
-    resolveSession: (sessionId) =>
-      sessionId ? backend.resolveSession(sessionId) : Promise.resolve(undefined),
-    command: (sessionId) => {
-      if (!sessionId) throw new Error("OpenCode did not create a native session");
-      return backend.command(sessionId);
-    },
+    resolveSession: (sessionId) => backend.resolveSession(sessionId),
+    command: (sessionId) => backend.command(sessionId),
     close: () => backend.close(),
   };
 };
@@ -103,10 +102,12 @@ export interface NativeRelayHostDependencies {
   readonly startBackend: (harness: Harness, cwd: string) => Promise<NativeBackend>;
   readonly runTui: (
     command: NativeTuiCommand,
-    onSwitchRequest: () => Promise<boolean>,
+    onSwitchRequest: (intent: "toggle" | "selector") => Promise<boolean>,
   ) => Promise<NativeTuiExit>;
   readonly selectHarness: (current: Harness) => Promise<Harness | undefined>;
   readonly signalSource: EventEmitter;
+  readonly wait: (milliseconds: number) => Promise<void>;
+  readonly now: () => number;
 }
 
 const defaultDependencies: NativeRelayHostDependencies = {
@@ -119,6 +120,8 @@ const defaultDependencies: NativeRelayHostDependencies = {
     ),
   selectHarness,
   signalSource: process,
+  wait: Bun.sleep,
+  now: Date.now,
 };
 
 const signalExitCode = (signal: NativeParentSignal) =>
@@ -198,6 +201,7 @@ const runHarness = async (
   harness: Harness,
   dependencies: NativeRelayHostDependencies,
   getSignal: () => NativeParentSignal | undefined,
+  allowSwitchAttempt: (intent: "toggle" | "selector") => boolean,
 ): Promise<{ readonly thread: RelayThread; readonly exit: NativeTuiExit }> => {
   let thread = await controller.switchHarness(initialThread.id, harness);
   if (thread.pendingHandoffs?.[harness]) {
@@ -270,10 +274,22 @@ const runHarness = async (
     if (preparedSignal) return { thread, exit: { reason: "signal", signal: preparedSignal } };
     const boundSessionId = thread.bindings[harness]?.sessionId;
 
-    const exit = await dependencies.runTui(backend.command(sessionId, launchModel), async () => {
-      sessionId = await backend.resolveSession(sessionId);
-      return sessionId ? backend.isIdle(sessionId) : true;
-    });
+    const exit = await dependencies.runTui(
+      backend.command(sessionId, launchModel),
+      async (intent) => {
+        if (!allowSwitchAttempt(intent)) return false;
+
+        // A native TUI forwards Enter before Relay sees the switch key. Sample
+        // the backend across a short settling window so a newly-starting turn
+        // cannot be mistaken for an idle session and terminated mid-request.
+        for (let sample = 0; sample < 3; sample += 1) {
+          await dependencies.wait(80);
+          sessionId = await backend.resolveSession(sessionId);
+          if (sessionId && !(await backend.isIdle(sessionId))) return false;
+        }
+        return true;
+      },
+    );
 
     const tuiSignal = exit.reason === "signal" ? exit.signal : getSignal();
     if (tuiSignal) return { thread, exit: { reason: "signal", signal: tuiSignal } };
@@ -326,6 +342,16 @@ export const launchNativeRelay = async (
   dependencies.signalSource.on("SIGQUIT", onQuit);
 
   let lease: { readonly release: () => Promise<void> } | undefined;
+  let lastToggleAttemptAt: number | undefined;
+  const allowSwitchAttempt = (intent: "toggle" | "selector") => {
+    if (intent === "selector") return true;
+    const now = dependencies.now();
+    const allowed = lastToggleAttemptAt === undefined || now - lastToggleAttemptAt >= 1_000;
+    // Refresh on every repeat so a held legacy key remains latched until it has
+    // been released for one full second, including across harness processes.
+    lastToggleAttemptAt = now;
+    return allowed;
+  };
 
   try {
     let thread = await controller.loadLocalThread();
@@ -346,6 +372,7 @@ export const launchNativeRelay = async (
         harness,
         dependencies,
         () => pendingSignal,
+        allowSwitchAttempt,
       );
       thread = result.thread;
       if (result.exit.reason !== "switch") {

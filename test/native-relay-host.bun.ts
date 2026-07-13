@@ -241,7 +241,7 @@ describe("native Relay host", () => {
           response: `${harness} answered`,
         });
         if (launches === 1) {
-          expect(await onSwitchRequest()).toBe(true);
+          expect(await onSwitchRequest("toggle")).toBe(true);
           return { reason: "switch", intent: "toggle" };
         }
         return { reason: "exit", exitCode: 0 };
@@ -250,7 +250,7 @@ describe("native Relay host", () => {
 
     expect(maxActiveBackends).toBe(1);
     expect(activeBackends).toBe(0);
-    expect(statusChecks).toBe(1);
+    expect(statusChecks).toBe(3);
     expect(injected.opencode.flat().map((message) => message.content)).toEqual([
       "ask codex",
       "codex answered",
@@ -261,6 +261,82 @@ describe("native Relay host", () => {
       "ask opencode",
       "opencode answered",
     ]);
+  });
+
+  it("vetoes a switch when an idle session becomes active during the submit window", async () => {
+    const { controller } = makeController();
+    let active = false;
+    let waits = 0;
+    let checks = 0;
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ sessionId: "codex-session", handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      isMaterialized: async () => true,
+      isIdle: async () => {
+        checks += 1;
+        return !active;
+      },
+      resolveSession: async (fallback) => fallback,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      wait: async () => {
+        waits += 1;
+        if (waits === 2) active = true;
+      },
+      runTui: async (_command, onSwitchRequest) => {
+        expect(await onSwitchRequest("toggle")).toBe(false);
+        return { reason: "exit", exitCode: 0 };
+      },
+    });
+
+    expect(checks).toBe(2);
+  });
+
+  it("latches repeated direct-toggle input across native process launches", async () => {
+    const { controller } = makeController();
+    let clock = 0;
+    let launches = 0;
+    const backend = (harness: Harness): NativeBackend => ({
+      prepareSession: async () => ({ sessionId: `${harness}-session`, handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      isMaterialized: async () => true,
+      isIdle: async () => true,
+      resolveSession: async (fallback) => fallback,
+      command: () => ({ executable: harness, args: [], cwd: process.cwd() }),
+      close: async () => {},
+    });
+
+    await launchNativeRelay(controller, {
+      startBackend: async (harness) => backend(harness),
+      now: () => clock,
+      wait: async () => {},
+      selectHarness: async () => {
+        throw new Error("direct toggle should not open the selector");
+      },
+      runTui: async (_command, onSwitchRequest) => {
+        launches += 1;
+        if (launches === 1) {
+          expect(await onSwitchRequest("toggle")).toBe(true);
+          return { reason: "switch", intent: "toggle" };
+        }
+
+        clock = 100;
+        expect(await onSwitchRequest("toggle")).toBe(false);
+        clock = 900;
+        expect(await onSwitchRequest("toggle")).toBe(false);
+        clock = 1_901;
+        expect(await onSwitchRequest("toggle")).toBe(true);
+        return { reason: "exit", exitCode: 0 };
+      },
+    });
+
+    expect(launches).toBe(2);
   });
 
   it("lets the native Codex TUI create a cold thread and binds it after the first turn", async () => {
@@ -675,6 +751,15 @@ describe("native harness selector", () => {
       expect(codex).toBeDefined();
       expect(opencode).toBeDefined();
       expect(codex!.indexOf("Codex")).toBe(opencode!.indexOf("OpenCode"));
+    }
+  });
+
+  it("never renders past terminals only one to five rows tall", () => {
+    for (const rows of [1, 2, 3, 4, 5]) {
+      const frame = stripAnsi(
+        renderSelectorFrame({ current: "codex", selected: "opencode", columns: 40, rows }),
+      );
+      expect(frame.split("\r\n").length).toBeLessThanOrEqual(rows);
     }
   });
 

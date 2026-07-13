@@ -53,6 +53,15 @@ const enhancedToggleLengthAt = (chunk: Uint8Array, offset: number) => {
   return undefined;
 };
 
+const isIncompleteCsiAt = (chunk: Uint8Array, offset: number) => {
+  if (chunk[offset] !== 0x1b || chunk[offset + 1] !== 0x5b) return false;
+  for (let index = offset + 2; index < chunk.length; index += 1) {
+    const byte = chunk[index]!;
+    if (byte >= 0x40 && byte <= 0x7e) return false;
+  }
+  return true;
+};
+
 export interface RoutedInput {
   readonly forward: Uint8Array;
   readonly afterSwitch: Uint8Array;
@@ -70,22 +79,28 @@ export class NativeInputRouter {
   readonly #recent: Array<number> = [];
   #insideBracketedPaste = false;
   #pendingRelayPrefix: Uint8Array | undefined;
+  #pendingCsi: Uint8Array | undefined;
 
   get hasPendingPrefix() {
-    return this.#pendingRelayPrefix !== undefined;
+    return this.#pendingRelayPrefix !== undefined || this.#pendingCsi !== undefined;
   }
 
   flushPending(): Uint8Array {
-    const bytes = this.#pendingRelayPrefix ?? new Uint8Array();
+    const bytes = this.#pendingRelayPrefix ?? this.#pendingCsi ?? new Uint8Array();
     this.#pendingRelayPrefix = undefined;
+    this.#pendingCsi = undefined;
     return bytes.slice();
   }
 
   route(chunk: Uint8Array): RoutedInput {
+    const input = this.#pendingCsi
+      ? Buffer.concat([Buffer.from(this.#pendingCsi), Buffer.from(chunk)])
+      : chunk;
+    this.#pendingCsi = undefined;
     const forward: Array<number> = [];
 
-    for (let index = 0; index < chunk.length; index += 1) {
-      const byte = chunk[index]!;
+    for (let index = 0; index < input.length; index += 1) {
+      const byte = input[index]!;
       if (this.#insideBracketedPaste) {
         this.#record(byte, forward);
         continue;
@@ -97,7 +112,7 @@ export class NativeInputRouter {
         if (relaySwitchCommands.has(byte)) {
           return {
             forward: Uint8Array.from(forward),
-            afterSwitch: chunk.slice(index + 1),
+            afterSwitch: input.slice(index + 1),
             switchRequested: true,
             switchIntent: "selector",
           };
@@ -105,14 +120,14 @@ export class NativeInputRouter {
         forward.push(...prefix);
       }
 
-      const enhancedToggleLength = enhancedToggleLengthAt(chunk, index);
-      const toggleLength = matchesAt(chunk, index, legacyF6)
+      const enhancedToggleLength = enhancedToggleLengthAt(input, index);
+      const toggleLength = matchesAt(input, index, legacyF6)
         ? legacyF6.length
         : enhancedToggleLength;
       if (toggleLength) {
         return {
           forward: Uint8Array.from(forward),
-          afterSwitch: chunk.slice(index + toggleLength),
+          afterSwitch: input.slice(index + toggleLength),
           switchRequested: true,
           switchIntent: "toggle",
         };
@@ -123,10 +138,18 @@ export class NativeInputRouter {
         continue;
       }
 
+      // Terminal key reports can be fragmented at arbitrary byte boundaries.
+      // Buffer only an Escape that is already known to begin CSI; a lone
+      // Escape remains immediate so native dialogs still dismiss naturally.
+      if (isIncompleteCsiAt(input, index)) {
+        this.#pendingCsi = input.slice(index);
+        break;
+      }
+
       // A plain Escape must reach the native TUI immediately. The enhanced
       // Ctrl+] encoding is therefore reserved only when its complete sequence
       // is present in this input chunk.
-      if (byte === enhancedRelayPrefix[0] && matchesAt(chunk, index, enhancedRelayPrefix)) {
+      if (byte === enhancedRelayPrefix[0] && matchesAt(input, index, enhancedRelayPrefix)) {
         this.#pendingRelayPrefix = enhancedRelayPrefix;
         index += enhancedRelayPrefix.length - 1;
         continue;

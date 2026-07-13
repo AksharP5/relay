@@ -46,7 +46,7 @@ export interface NativePtyIo {
 export interface NativePtyOptions {
   readonly prefixTimeoutMs?: number;
   /** Return false to leave the native TUI running (for example, during an active turn). */
-  readonly onSwitchRequest?: () => boolean | Promise<boolean>;
+  readonly onSwitchRequest?: (intent: "toggle" | "selector") => boolean | Promise<boolean>;
 }
 
 const defaultIo = (): NativePtyIo => ({
@@ -154,7 +154,7 @@ export const runNativeTui = async (
     }
     pendingSwitchInput.push(routed.afterSwitch);
     switchCheckPending = true;
-    void Promise.resolve(options.onSwitchRequest?.() ?? true)
+    void Promise.resolve(options.onSwitchRequest?.(routed.switchIntent ?? "selector") ?? true)
       .then((allowed) => {
         if (!allowed || switchRequested || parentSignal) {
           if (!allowed) {

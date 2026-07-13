@@ -76,20 +76,37 @@ export const renderSelectorFrame = (input: SelectorFrameInput) => {
     ...optionLines,
     { text: help, dim: true },
   ];
-  const lines = rows >= spacious.length + 2 ? spacious : compact;
+  const minimal: Array<FrameLine> = [{ text: "Switch harness" }, ...optionLines];
+  const singleLine: Array<FrameLine> = [
+    {
+      text: options
+        .map((harness) => `${harness === input.selected ? ">" : " "}${label(harness)}`)
+        .join("  "),
+      selected: true,
+    },
+  ];
+  const lines =
+    rows >= spacious.length + 2
+      ? spacious
+      : rows >= compact.length
+        ? compact
+        : rows >= minimal.length
+          ? minimal
+          : rows >= optionLines.length
+            ? optionLines
+            : singleLine;
   const fitted = lines.map((line) => ({ ...line, text: fit(line.text, columns) }));
   const contentWidth = Math.max(...fitted.map((line) => line.text.length), 1);
   const left = Math.max(0, Math.floor((columns - contentWidth) / 2));
   const top = rows > fitted.length ? Math.floor((rows - fitted.length) / 2) : 0;
   const indent = " ".repeat(left);
   const rendered = fitted.map((line) => {
-    const value = `${indent}${line.text}`;
-    if (line.selected) return `\u001b[7m${value}\u001b[0m`;
-    if (line.bold) return `\u001b[1m${value}\u001b[0m`;
-    if (line.dim) return `\u001b[2m${value}\u001b[0m`;
-    return value;
+    if (line.selected) return `${indent}\u001b[7m${line.text}\u001b[0m`;
+    if (line.bold) return `${indent}\u001b[1m${line.text}\u001b[0m`;
+    if (line.dim) return `${indent}\u001b[2m${line.text}\u001b[0m`;
+    return `${indent}${line.text}`;
   });
-  return `${clearScreen}${"\r\n".repeat(top)}${rendered.join("\r\n")}\r\n`;
+  return `${clearScreen}${"\r\n".repeat(top)}${rendered.join("\r\n")}`;
 };
 
 /** A brief Relay-owned screen. The selected harness's real TUI renders everything else. */

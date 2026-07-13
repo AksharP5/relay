@@ -87,6 +87,25 @@ describe("native input routing", () => {
     }
   });
 
+  it("recognizes fragmented direct toggles and forwards fragmented native CSI input", () => {
+    for (const [first, second] of [
+      ["\u001b[17", "~"],
+      ["\u001b[104;", "6u"],
+      ["\u001b[57369;1:", "1u"],
+    ] as const) {
+      const router = new NativeInputRouter();
+      expect(router.route(Buffer.from(first)).forward).toHaveLength(0);
+      expect(router.hasPendingPrefix).toBe(true);
+      const routed = router.route(Buffer.from(second));
+      expect(routed.switchRequested).toBe(true);
+      expect(routed.switchIntent).toBe("toggle");
+    }
+
+    const arrow = new NativeInputRouter();
+    expect(arrow.route(Buffer.from("\u001b[1;")).forward).toHaveLength(0);
+    expect(Buffer.from(arrow.route(Buffer.from("2A")).forward).toString()).toBe("\u001b[1;2A");
+  });
+
   it("forwards Escape immediately and preserves bytes after a switch chord", () => {
     const router = new NativeInputRouter();
     const escape = router.route(Buffer.from("\u001b"));
@@ -129,10 +148,9 @@ describe("native input routing", () => {
     expect(router.route(Buffer.from("r")).switchRequested).toBe(true);
 
     const split = new NativeInputRouter();
-    expect(Buffer.from(split.route(Buffer.from("\u001b[93;")).forward).toString()).toBe(
-      "\u001b[93;",
-    );
-    expect(Buffer.from(split.route(Buffer.from("5u")).forward).toString()).toBe("5u");
+    expect(split.route(Buffer.from("\u001b[93;")).forward).toHaveLength(0);
+    expect(split.route(Buffer.from("5u")).forward).toHaveLength(0);
+    expect(Buffer.from(split.route(Buffer.from("x")).forward).toString()).toBe("\u001b[93;5ux");
 
     const unused = new NativeInputRouter();
     unused.route(Buffer.from([0x1d]));
