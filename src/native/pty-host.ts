@@ -13,7 +13,7 @@ export interface NativeTuiCommand {
 export type NativeParentSignal = "SIGHUP" | "SIGINT" | "SIGTERM" | "SIGQUIT";
 
 export type NativeTuiExit =
-  | { readonly reason: "switch"; readonly intent?: "toggle" | "selector" }
+  | { readonly reason: "switch" }
   | { readonly reason: "exit"; readonly exitCode: number }
   | {
       readonly reason: "signal";
@@ -44,9 +44,9 @@ export interface NativePtyIo {
 }
 
 export interface NativePtyOptions {
-  readonly prefixTimeoutMs?: number;
+  readonly sequenceTimeoutMs?: number;
   /** Return false to leave the native TUI running (for example, during an active turn). */
-  readonly onSwitchRequest?: (intent: "toggle" | "selector") => boolean | Promise<boolean>;
+  readonly onSwitchRequest?: () => boolean | Promise<boolean>;
 }
 
 const defaultIo = (): NativePtyIo => ({
@@ -62,8 +62,7 @@ const dimensions = (output: HostOutput) => ({
 
 /**
  * Hosts an upstream TUI in a real PTY. Output is forwarded unchanged and all
- * input except Relay's enhanced Ctrl+Shift+H / F6 toggle and Ctrl+] then R
- * selector chord is written unchanged to the child.
+ * input except Relay's Ctrl+Shift+H / F6 toggle is written unchanged to the child.
  */
 export const runNativeTui = async (
   command: NativeTuiCommand,
@@ -75,12 +74,11 @@ export const runNativeTui = async (
   const router = new NativeInputRouter();
   const initialRawMode = io.input.isRaw === true;
   let switchRequested = false;
-  let switchIntent: "toggle" | "selector" | undefined;
   let switchCheckPending = false;
   let parentSignal: NativeParentSignal | undefined;
   let hostFailure: Error | undefined;
   let stopping: Promise<void> | undefined;
-  let prefixTimer: ReturnType<typeof setTimeout> | undefined;
+  let sequenceTimer: ReturnType<typeof setTimeout> | undefined;
   const pendingSwitchInput: Array<Uint8Array> = [];
   let terminal: Bun.Terminal | undefined;
   let child: ReturnType<typeof Bun.spawn> | undefined;
@@ -135,9 +133,9 @@ export const runNativeTui = async (
   };
 
   const onInput = (chunk: Buffer | Uint8Array | string) => {
-    if (prefixTimer) {
-      clearTimeout(prefixTimer);
-      prefixTimer = undefined;
+    if (sequenceTimer) {
+      clearTimeout(sequenceTimer);
+      sequenceTimer = undefined;
     }
     const bytes = typeof chunk === "string" ? Buffer.from(chunk) : new Uint8Array(chunk);
     if (switchRequested || parentSignal) return;
@@ -148,16 +146,16 @@ export const runNativeTui = async (
     const routed = router.route(bytes);
     writeInput(routed.forward);
     if (!routed.switchRequested) {
-      if (router.hasPendingPrefix)
-        prefixTimer = setTimeout(
-          flushPrefix,
-          router.pendingTimeoutMs(options.prefixTimeoutMs ?? 500),
+      if (router.hasPendingSequence)
+        sequenceTimer = setTimeout(
+          flushSequence,
+          router.pendingTimeoutMs(options.sequenceTimeoutMs ?? 500),
         );
       return;
     }
     pendingSwitchInput.push(routed.afterSwitch);
     switchCheckPending = true;
-    void Promise.resolve(options.onSwitchRequest?.(routed.switchIntent ?? "selector") ?? true)
+    void Promise.resolve(options.onSwitchRequest?.() ?? true)
       .then((allowed) => {
         if (!allowed || switchRequested || parentSignal) {
           if (!allowed) {
@@ -172,7 +170,6 @@ export const runNativeTui = async (
         pendingSwitchInput.length = 0;
         switchCheckPending = false;
         switchRequested = true;
-        switchIntent = routed.switchIntent;
         if (child) stopping = stopProcessTree(child);
       })
       .catch((cause) => {
@@ -182,9 +179,9 @@ export const runNativeTui = async (
         if (child) stopping = stopProcessTree(child);
       });
   };
-  const flushPrefix = () => {
-    prefixTimer = undefined;
-    writeInput(router.flushPending());
+  const flushSequence = () => {
+    sequenceTimer = undefined;
+    writeInput(router.flushPendingSequence());
   };
   const onResize = () => {
     const next = dimensions(io.output);
@@ -246,11 +243,9 @@ export const runNativeTui = async (
     }
     if (hostFailure) throw hostFailure;
     if (parentSignal) return { reason: "signal", signal: parentSignal };
-    return switchRequested
-      ? { reason: "switch", ...(switchIntent ? { intent: switchIntent } : {}) }
-      : { reason: "exit", exitCode };
+    return switchRequested ? { reason: "switch" } : { reason: "exit", exitCode };
   } finally {
-    if (prefixTimer) clearTimeout(prefixTimer);
+    if (sequenceTimer) clearTimeout(sequenceTimer);
     io.input.off("data", onInput);
     io.input.pause?.();
     io.resizeSource.off("SIGWINCH", onResize);

@@ -5,7 +5,6 @@ import type { Harness, NativeTranscriptTurn, RelayMessage, RelayThread } from ".
 import type { NativeRelayController } from "../src/native/controller.ts";
 import { NativeSessionUnavailable } from "../src/native/errors.ts";
 import { launchNativeRelay, type NativeBackend } from "../src/native/relay-host.ts";
-import { renderSelectorFrame, selectHarness } from "../src/native/selector.ts";
 
 const now = "2026-07-13T00:00:00.000Z";
 
@@ -229,9 +228,6 @@ describe("native Relay host", () => {
     let launches = 0;
     await launchNativeRelay(controller, {
       startBackend,
-      selectHarness: async () => {
-        throw new Error("direct toggle should not open the selector");
-      },
       runTui: async (command, onSwitchRequest) => {
         const harness = command.executable as Harness;
         launches += 1;
@@ -241,8 +237,8 @@ describe("native Relay host", () => {
           response: `${harness} answered`,
         });
         if (launches === 1) {
-          expect(await onSwitchRequest("toggle")).toBe(true);
-          return { reason: "switch", intent: "toggle" };
+          expect(await onSwitchRequest()).toBe(true);
+          return { reason: "switch" };
         }
         return { reason: "exit", exitCode: 0 };
       },
@@ -289,7 +285,7 @@ describe("native Relay host", () => {
         if (waits === 2) active = true;
       },
       runTui: async (_command, onSwitchRequest) => {
-        expect(await onSwitchRequest("toggle")).toBe(false);
+        expect(await onSwitchRequest()).toBe(false);
         return { reason: "exit", exitCode: 0 };
       },
     });
@@ -319,22 +315,19 @@ describe("native Relay host", () => {
       },
       now: () => clock,
       wait: async () => {},
-      selectHarness: async () => {
-        throw new Error("direct toggle should not open the selector");
-      },
       runTui: async (_command, onSwitchRequest) => {
         launches += 1;
         if (launches === 1) {
-          expect(await onSwitchRequest("toggle")).toBe(true);
-          return { reason: "switch", intent: "toggle" };
+          expect(await onSwitchRequest()).toBe(true);
+          return { reason: "switch" };
         }
 
         clock = 5_001;
-        expect(await onSwitchRequest("toggle")).toBe(false);
+        expect(await onSwitchRequest()).toBe(false);
         clock = 5_900;
-        expect(await onSwitchRequest("toggle")).toBe(false);
+        expect(await onSwitchRequest()).toBe(false);
         clock = 6_901;
-        expect(await onSwitchRequest("toggle")).toBe(true);
+        expect(await onSwitchRequest()).toBe(true);
         return { reason: "exit", exitCode: 0 };
       },
     });
@@ -360,7 +353,6 @@ describe("native Relay host", () => {
 
     await launchNativeRelay(controller, {
       startBackend: async () => backend,
-      selectHarness: async () => undefined,
       runTui: async () => {
         turns.push({
           id: "cold-turn",
@@ -389,7 +381,6 @@ describe("native Relay host", () => {
 
     await launchNativeRelay(controller, {
       startBackend: async () => backend,
-      selectHarness: async () => undefined,
       runTui: async () => ({ reason: "exit", exitCode: 0 }),
     });
 
@@ -736,97 +727,5 @@ describe("native Relay host", () => {
     ]);
     expect(thread().bindings.codex?.sessionId).toBe("cold-codex-2");
     expect(thread().pendingHandoffs?.codex).toBeUndefined();
-  });
-});
-
-describe("native harness selector", () => {
-  const stripAnsi = (value: string) => value.replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
-
-  it("aligns both harness labels and stays within narrow terminal widths", () => {
-    for (const columns of [20, 40, 80]) {
-      const frame = stripAnsi(
-        renderSelectorFrame({ current: "codex", selected: "opencode", columns, rows: 24 }),
-      );
-      const lines = frame.split("\r\n");
-      expect(lines.every((line) => line.length <= columns)).toBe(true);
-      const codex = lines.find((line) => line.includes("Codex"));
-      const opencode = lines.find((line) => line.includes("OpenCode"));
-      expect(codex).toBeDefined();
-      expect(opencode).toBeDefined();
-      expect(codex!.indexOf("Codex")).toBe(opencode!.indexOf("OpenCode"));
-    }
-  });
-
-  it("never renders past terminals only one to five rows tall", () => {
-    for (const rows of [1, 2, 3, 4, 5]) {
-      const frame = stripAnsi(
-        renderSelectorFrame({ current: "codex", selected: "opencode", columns: 40, rows }),
-      );
-      expect(frame.split("\r\n").length).toBeLessThanOrEqual(rows);
-    }
-  });
-
-  it("changes harness with fragmented modified arrows and restores the terminal", async () => {
-    class Input extends EventEmitter {
-      isRaw = false;
-      modes: Array<boolean> = [];
-      pauseCalls = 0;
-      setRawMode(enabled: boolean) {
-        this.isRaw = enabled;
-        this.modes.push(enabled);
-      }
-      resume() {}
-      pause() {
-        this.pauseCalls += 1;
-      }
-    }
-    const input = new Input();
-    const output: Array<string> = [];
-    const selection = selectHarness("opencode", {
-      input,
-      output: { write: (value) => void output.push(String(value)) },
-    });
-    input.emit("data", "\u001b[1;");
-    input.emit("data", "2B\r");
-
-    expect(await selection).toBe("codex");
-    expect(input.modes).toEqual([true, false]);
-    expect(input.pauseCalls).toBe(1);
-    expect(input.listenerCount("data")).toBe(0);
-    expect(output.join("")).toContain("\u001b[?1049l");
-  });
-
-  it("restores the terminal when Relay is terminated inside its selector", async () => {
-    class Input extends EventEmitter {
-      isRaw = false;
-      setRawMode(enabled: boolean) {
-        this.isRaw = enabled;
-      }
-      resume() {}
-      pause() {}
-    }
-    const input = new Input();
-    const signals = new EventEmitter();
-    const output: Array<string> = [];
-    const selectorOutput = {
-      columns: 80,
-      rows: 24,
-      write: (value: string | Uint8Array) => void output.push(String(value)),
-    };
-    const selection = selectHarness("codex", {
-      input,
-      output: selectorOutput,
-      signalSource: signals,
-    });
-    selectorOutput.columns = 42;
-    signals.emit("SIGWINCH");
-    expect(output.filter((chunk) => chunk.includes("Switch harness"))).toHaveLength(2);
-    signals.emit("SIGINT");
-
-    expect(await selection).toBeUndefined();
-    expect(input.isRaw).toBe(false);
-    expect(signals.listenerCount("SIGINT")).toBe(0);
-    expect(signals.listenerCount("SIGWINCH")).toBe(0);
-    expect(output.join("")).toContain("\u001b[?1049l");
   });
 });

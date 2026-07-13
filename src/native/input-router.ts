@@ -1,6 +1,3 @@
-const legacyRelayPrefix = Uint8Array.of(0x1d);
-const enhancedRelayPrefix = Buffer.from("\u001b[93;5u");
-const relaySwitchCommands = new Set(["r".charCodeAt(0), "R".charCodeAt(0)]);
 const legacyF6 = Buffer.from("\u001b[17~");
 const bracketedPasteStart = Buffer.from("\u001b[200~");
 const bracketedPasteEnd = Buffer.from("\u001b[201~");
@@ -66,38 +63,29 @@ export interface RoutedInput {
   readonly forward: Uint8Array;
   readonly afterSwitch: Uint8Array;
   readonly switchRequested: boolean;
-  readonly switchIntent: "toggle" | "selector" | undefined;
 }
 
 /**
- * Removes only Relay's enhanced Ctrl+Shift+H / F6 toggle or Ctrl+] then R
- * selector chord without interpreting any other terminal input. Legacy and
- * CSI-u encodings are recognized. Bracketed paste contents are always passed
- * through literally.
+ * Removes only Relay's Ctrl+Shift+H / F6 toggle without interpreting any other
+ * terminal input. Legacy and CSI-u encodings are recognized. Bracketed paste
+ * contents are always passed through literally.
  */
 export class NativeInputRouter {
   readonly #recent: Array<number> = [];
   #insideBracketedPaste = false;
-  #pendingRelayPrefix: Uint8Array | undefined;
   #pendingCsi: Uint8Array | undefined;
   #pendingEscape: Uint8Array | undefined;
 
-  get hasPendingPrefix() {
-    return (
-      this.#pendingRelayPrefix !== undefined ||
-      this.#pendingCsi !== undefined ||
-      this.#pendingEscape !== undefined
-    );
+  get hasPendingSequence() {
+    return this.#pendingCsi !== undefined || this.#pendingEscape !== undefined;
   }
 
   pendingTimeoutMs(fallback: number) {
     return this.#pendingEscape ? 25 : fallback;
   }
 
-  flushPending(): Uint8Array {
-    const bytes =
-      this.#pendingRelayPrefix ?? this.#pendingCsi ?? this.#pendingEscape ?? new Uint8Array();
-    this.#pendingRelayPrefix = undefined;
+  flushPendingSequence(): Uint8Array {
+    const bytes = this.#pendingCsi ?? this.#pendingEscape ?? new Uint8Array();
     this.#pendingCsi = undefined;
     this.#pendingEscape = undefined;
     return bytes.slice();
@@ -119,20 +107,6 @@ export class NativeInputRouter {
         continue;
       }
 
-      if (this.#pendingRelayPrefix) {
-        const prefix = this.#pendingRelayPrefix;
-        this.#pendingRelayPrefix = undefined;
-        if (relaySwitchCommands.has(byte)) {
-          return {
-            forward: Uint8Array.from(forward),
-            afterSwitch: input.slice(index + 1),
-            switchRequested: true,
-            switchIntent: "selector",
-          };
-        }
-        forward.push(...prefix);
-      }
-
       const enhancedToggleLength = enhancedToggleLengthAt(input, index);
       const toggleLength = matchesAt(input, index, legacyF6)
         ? legacyF6.length
@@ -142,13 +116,7 @@ export class NativeInputRouter {
           forward: Uint8Array.from(forward),
           afterSwitch: input.slice(index + toggleLength),
           switchRequested: true,
-          switchIntent: "toggle",
         };
-      }
-
-      if (byte === legacyRelayPrefix[0]) {
-        this.#pendingRelayPrefix = legacyRelayPrefix;
-        continue;
       }
 
       // Terminal key reports can be fragmented at arbitrary byte boundaries.
@@ -163,13 +131,6 @@ export class NativeInputRouter {
         break;
       }
 
-      // The enhanced Ctrl+] encoding is reserved only when complete.
-      if (byte === enhancedRelayPrefix[0] && matchesAt(input, index, enhancedRelayPrefix)) {
-        this.#pendingRelayPrefix = enhancedRelayPrefix;
-        index += enhancedRelayPrefix.length - 1;
-        continue;
-      }
-
       this.#record(byte, forward);
     }
 
@@ -177,7 +138,6 @@ export class NativeInputRouter {
       forward: Uint8Array.from(forward),
       afterSwitch: new Uint8Array(),
       switchRequested: false,
-      switchIntent: undefined,
     };
   }
 

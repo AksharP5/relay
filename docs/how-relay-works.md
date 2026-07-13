@@ -20,9 +20,9 @@ Native sessions are persisted by their own harnesses, so stopping the temporary 
 
 ## Why switching uses distinct keys
 
-Relay does not intercept `/`, `Escape`, `Ctrl+C`, or ordinary text. `Ctrl+Shift+H` is the primary direct switch in terminals that report enhanced keyboard input. `F6` provides a function-key path, and `Ctrl+]`, then `R`, remains a compatibility fallback that opens the selector.
+Relay does not intercept `/`, `Escape`, `Ctrl+C`, or ordinary text. `Ctrl+Shift+H` is the primary direct switch in terminals that report enhanced keyboard input. `F6` is the fallback for terminals that cannot distinguish that shortcut from `Ctrl+H` (Backspace). Relay has no prefix chord or selector.
 
-The input router recognizes legacy function-key sequences, CSI-u and Kitty enhanced keyboard encodings, and xterm's modified-key form. It consumes only a key press, not a repeat or release. Legacy `Ctrl+H` remains Backspace because terminals that cannot distinguish `Ctrl+Shift+H` must not lose ordinary editing. Relay also understands bracketed-paste boundaries, including markers split across input chunks, so pasted shortcut bytes cannot accidentally switch harnesses. If `Ctrl+]` is not followed by `R`, Relay forwards it to the native application after a short timeout.
+The input router recognizes legacy function-key sequences, CSI-u and Kitty enhanced keyboard encodings, and xterm's modified-key form. It consumes only a key press, not a repeat or release. Legacy `Ctrl+H` remains Backspace because terminals that cannot distinguish `Ctrl+Shift+H` must not lose ordinary editing. Relay also understands bracketed-paste boundaries, including markers split across input chunks, so pasted shortcut bytes cannot accidentally switch harnesses. Every other key sequence is forwarded to the native application.
 
 Relay does not implement `/harness` by watching for those characters. At the PTY boundary, the same bytes could belong to a native composer, dialog, search field, Vim command, recalled history entry, or external editor. Only the upstream TUI knows that state. A raw text interceptor would compromise the native behavior Relay exists to preserve.
 

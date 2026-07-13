@@ -36,7 +36,7 @@ your terminal
           └── native OpenCode TUI ── Relay-owned OpenCode server
 ```
 
-Only one branch runs at a time. Relay forwards terminal bytes unchanged, including colors, alternate-screen behavior, mouse input, enhanced keyboard sequences, bracketed paste, and resize events. It reserves the distinct enhanced `Ctrl+Shift+H` sequence and `F6` for direct switching. `Ctrl+]`, then `R`, remains a compatibility fallback that opens Relay's small selector.
+Only one branch runs at a time. Relay forwards terminal bytes unchanged, including colors, alternate-screen behavior, mouse input, enhanced keyboard sequences, bracketed paste, and resize events. It reserves only the distinct enhanced `Ctrl+Shift+H` sequence and `F6` for direct switching. F6 is the fallback for terminals that encode `Ctrl+Shift+H` as `Ctrl+H` (Backspace); most users can ignore it.
 
 The current release pairs each interface with its own engine: Codex TUI with Codex, and OpenCode TUI with OpenCode. Running the literal OpenCode TUI against the Codex engine would require a complete, bidirectional translation between their live protocols, approvals, tools, streaming events, session semantics, and commands. Relay does not claim that adapter exists yet.
 
@@ -102,17 +102,13 @@ relay
 
 Relay uses the most recent task bound to that directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
 
-| Input                              | Owner          | Action                                                |
-| ---------------------------------- | -------------- | ----------------------------------------------------- |
-| `/`, letters, `Enter`              | Native TUI     | Type and run native slash commands normally           |
-| `Escape`                           | Native TUI     | Close its active dialog or autocomplete               |
-| `Ctrl+C`                           | Native TUI     | Interrupt or exit according to native behavior        |
-| `Ctrl+Shift+H`                     | Relay          | Switch directly to the other harness when idle        |
-| `F6` (`Fn+F6` with Mac media keys) | Relay          | Switch directly to the other harness when idle        |
-| `Ctrl+]`, then `R`                 | Relay          | Open the harness selector as a compatibility fallback |
-| `Up` / `Down`, `Enter`             | Relay selector | Choose Codex or OpenCode                              |
-| `Escape`                           | Relay selector | Return to the current harness                         |
-| `q`                                | Relay selector | Exit Relay                                            |
+| Input                              | Owner      | Action                                                             |
+| ---------------------------------- | ---------- | ------------------------------------------------------------------ |
+| `/`, letters, `Enter`              | Native TUI | Type and run native slash commands normally                        |
+| `Escape`                           | Native TUI | Close its active dialog or autocomplete                            |
+| `Ctrl+C`                           | Native TUI | Interrupt or exit according to native behavior                     |
+| `Ctrl+Shift+H`                     | Relay      | Switch directly to the other harness when idle                     |
+| `F6` (`Fn+F6` with Mac media keys) | Relay      | Fallback when the terminal cannot distinguish the primary shortcut |
 
 Relay refuses to detach while a turn is active, because doing so could strand an approval or lose streaming state. The terminal bell sounds; wait for the turn to finish, then use the switch key again.
 

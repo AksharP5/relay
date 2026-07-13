@@ -15,7 +15,6 @@ import {
   type NativeTuiCommand,
   type NativeTuiExit,
 } from "./pty-host.ts";
-import { selectHarness } from "./selector.ts";
 
 export interface NativeBackend {
   readonly preparesColdHandoff?: boolean;
@@ -102,9 +101,8 @@ export interface NativeRelayHostDependencies {
   readonly startBackend: (harness: Harness, cwd: string) => Promise<NativeBackend>;
   readonly runTui: (
     command: NativeTuiCommand,
-    onSwitchRequest: (intent: "toggle" | "selector") => Promise<boolean>,
+    onSwitchRequest: () => Promise<boolean>,
   ) => Promise<NativeTuiExit>;
-  readonly selectHarness: (current: Harness) => Promise<Harness | undefined>;
   readonly signalSource: EventEmitter;
   readonly wait: (milliseconds: number) => Promise<void>;
   readonly now: () => number;
@@ -118,7 +116,6 @@ const defaultDependencies: NativeRelayHostDependencies = {
       { input: process.stdin, output: process.stdout, resizeSource: process },
       { onSwitchRequest },
     ),
-  selectHarness,
   signalSource: process,
   wait: Bun.sleep,
   now: Date.now,
@@ -201,7 +198,7 @@ const runHarness = async (
   harness: Harness,
   dependencies: NativeRelayHostDependencies,
   getSignal: () => NativeParentSignal | undefined,
-  allowSwitchAttempt: (intent: "toggle" | "selector") => boolean,
+  allowSwitchAttempt: () => boolean,
   armToggleLatch: boolean,
 ): Promise<{ readonly thread: RelayThread; readonly exit: NativeTuiExit }> => {
   let thread = await controller.switchHarness(initialThread.id, harness);
@@ -274,24 +271,21 @@ const runHarness = async (
     const preparedSignal = getSignal();
     if (preparedSignal) return { thread, exit: { reason: "signal", signal: preparedSignal } };
     const boundSessionId = thread.bindings[harness]?.sessionId;
-    if (armToggleLatch) allowSwitchAttempt("toggle");
+    if (armToggleLatch) allowSwitchAttempt();
 
-    const exit = await dependencies.runTui(
-      backend.command(sessionId, launchModel),
-      async (intent) => {
-        if (!allowSwitchAttempt(intent)) return false;
+    const exit = await dependencies.runTui(backend.command(sessionId, launchModel), async () => {
+      if (!allowSwitchAttempt()) return false;
 
-        // A native TUI forwards Enter before Relay sees the switch key. Sample
-        // the backend across a short settling window so a newly-starting turn
-        // cannot be mistaken for an idle session and terminated mid-request.
-        for (let sample = 0; sample < 3; sample += 1) {
-          await dependencies.wait(80);
-          sessionId = await backend.resolveSession(sessionId);
-          if (sessionId && !(await backend.isIdle(sessionId))) return false;
-        }
-        return true;
-      },
-    );
+      // A native TUI forwards Enter before Relay sees the switch key. Sample
+      // the backend across a short settling window so a newly-starting turn
+      // cannot be mistaken for an idle session and terminated mid-request.
+      for (let sample = 0; sample < 3; sample += 1) {
+        await dependencies.wait(80);
+        sessionId = await backend.resolveSession(sessionId);
+        if (sessionId && !(await backend.isIdle(sessionId))) return false;
+      }
+      return true;
+    });
 
     const tuiSignal = exit.reason === "signal" ? exit.signal : getSignal();
     if (tuiSignal) return { thread, exit: { reason: "signal", signal: tuiSignal } };
@@ -345,8 +339,7 @@ export const launchNativeRelay = async (
 
   let lease: { readonly release: () => Promise<void> } | undefined;
   let lastToggleAttemptAt: number | undefined;
-  const allowSwitchAttempt = (intent: "toggle" | "selector") => {
-    if (intent === "selector") return true;
+  const allowSwitchAttempt = () => {
     const now = dependencies.now();
     const allowed = lastToggleAttemptAt === undefined || now - lastToggleAttemptAt >= 1_000;
     // Refresh on every repeat so a held legacy key remains latched until it has
@@ -386,18 +379,8 @@ export const launchNativeRelay = async (
         return;
       }
 
-      const selected =
-        result.exit.intent === "toggle"
-          ? harness === "codex"
-            ? "opencode"
-            : "codex"
-          : await dependencies.selectHarness(harness);
-      if (!selected) {
-        if (pendingSignal) process.exitCode = signalExitCode(pendingSignal);
-        return;
-      }
-      armToggleLatch = result.exit.intent === "toggle";
-      harness = selected;
+      armToggleLatch = true;
+      harness = harness === "codex" ? "opencode" : "codex";
     }
   } finally {
     await lease?.release();

@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 describe("native input routing", () => {
-  it("keeps slash-command typing native and reserves only the Relay prefix chord", () => {
+  it("keeps slash commands and the retired prefix chord native", () => {
     const router = new NativeInputRouter();
     const slash = router.route(Buffer.from("/resume"));
     expect(Buffer.from(slash.forward).toString()).toBe("/resume");
@@ -51,14 +51,10 @@ describe("native input routing", () => {
     expect(Buffer.from(relayLikeCommand.forward).toString()).toBe("/harness\r");
     expect(relayLikeCommand.switchRequested).toBe(false);
 
-    const prefix = router.route(Buffer.from([0x1d]));
-    expect(prefix.forward).toHaveLength(0);
-    expect(prefix.switchRequested).toBe(false);
-    const chord = router.route(Buffer.from("r"));
-    expect(chord.forward).toHaveLength(0);
-    expect(chord.afterSwitch).toHaveLength(0);
-    expect(chord.switchRequested).toBe(true);
-    expect(chord.switchIntent).toBe("selector");
+    const retiredChord = Buffer.from([0x1d, "r".charCodeAt(0)]);
+    const routed = router.route(retiredChord);
+    expect(Buffer.from(routed.forward)).toEqual(retiredChord);
+    expect(routed.switchRequested).toBe(false);
   });
 
   it("recognizes direct toggle keys without stealing legacy Backspace", () => {
@@ -72,7 +68,6 @@ describe("native input routing", () => {
     ]) {
       const routed = new NativeInputRouter().route(Buffer.from(sequence));
       expect(routed.switchRequested).toBe(true);
-      expect(routed.switchIntent).toBe("toggle");
       expect(routed.forward).toHaveLength(0);
     }
 
@@ -98,10 +93,9 @@ describe("native input routing", () => {
     ] as const) {
       const router = new NativeInputRouter();
       expect(router.route(Buffer.from(first)).forward).toHaveLength(0);
-      expect(router.hasPendingPrefix).toBe(true);
+      expect(router.hasPendingSequence).toBe(true);
       const routed = router.route(Buffer.from(second));
       expect(routed.switchRequested).toBe(true);
-      expect(routed.switchIntent).toBe("toggle");
     }
 
     const arrow = new NativeInputRouter();
@@ -109,31 +103,24 @@ describe("native input routing", () => {
     expect(Buffer.from(arrow.route(Buffer.from("2A")).forward).toString()).toBe("\u001b[1;2A");
   });
 
-  it("preserves Escape and bytes after a switch chord", () => {
+  it("preserves Escape and bytes after a direct switch", () => {
     const router = new NativeInputRouter();
     const escape = router.route(Buffer.from("\u001b"));
     expect(escape.forward).toHaveLength(0);
-    expect(router.hasPendingPrefix).toBe(true);
-    expect(Buffer.from(router.flushPending())).toEqual(Buffer.from("\u001b"));
+    expect(router.hasPendingSequence).toBe(true);
+    expect(Buffer.from(router.flushPendingSequence())).toEqual(Buffer.from("\u001b"));
 
-    const chord = router.route(Buffer.from([0x1d, ...Buffer.from("r/resume")]));
-    expect(chord.switchRequested).toBe(true);
-    expect(Buffer.from(chord.afterSwitch).toString()).toBe("/resume");
+    const toggle = router.route(Buffer.from("\u001b[104;6u/resume"));
+    expect(toggle.switchRequested).toBe(true);
+    expect(Buffer.from(toggle.afterSwitch).toString()).toBe("/resume");
   });
 
-  it("does not treat a pasted Relay chord as a switch", () => {
+  it("does not treat a pasted direct shortcut as a switch", () => {
     const router = new NativeInputRouter();
-    const pasted = router.route(Buffer.from("\u001b[200~before\u001dr-after\u001b[201~"));
-    expect(Buffer.from(pasted.forward).toString()).toBe(
-      "\u001b[200~before\u001dr-after\u001b[201~",
-    );
-    expect(pasted.switchRequested).toBe(false);
     const pastedToggle = new NativeInputRouter().route(
       Buffer.from("\u001b[200~\u001b[104;6u\u001b[17~\u001b[201~"),
     );
     expect(pastedToggle.switchRequested).toBe(false);
-    router.route(Buffer.from([0x1d]));
-    expect(router.route(Buffer.from("r")).switchRequested).toBe(true);
   });
 
   it("recognizes bracketed-paste markers split across input chunks", () => {
@@ -142,25 +129,19 @@ describe("native input routing", () => {
     const middle = router.route(Buffer.from("0~x\u001dry\u001b[20"));
     expect(middle.switchRequested).toBe(false);
     expect(router.route(Buffer.from("1~")).switchRequested).toBe(false);
-    router.route(Buffer.from([0x1d]));
-    expect(router.route(Buffer.from("r")).switchRequested).toBe(true);
+    expect(router.route(Buffer.from("\u001b[17~")).switchRequested).toBe(true);
   });
 
-  it("recognizes Codex CSI-u encoding and forwards an unused prefix", () => {
+  it("forwards the retired Ctrl+] encodings byte-for-byte", () => {
     const router = new NativeInputRouter();
-    expect(router.route(Buffer.from("\u001b[93;5u")).forward).toHaveLength(0);
-    expect(router.route(Buffer.from("r")).switchRequested).toBe(true);
+    const complete = "\u001b[93;5ur";
+    const routed = router.route(Buffer.from(complete));
+    expect(Buffer.from(routed.forward).toString()).toBe(complete);
+    expect(routed.switchRequested).toBe(false);
 
     const split = new NativeInputRouter();
     expect(split.route(Buffer.from("\u001b[93;")).forward).toHaveLength(0);
-    expect(split.route(Buffer.from("5u")).forward).toHaveLength(0);
-    expect(Buffer.from(split.route(Buffer.from("x")).forward).toString()).toBe("\u001b[93;5ux");
-
-    const unused = new NativeInputRouter();
-    unused.route(Buffer.from([0x1d]));
-    expect(Buffer.from(unused.route(Buffer.from("x")).forward)).toEqual(
-      Buffer.from([0x1d, "x".charCodeAt(0)]),
-    );
+    expect(Buffer.from(split.route(Buffer.from("5ur")).forward).toString()).toBe("\u001b[93;5ur");
   });
 });
 
@@ -186,7 +167,7 @@ describe("native PTY host", () => {
     expect(output.text()).toContain(`INPUT:${Buffer.from("/resume").toString("hex")}`);
 
     input.emit("data", Buffer.from("\u001b[104;6u"));
-    expect(await result).toEqual({ reason: "switch", intent: "toggle" });
+    expect(await result).toEqual({ reason: "switch" });
     expect(output.text()).toContain(":TRAILING_OUTPUT");
     expect(input.rawModes).toEqual([true, false]);
     expect(input.pauseCalls).toBe(1);
@@ -203,31 +184,6 @@ describe("native PTY host", () => {
         { input, output: new TestOutput(), resizeSource: new EventEmitter() },
       ),
     ).rejects.toThrow("interactive terminal");
-  });
-
-  it("forwards an unused Relay prefix after the bounded chord timeout", async () => {
-    const input = new TestInput();
-    const output = new TestOutput();
-    const resize = new EventEmitter();
-    const result = runNativeTui(
-      {
-        executable: process.execPath,
-        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
-        cwd: process.cwd(),
-      },
-      { input, output, resizeSource: resize },
-      { prefixTimeoutMs: 10 },
-    );
-    running.push(result);
-
-    await Bun.sleep(50);
-    input.emit("data", Buffer.from([0x1d]));
-    await Bun.sleep(40);
-    expect(output.text()).toContain("INPUT:1d");
-
-    resize.emit("SIGINT");
-    expect(await result).toEqual({ reason: "signal", signal: "SIGINT" });
-    expect(input.rawModes).toEqual([true, false]);
   });
 
   it("forwards a lone Escape after low-latency sequence disambiguation", async () => {
@@ -270,14 +226,13 @@ describe("native PTY host", () => {
     running.push(result);
 
     await Bun.sleep(50);
-    input.emit("data", Buffer.from([0x1d, ...Buffer.from("r/resume")]));
+    input.emit("data", Buffer.from("\u001b[104;6u/resume"));
     await Bun.sleep(25);
     expect(output.text()).toContain(`INPUT:${Buffer.from("/resume").toString("hex")}`);
 
     idle = true;
-    input.emit("data", Buffer.from([0x1d]));
-    input.emit("data", Buffer.from("r"));
-    expect(await result).toEqual({ reason: "switch", intent: "selector" });
+    input.emit("data", Buffer.from("\u001b[104;6u"));
+    expect(await result).toEqual({ reason: "switch" });
   });
 
   it("buffers post-chord input while checking and restores its order after a veto", async () => {
@@ -302,7 +257,7 @@ describe("native PTY host", () => {
     running.push(result);
 
     await Bun.sleep(50);
-    input.emit("data", Buffer.from([0x1d, ...Buffer.from("rabc")]));
+    input.emit("data", Buffer.from("\u001b[104;6uabc"));
     input.emit("data", Buffer.from("def"));
     await Bun.sleep(20);
     expect(output.text()).not.toContain(`INPUT:${Buffer.from("def").toString("hex")}`);
