@@ -82,6 +82,14 @@ requireText(
   "Codex app-server schema",
 );
 
+// Compatibility exercises Relay's vendor protocol contract, not the user's
+// personal MCP/plugin configuration. A temporary Codex home keeps the probe
+// deterministic and avoids starting unrelated integrations or reading their
+// configuration while creating no-model threads.
+const isolatedCodexHome = join(artifacts, "codex-home");
+await mkdir(isolatedCodexHome, { recursive: true, mode: 0o700 });
+Bun.env.CODEX_HOME = isolatedCodexHome;
+
 const codexBackend = await CodexNativeBackend.start(codex, process.cwd());
 let codexSessionId: string | undefined;
 try {
