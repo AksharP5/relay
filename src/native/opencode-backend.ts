@@ -19,6 +19,9 @@ class OpenCodeReadError extends Error {
 const asObject = (value: unknown): JsonObject | undefined =>
   value !== null && typeof value === "object" ? (value as JsonObject) : undefined;
 
+const asSessionId = (value: unknown) =>
+  typeof value === "string" && value.startsWith("ses") ? value : undefined;
+
 const visibleText = (parts: unknown) =>
   Array.isArray(parts)
     ? parts
@@ -95,12 +98,12 @@ const readBoundedStream = async (stream: ReadableStream<Uint8Array>, limitBytes:
       totalBytes += value.byteLength;
       if (totalBytes > limitBytes)
         throw new Error(`OpenCode history export exceeded ${limitBytes} bytes`);
-      chunks.push(value.slice());
+      chunks.push(value);
     }
   } finally {
     reader.releaseLock();
   }
-  return new TextDecoder().decode(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
+  return new TextDecoder().decode(Buffer.concat(chunks, totalBytes));
 };
 
 export class OpenCodeNativeBackend {
@@ -143,7 +146,7 @@ export class OpenCodeNativeBackend {
       executable,
       cwd,
       options.exportTimeoutMs ?? 30_000,
-      options.exportLimitBytes ?? 64 * 1024 * 1024,
+      options.exportLimitBytes ?? 32 * 1024 * 1024,
     );
     const onAbort = () => backend.#eventAbort.abort(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -253,16 +256,11 @@ export class OpenCodeNativeBackend {
       const properties = asObject(event?.properties);
       const info = asObject(properties?.info);
       const eventType = typeof event?.type === "string" ? event.type : undefined;
-      const sessionId =
-        typeof properties?.sessionID === "string"
-          ? properties.sessionID
-          : typeof info?.sessionID === "string"
-            ? info.sessionID
-            : eventType !== "message.updated" && typeof info?.id === "string"
-              ? info.id
-              : undefined;
+      const sessionId = asSessionId(properties?.sessionID) ?? asSessionId(info?.sessionID);
       if (!sessionId) continue;
-      if (typeof info?.parentID === "string") this.#sessionParents.set(sessionId, info.parentID);
+      const parentId = asSessionId(info?.parentID);
+      if ((eventType === "session.created" || eventType === "session.updated") && parentId)
+        this.#sessionParents.set(sessionId, parentId);
       if (!this.#observeTui) continue;
       if (
         eventType === "tui.session.select" ||
@@ -446,10 +444,13 @@ export class OpenCodeNativeBackend {
         ]),
         aborted,
       ]);
-      if (exitCode !== 0)
+      if (exitCode !== 0) {
+        if (/session not found/i.test(stderr))
+          throw new NativeSessionUnavailable("opencode", sessionId, stderr.trim());
         throw new Error(
           `OpenCode history export failed with exit code ${exitCode}${stderr ? `\n${stderr}` : ""}`,
         );
+      }
       let exported: unknown;
       try {
         exported = JSON.parse(stdout);

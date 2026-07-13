@@ -125,6 +125,26 @@ describe("OpenCode native backend", () => {
     }
   });
 
+  it("preserves a missing session after detached-history recovery", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-read-missing-"));
+    const marker = join(directory, "attempts");
+    const previousMarker = Bun.env.RELAY_TEST_RECOVERY_FILE;
+    Bun.env.RELAY_TEST_RECOVERY_FILE = marker;
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    try {
+      await expect(backend.read("ses_missing")).rejects.toMatchObject({
+        name: "NativeSessionUnavailable",
+        harness: "opencode",
+        sessionId: "ses_missing",
+      });
+    } finally {
+      await backend.close();
+      if (previousMarker === undefined) delete Bun.env.RELAY_TEST_RECOVERY_FILE;
+      else Bun.env.RELAY_TEST_RECOVERY_FILE = previousMarker;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("creates authenticated sessions and returns the native attach command", async () => {
     const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
     try {

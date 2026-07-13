@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 let revertMessageID: string | undefined = "msg_003";
 let createdSessions = 0;
+let latestSessionId = "ses_created";
 let retryHistoryAttempts = 0;
 const fakeMessages = [
   { info: { id: "msg_001", role: "user" }, parts: [{ type: "text", text: "first" }] },
@@ -23,6 +24,10 @@ if (Bun.argv[2] === "export") {
     process.exit(2);
   }
   const sessionId = Bun.argv.find((argument) => argument.startsWith("ses_"));
+  if (sessionId === "ses_missing") {
+    process.stderr.write("Error: Session not found: ses_missing\n");
+    process.exit(1);
+  }
   if (sessionId === "ses_hang") {
     if (Bun.env.RELAY_TEST_EXPORT_PID_FILE)
       writeFileSync(Bun.env.RELAY_TEST_EXPORT_PID_FILE, String(process.pid));
@@ -87,7 +92,15 @@ const server = Bun.serve({
     if (url.pathname === "/test/message-event" && request.method === "POST") {
       emitEvent({
         type: "message.updated",
-        properties: { info: { id: "msg_not_a_session", role: "assistant" } },
+        properties: {
+          sessionID: latestSessionId,
+          info: {
+            id: "msg_not_a_session",
+            sessionID: latestSessionId,
+            parentID: "msg_parent_not_a_session",
+            role: "assistant",
+          },
+        },
       });
       return Response.json(true);
     }
@@ -95,6 +108,7 @@ const server = Bun.serve({
       createdSessions += 1;
       const body = (await request.json()) as { parentID?: unknown };
       const id = createdSessions === 1 ? "ses_created" : `ses_native_${createdSessions}`;
+      latestSessionId = id;
       emitEvent({
         type: "session.created",
         properties: {
@@ -146,7 +160,8 @@ const server = Bun.serve({
       if (
         (url.pathname.includes("/ses_recover/") ||
           url.pathname.includes("/ses_hang/") ||
-          url.pathname.includes("/ses_large/")) &&
+          url.pathname.includes("/ses_large/") ||
+          url.pathname.includes("/ses_missing/")) &&
         recoveryFile
       ) {
         const attempts = Number(
