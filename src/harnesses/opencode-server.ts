@@ -9,6 +9,16 @@ interface OpenCodeCommand {
 const fetchOpenCode = (input: URL, init: RequestInit = {}) =>
   fetch(input, { ...init, signal: init.signal ?? AbortSignal.timeout(30 * 60 * 1_000) });
 
+const matchesRelayPrompt = (nativeText: string, expectedPrompt: string) => {
+  const normalized = nativeText.trim();
+  if (normalized === expectedPrompt.trim()) return true;
+  const startTag = "<relay_current_request>\n";
+  const endTag = "\n</relay_current_request>";
+  const start = normalized.lastIndexOf(startTag);
+  if (start < 0 || !normalized.endsWith(endTag)) return false;
+  return normalized.slice(start + startTag.length, -endTag.length) === expectedPrompt;
+};
+
 const stopChild = async (child: ReturnType<typeof Bun.spawn>) => {
   if (child.exitCode !== null) return;
   if (process.platform !== "win32") {
@@ -217,7 +227,7 @@ export const runOpenCodeControl = async (
       if (input.action === "undo") {
         const target = users.findLast((message) => !current || message.id < current);
         if (!target) throw new Error("There is no OpenCode turn to undo");
-        if (input.expectedPrompt && !target.text.includes(input.expectedPrompt)) {
+        if (input.expectedPrompt && !matchesRelayPrompt(target.text, input.expectedPrompt)) {
           throw new Error(
             "OpenCode's next native undo target does not match Relay history. Undo the out-of-band turn in OpenCode before using Relay /undo.",
           );

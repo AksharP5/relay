@@ -70,7 +70,7 @@ describe("OpenCode command discovery", () => {
         cwd: process.cwd(),
         sessionId: "ses_test",
         action: "undo",
-        expectedPrompt: "different Relay prompt",
+        expectedPrompt: "fir",
       }),
     ).rejects.toThrow("does not match Relay history");
   });
