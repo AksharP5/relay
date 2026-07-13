@@ -225,7 +225,12 @@ export class HarnessService extends Context.Service<
               message: `${harness} was not found in PATH. Install it, then run relay doctor.`,
             });
 
-          const prompt = composePrompt(input.handoff, input.prompt);
+          const commandPrefix = input.command ? `/${input.command}` : undefined;
+          const nativePrompt =
+            commandPrefix && input.prompt.startsWith(commandPrefix)
+              ? input.prompt.slice(commandPrefix.length).trimStart()
+              : input.prompt;
+          const prompt = composePrompt(input.handoff, nativePrompt);
           input.onProgress?.({ type: "activity", label: `Starting ${harness}` });
           let parsedSessionId = input.sessionId;
           let parsedText = "";
