@@ -59,11 +59,12 @@ Install from source:
 git clone https://github.com/AksharP5/relay.git
 cd relay
 bun install
+bun run build
 bun link
 relay doctor
 ```
 
-`bun link` makes the `relay` command available through Bun's global bin directory. If your shell cannot find it, add `${BUN_INSTALL:-$HOME/.bun}/bin` to `PATH`.
+The build produces a native Relay executable for your current platform, and `bun link` makes it available through Bun's global bin directory. Re-run `bun run build` after pulling Relay updates. If your shell cannot find it, add `${BUN_INSTALL:-$HOME/.bun}/bin` to `PATH`.
 
 `relay doctor` reports whether both native CLIs can be found and shows their versions. Relay v0.1 has been live-tested with Codex CLI 0.133.0 and OpenCode 1.15.5; adapter changes in other versions may require an update.
 

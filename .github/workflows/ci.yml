@@ -21,4 +21,6 @@ jobs:
       - run: bun run check
       - run: bun run build
       - run: ./dist/relay --version
-      - run: npm pack --dry-run
+      - run: npm pack
+      - run: tar -xzf aksharp5-relay-*.tgz -C /tmp
+      - run: /tmp/package/dist/relay --version
