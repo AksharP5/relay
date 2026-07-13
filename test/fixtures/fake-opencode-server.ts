@@ -70,6 +70,13 @@ const server = Bun.serve({
       eventControllers.clear();
       return Response.json(true);
     }
+    if (url.pathname === "/test/message-event" && request.method === "POST") {
+      emitEvent({
+        type: "message.updated",
+        properties: { info: { id: "msg_not_a_session", role: "assistant" } },
+      });
+      return Response.json(true);
+    }
     if (url.pathname === "/session" && request.method === "POST") {
       createdSessions += 1;
       const body = (await request.json()) as { parentID?: unknown };

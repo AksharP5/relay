@@ -216,24 +216,25 @@ export class OpenCodeNativeBackend {
       }
       const properties = asObject(event?.properties);
       const info = asObject(properties?.info);
+      const eventType = typeof event?.type === "string" ? event.type : undefined;
       const sessionId =
         typeof properties?.sessionID === "string"
           ? properties.sessionID
           : typeof info?.sessionID === "string"
             ? info.sessionID
-            : typeof info?.id === "string"
+            : eventType !== "message.updated" && typeof info?.id === "string"
               ? info.id
               : undefined;
       if (!sessionId) continue;
       if (typeof info?.parentID === "string") this.#sessionParents.set(sessionId, info.parentID);
       if (!this.#observeTui) continue;
       if (
-        event?.type === "tui.session.select" ||
-        event?.type === "session.created" ||
-        event?.type === "session.updated" ||
-        event?.type === "session.status" ||
-        event?.type === "session.idle" ||
-        event?.type === "message.updated"
+        eventType === "tui.session.select" ||
+        eventType === "session.created" ||
+        eventType === "session.updated" ||
+        eventType === "session.status" ||
+        eventType === "session.idle" ||
+        eventType === "message.updated"
       ) {
         this.#observedRoot = this.#rootSession(sessionId);
         this.#observerGap = false;

@@ -139,6 +139,14 @@ describe("OpenCode native backend", () => {
       await Bun.sleep(10);
       expect(await backend.resolveSession(sessionId)).toBe(created.id);
 
+      const messageOnlyEvent = await fetch(new URL("/test/message-event", baseUrl), {
+        method: "POST",
+        headers,
+      });
+      expect(messageOnlyEvent.ok).toBe(true);
+      await Bun.sleep(10);
+      expect(await backend.resolveSession(sessionId)).toBe(created.id);
+
       const closeEvents = await fetch(new URL("/test/close-events", baseUrl), {
         method: "POST",
         headers,
