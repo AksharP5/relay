@@ -6,6 +6,8 @@
       "release-type": "node",
       "package-name": "@akshar5/relay",
       "changelog-path": "CHANGELOG.md",
+      "draft": true,
+      "force-tag-creation": true,
       "include-component-in-tag": false,
       "pull-request-title-pattern": "chore: release ${version}"
     }
