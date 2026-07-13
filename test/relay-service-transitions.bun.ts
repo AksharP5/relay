@@ -168,15 +168,17 @@ describe("Relay session transitions", () => {
           cwd: process.cwd(),
           harness: "codex",
         });
-        yield* relay.ask({ threadId: thread.id, prompt: "First" });
+        yield* relay.ask({ threadId: thread.id, prompt: "First", model: "gpt-test" });
         yield* relay.ask({ threadId: thread.id, prompt: "Second" }).pipe(Effect.flip);
         expect((yield* relay.current()).bindings.codex).toBeUndefined();
+        expect((yield* relay.current()).preferredModels?.codex).toBe("gpt-test");
         yield* relay.ask({ threadId: thread.id, prompt: "Second" });
       }).pipe(Effect.provide(makeLayer(harnesses))),
     );
 
     expect(attempts[1]?.sessionId).toBe("session-1");
     expect(attempts[2]?.sessionId).toBeUndefined();
+    expect(attempts[2]?.model).toBe("gpt-test");
     expect(attempts[2]?.handoff.map((message) => message.content)).toEqual(["First", "response-1"]);
   });
 

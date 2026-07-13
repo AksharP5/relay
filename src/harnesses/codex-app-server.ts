@@ -16,6 +16,7 @@ interface CodexCommandInput {
   readonly arguments: string;
   readonly handoffText?: string;
   readonly onProgress?: (progress: HarnessTurnProgress) => void;
+  readonly timeoutMs?: number;
 }
 
 export interface CodexCommandResult {
@@ -54,7 +55,7 @@ class AppServerConnection {
     });
   }
 
-  static async start(command: string, cwd: string) {
+  static async start(command: string, cwd: string, timeoutMs: number) {
     const child = Bun.spawn([command, "app-server", "--stdio"], {
       cwd,
       env: Bun.env,
@@ -65,10 +66,14 @@ class AppServerConnection {
     });
     const connection = new AppServerConnection(child);
     try {
-      await connection.#requestRaw("initialize", {
-        clientInfo: { name: "relay", title: "Relay", version: "0.1.0" },
-        capabilities: null,
-      });
+      await connection.#requestRaw(
+        "initialize",
+        {
+          clientInfo: { name: "relay", title: "Relay", version: "0.1.0" },
+          capabilities: null,
+        },
+        Math.min(timeoutMs, 15_000),
+      );
       connection.#write({ method: "initialized" });
       return connection;
     } catch (cause) {
@@ -86,21 +91,35 @@ class AppServerConnection {
     stdin.flush();
   }
 
-  #requestRaw(method: string, params: JsonObject) {
+  #requestRaw(method: string, params: JsonObject, timeoutMs = 30 * 60 * 1_000) {
     const id = this.#nextId++;
     return new Promise<unknown>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      const timeout = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(new Error(`Timed out waiting for Codex ${method}`));
+      }, timeoutMs);
+      this.#pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timeout);
+          resolve(value);
+        },
+        reject: (cause) => {
+          clearTimeout(timeout);
+          reject(cause);
+        },
+      });
       try {
         this.#write({ id, method, params });
       } catch (cause) {
+        clearTimeout(timeout);
         this.#pending.delete(id);
         reject(cause);
       }
     });
   }
 
-  request(method: string, params: JsonObject) {
-    return this.#requestRaw(method, params);
+  request(method: string, params: JsonObject, timeoutMs?: number) {
+    return this.#requestRaw(method, params, timeoutMs);
   }
 
   subscribe(listener: (message: JsonObject) => void) {
@@ -185,6 +204,7 @@ const waitForCommand = (
   connection: AppServerConnection,
   threadId: string,
   onProgress?: (progress: HarnessTurnProgress) => void,
+  timeoutMs = 30 * 60 * 1_000,
 ) => {
   let text = "";
   let review = "";
@@ -193,13 +213,10 @@ const waitForCommand = (
   let unsubscribe = () => false;
 
   const promise = new Promise<string>((resolve, reject) => {
-    timeout = setTimeout(
-      () => {
-        unsubscribe();
-        reject(new Error("Timed out waiting for the Codex command to finish"));
-      },
-      30 * 60 * 1_000,
-    );
+    timeout = setTimeout(() => {
+      unsubscribe();
+      reject(new Error("Timed out waiting for the Codex command to finish"));
+    }, timeoutMs);
 
     unsubscribe = connection.subscribe((message) => {
       const params = asObject(message.params);
@@ -232,46 +249,69 @@ const waitForCommand = (
     });
   });
 
-  return { promise, cancel: unsubscribe };
+  const cancel = () => {
+    settled = true;
+    unsubscribe();
+    if (timeout) clearTimeout(timeout);
+  };
+  return { promise, cancel };
 };
 
 export const runCodexCommand = async (
   executable: string,
   input: CodexCommandInput,
 ): Promise<CodexCommandResult> => {
-  const connection = await AppServerConnection.start(executable, input.cwd);
+  const timeoutMs = input.timeoutMs ?? 30 * 60 * 1_000;
+  const connection = await AppServerConnection.start(executable, input.cwd, timeoutMs);
   try {
     const threadResult = input.sessionId
-      ? await connection.request("thread/resume", {
-          threadId: input.sessionId,
-          cwd: input.cwd,
-          ...(input.model ? { model: input.model } : {}),
-        })
-      : await connection.request("thread/start", {
-          cwd: input.cwd,
-          ephemeral: false,
-          ...(input.model ? { model: input.model } : {}),
-        });
+      ? await connection.request(
+          "thread/resume",
+          {
+            threadId: input.sessionId,
+            cwd: input.cwd,
+            ...(input.model ? { model: input.model } : {}),
+          },
+          timeoutMs,
+        )
+      : await connection.request(
+          "thread/start",
+          {
+            cwd: input.cwd,
+            ephemeral: false,
+            ...(input.model ? { model: input.model } : {}),
+          },
+          timeoutMs,
+        );
     const sessionId = threadIdFrom(threadResult);
-    const completion = waitForCommand(connection, sessionId, input.onProgress);
+    const completion = waitForCommand(
+      connection,
+      sessionId,
+      input.onProgress,
+      timeoutMs + Math.min(timeoutMs, 1_000),
+    );
 
     try {
       if (input.command === "compact") {
-        await connection.request("thread/compact/start", { threadId: sessionId });
+        await connection.request("thread/compact/start", { threadId: sessionId }, timeoutMs);
       } else {
-        await connection.request("review/start", {
-          threadId: sessionId,
-          delivery: "inline",
-          target:
-            input.arguments || input.handoffText
-              ? {
-                  type: "custom",
-                  instructions: input.handoffText
-                    ? `${input.handoffText}\n\n<relay_current_request>\n${input.arguments}\n</relay_current_request>`
-                    : input.arguments,
-                }
-              : { type: "uncommittedChanges" },
-        });
+        await connection.request(
+          "review/start",
+          {
+            threadId: sessionId,
+            delivery: "inline",
+            target:
+              input.arguments || input.handoffText
+                ? {
+                    type: "custom",
+                    instructions: input.handoffText
+                      ? `${input.handoffText}\n\n<relay_current_request>\n${input.arguments}\n</relay_current_request>`
+                      : input.arguments,
+                  }
+                : { type: "uncommittedChanges" },
+          },
+          timeoutMs,
+        );
       }
       const response = await completion.promise;
       return {

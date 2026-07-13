@@ -119,7 +119,7 @@ export class RelayService extends Context.Service<
 
             const harness = input.harness ?? thread.activeHarness;
             const binding = thread.bindings[harness];
-            const model = input.model ?? binding?.model;
+            const model = input.model ?? binding?.model ?? thread.preferredModels?.[harness];
             const handoff = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
 
             const nativeResult = yield* harnesses
@@ -257,11 +257,16 @@ export class RelayService extends Context.Service<
                   message: `There is no safe ${harness} turn to redo.`,
                 });
               }
+              const expectedPrompt =
+                input.action === "undo"
+                  ? (yield* store.messages(current.id)).at(-2)?.content
+                  : undefined;
               const result = yield* harnesses.control(harness, {
                 cwd: current.cwd,
                 sessionId: binding.sessionId,
                 action: input.action,
                 ...(binding.model ? { model: binding.model } : {}),
+                ...(expectedPrompt ? { expectedPrompt } : {}),
               });
               const updated =
                 input.action === "undo"

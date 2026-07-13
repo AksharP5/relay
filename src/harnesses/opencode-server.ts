@@ -110,6 +110,7 @@ export const runOpenCodeControl = async (
     readonly sessionId: string;
     readonly action: "compact" | "share" | "unshare" | "undo" | "redo";
     readonly model?: string;
+    readonly expectedPrompt?: string;
   },
 ) => {
   const password = crypto.randomUUID();
@@ -197,18 +198,30 @@ export const runOpenCodeControl = async (
       const session = (await sessionResponse.json()) as { revert?: { messageID?: unknown } };
       const messages = (await messagesResponse.json()) as Array<{
         info?: { id?: unknown; role?: unknown };
+        parts?: Array<{ type?: unknown; text?: unknown }>;
       }>;
       const users = messages
-        .map((item) => item.info)
         .filter(
-          (info): info is { id: string; role?: unknown } =>
-            typeof info?.id === "string" && info.role === "user",
-        );
+          (item): item is typeof item & { info: { id: string; role?: unknown } } =>
+            typeof item.info?.id === "string" && item.info.role === "user",
+        )
+        .map((item) => ({
+          id: item.info.id,
+          text: (item.parts ?? [])
+            .filter((part) => part.type === "text" && typeof part.text === "string")
+            .map((part) => part.text)
+            .join(""),
+        }));
       const current =
         typeof session.revert?.messageID === "string" ? session.revert.messageID : undefined;
       if (input.action === "undo") {
         const target = users.findLast((message) => !current || message.id < current);
         if (!target) throw new Error("There is no OpenCode turn to undo");
+        if (input.expectedPrompt && !target.text.includes(input.expectedPrompt)) {
+          throw new Error(
+            "OpenCode's next native undo target does not match Relay history. Undo the out-of-band turn in OpenCode before using Relay /undo.",
+          );
+        }
         path = "revert";
         body = JSON.stringify({ messageID: target.id });
       } else {

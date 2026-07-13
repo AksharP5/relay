@@ -26,12 +26,12 @@ const server = Bun.serve({
     }
     if (url.pathname.endsWith("/message") && request.method === "GET") {
       return Response.json([
-        { info: { id: "msg_001", role: "user" }, parts: [] },
+        { info: { id: "msg_001", role: "user" }, parts: [{ type: "text", text: "first" }] },
         {
           info: { id: "msg_002", role: "assistant", providerID: "openai", modelID: "gpt-5.6-sol" },
           parts: [],
         },
-        { info: { id: "msg_003", role: "user" }, parts: [] },
+        { info: { id: "msg_003", role: "user" }, parts: [{ type: "text", text: "second" }] },
         {
           info: { id: "msg_004", role: "assistant", providerID: "openai", modelID: "gpt-5.6-sol" },
           parts: [],

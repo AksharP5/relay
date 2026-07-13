@@ -46,6 +46,12 @@ export const RelayThread = Schema.Struct({
     codex: Schema.optional(HarnessBinding),
     opencode: Schema.optional(HarnessBinding),
   }),
+  preferredModels: Schema.optional(
+    Schema.Struct({
+      codex: Schema.optional(Schema.String),
+      opencode: Schema.optional(Schema.String),
+    }),
+  ),
   lastSeq: Schema.Number,
   createdAt: Schema.String,
   updatedAt: Schema.String,
@@ -103,6 +109,7 @@ export interface HarnessControlInput {
   readonly sessionId: string;
   readonly action: "compact" | "share" | "unshare" | "undo" | "redo";
   readonly model?: string;
+  readonly expectedPrompt?: string;
 }
 
 export interface HarnessControlResult {

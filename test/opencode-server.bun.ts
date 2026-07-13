@@ -50,6 +50,7 @@ describe("OpenCode command discovery", () => {
       cwd: process.cwd(),
       sessionId: "ses_test",
       action: "undo",
+      expectedPrompt: "first",
     });
     const redo = await runOpenCodeControl(executable, {
       cwd: process.cwd(),
@@ -61,6 +62,17 @@ describe("OpenCode command discovery", () => {
     expect(unshare).toBe("OpenCode stopped sharing this session.");
     expect(undo).toBe("OpenCode undid the previous turn and file changes.");
     expect(redo).toBe("OpenCode restored the previously undone turn.");
+  });
+
+  it("refuses to undo an out-of-band native turn", async () => {
+    await expect(
+      runOpenCodeControl(executable, {
+        cwd: process.cwd(),
+        sessionId: "ses_test",
+        action: "undo",
+        expectedPrompt: "different Relay prompt",
+      }),
+    ).rejects.toThrow("does not match Relay history");
   });
 
   it("seeds missed context before a first native prompt command", async () => {

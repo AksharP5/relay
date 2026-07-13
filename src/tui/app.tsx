@@ -101,6 +101,12 @@ export const RelayApp = (props: RelayAppProps) => {
     ...(props.initial.thread?.bindings.opencode?.model
       ? { opencode: props.initial.thread.bindings.opencode.model }
       : {}),
+    ...(props.initial.thread?.preferredModels?.codex
+      ? { codex: props.initial.thread.preferredModels.codex }
+      : {}),
+    ...(props.initial.thread?.preferredModels?.opencode
+      ? { opencode: props.initial.thread.preferredModels.opencode }
+      : {}),
   });
   const [overlay, setOverlay] = createSignal<Overlay>(null);
   const [configuredCommand, setConfiguredCommand] = createSignal<ResolvedCommand | null>(null);
@@ -282,6 +288,12 @@ export const RelayApp = (props: RelayAppProps) => {
       setSelectedHarness(nextHarness);
       if (next.thread) {
         setSelectedModels({
+          ...(next.thread.preferredModels?.codex
+            ? { codex: next.thread.preferredModels.codex }
+            : {}),
+          ...(next.thread.preferredModels?.opencode
+            ? { opencode: next.thread.preferredModels.opencode }
+            : {}),
           ...(next.thread?.bindings.codex?.model
             ? { codex: next.thread.bindings.codex.model }
             : {}),

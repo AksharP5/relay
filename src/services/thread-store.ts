@@ -618,6 +618,10 @@ export class ThreadStore extends Context.Service<
             ...thread,
             activeHarness: input.harness,
             bindings: { ...thread.bindings, [input.harness]: binding },
+            preferredModels: {
+              ...thread.preferredModels,
+              ...(input.model ? { [input.harness]: input.model } : {}),
+            },
             lastSeq: response.seq,
             updatedAt: now,
           };
@@ -694,6 +698,12 @@ export class ThreadStore extends Context.Service<
           const updated: RelayThread = {
             ...thread,
             bindings,
+            preferredModels: {
+              ...thread.preferredModels,
+              ...(thread.bindings[harness]?.model
+                ? { [harness]: thread.bindings[harness].model }
+                : {}),
+            },
             updatedAt: new Date().toISOString(),
           };
           await atomicJsonWrite(metadataPath(thread.id), updated);

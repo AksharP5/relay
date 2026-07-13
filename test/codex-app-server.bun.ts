@@ -35,4 +35,15 @@ describe("Codex app-server commands", () => {
     expect(result.text).toBe("Review complete");
     expect(progress).toEqual(["Review ", "Review complete"]);
   });
+
+  it("times out and closes an unresponsive app-server request", async () => {
+    await expect(
+      runCodexCommand(executable, {
+        command: "review",
+        cwd: process.cwd(),
+        arguments: "hang forever",
+        timeoutMs: 50,
+      }),
+    ).rejects.toThrow("Timed out waiting for Codex review/start");
+  });
 });
