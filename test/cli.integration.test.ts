@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   access,
   appendFile,
+  chmod,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -20,11 +22,16 @@ const tempRoots: Array<string> = [];
 const execFileAsync = promisify(execFile);
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
-const runRelay = async (root: string, args: ReadonlyArray<string>, cwd = projectRoot) => {
+const runRelay = async (
+  root: string,
+  args: ReadonlyArray<string>,
+  cwd = projectRoot,
+  env: Readonly<Record<string, string>> = {},
+) => {
   try {
     const result = await execFileAsync("bun", [join(projectRoot, "src/cli.ts"), ...args], {
       cwd,
-      env: { ...process.env, RELAY_DATA_DIR: root, NO_COLOR: "1" },
+      env: { ...process.env, RELAY_DATA_DIR: root, NO_COLOR: "1", ...env },
     });
     return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
   } catch (cause) {
@@ -38,6 +45,59 @@ afterEach(async () => {
 });
 
 describe("Relay CLI storage", () => {
+  it("hands off only unseen context across a real Codex → OpenCode → Codex process flow", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-handoff-"));
+    const bin = join(root, "bin");
+    const trace = join(root, "trace.jsonl");
+    tempRoots.push(root);
+    await mkdir(bin);
+    await Promise.all([
+      copyFile(join(projectRoot, "test/fixtures/fake-codex-turn.ts"), join(bin, "codex")),
+      copyFile(join(projectRoot, "test/fixtures/fake-opencode-turn.ts"), join(bin, "opencode")),
+    ]);
+    await Promise.all([chmod(join(bin, "codex"), 0o755), chmod(join(bin, "opencode"), 0o755)]);
+    const env = {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      RELAY_TEST_TRACE: trace,
+    };
+
+    expect((await runRelay(root, ["new", "Cross-harness flow"], projectRoot, env)).exitCode).toBe(
+      0,
+    );
+    expect((await runRelay(root, ["ask", "C1"], projectRoot, env)).exitCode).toBe(0);
+    expect(
+      (await runRelay(root, ["ask", "--with", "opencode", "O1"], projectRoot, env)).exitCode,
+    ).toBe(0);
+    expect(
+      (await runRelay(root, ["ask", "--with", "codex", "C2"], projectRoot, env)).exitCode,
+    ).toBe(0);
+
+    const events = (await readFile(trace, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { harness: string; args: Array<string>; prompt: string });
+    expect(events).toHaveLength(3);
+    expect(events[0]).toMatchObject({ harness: "codex", prompt: "C1" });
+    expect(events[1]?.prompt).toContain("C1");
+    expect(events[1]?.prompt).toContain("Codex completed");
+    expect(events[1]?.prompt).toContain("<relay_current_request>\nO1");
+    expect(events[2]?.args).toContain("codex-native");
+    expect(events[2]?.prompt).toContain("O1");
+    expect(events[2]?.prompt).toContain("OpenCode completed");
+    expect(events[2]?.prompt).toContain("<relay_current_request>\nC2");
+    expect(events[2]?.prompt).not.toContain('<relay_message role="user" source="codex">\nC1');
+    for (const event of events) {
+      expect(event.args.join(" ")).not.toContain(event.prompt);
+      expect(event.args.join(" ")).not.toContain("<relay_handoff");
+    }
+
+    const history = await runRelay(root, ["history"], projectRoot, env);
+    expect(history.exitCode).toBe(0);
+    expect(history.stdout).toContain("C1");
+    expect(history.stdout).toContain("O1");
+    expect(history.stdout).toContain("C2");
+  }, 30_000);
+
   it("creates, switches, lists, and reopens a task without launching a model", async () => {
     const root = await mkdtemp(join(tmpdir(), "relay-test-"));
     tempRoots.push(root);
