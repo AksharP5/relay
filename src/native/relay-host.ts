@@ -355,7 +355,12 @@ export const launchNativeRelay = async (
         return;
       }
 
-      const selected = await dependencies.selectHarness(harness);
+      const selected =
+        result.exit.intent === "toggle"
+          ? harness === "codex"
+            ? "opencode"
+            : "codex"
+          : await dependencies.selectHarness(harness);
       if (!selected) {
         if (pendingSignal) process.exitCode = signalExitCode(pendingSignal);
         return;

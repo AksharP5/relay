@@ -18,4 +18,6 @@ While a native workspace is open, Relay owns a temporary loopback-only backend. 
 
 Relay's canonical log intentionally contains completed visible user and assistant text so another harness can receive it. It does not contain hidden reasoning, raw terminal output, tool payloads, or copied credential files.
 
+Terminal Control is used only as optional development and release tooling. Its raw `.termctrl` timelines can contain terminal output and exact typed input; Relay ignores these files by default, and contributors should inspect exported screenshots or videos before sharing them.
+
 Only the latest release on the default branch receives security fixes during the early release period.

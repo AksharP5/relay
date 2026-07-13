@@ -13,7 +13,7 @@ export interface NativeTuiCommand {
 export type NativeParentSignal = "SIGHUP" | "SIGINT" | "SIGTERM" | "SIGQUIT";
 
 export type NativeTuiExit =
-  | { readonly reason: "switch" }
+  | { readonly reason: "switch"; readonly intent?: "toggle" | "selector" }
   | { readonly reason: "exit"; readonly exitCode: number }
   | {
       readonly reason: "signal";
@@ -62,7 +62,8 @@ const dimensions = (output: HostOutput) => ({
 
 /**
  * Hosts an upstream TUI in a real PTY. Output is forwarded unchanged and all
- * input except Relay's Ctrl+] then R switch chord is written unchanged to the child.
+ * input except Relay's enhanced Ctrl+Shift+H / F6 toggle and Ctrl+] then R
+ * selector chord is written unchanged to the child.
  */
 export const runNativeTui = async (
   command: NativeTuiCommand,
@@ -74,6 +75,7 @@ export const runNativeTui = async (
   const router = new NativeInputRouter();
   const initialRawMode = io.input.isRaw === true;
   let switchRequested = false;
+  let switchIntent: "toggle" | "selector" | undefined;
   let switchCheckPending = false;
   let parentSignal: NativeParentSignal | undefined;
   let hostFailure: Error | undefined;
@@ -167,6 +169,7 @@ export const runNativeTui = async (
         pendingSwitchInput.length = 0;
         switchCheckPending = false;
         switchRequested = true;
+        switchIntent = routed.switchIntent;
         if (child) stopping = stopProcessTree(child);
       })
       .catch((cause) => {
@@ -240,7 +243,9 @@ export const runNativeTui = async (
     }
     if (hostFailure) throw hostFailure;
     if (parentSignal) return { reason: "signal", signal: parentSignal };
-    return switchRequested ? { reason: "switch" } : { reason: "exit", exitCode };
+    return switchRequested
+      ? { reason: "switch", ...(switchIntent ? { intent: switchIntent } : {}) }
+      : { reason: "exit", exitCode };
   } finally {
     if (prefixTimer) clearTimeout(prefixTimer);
     io.input.off("data", onInput);

@@ -9,7 +9,7 @@ $ relay
 
 Relay opens the selected harness exactly as its own CLI renders it. Codex looks and behaves like Codex; OpenCode looks and behaves like OpenCode. Type `/` and the native command palette owns the input. Press `Escape` and the native dialog closes normally.
 
-To switch harnesses, press `Ctrl+]`, release it, then press `R`. Relay briefly shows a two-item selector, carries the completed conversation forward, and opens the other real TUI.
+To switch harnesses immediately, press `Ctrl+Shift+H`. Relay carries the completed conversation forward and opens the other real TUI. `F6` is a second one-key option; on a Mac keyboard configured for media keys, use `Fn+F6`.
 
 ## Why use Relay?
 
@@ -36,9 +36,11 @@ your terminal
           └── native OpenCode TUI ── Relay-owned OpenCode server
 ```
 
-Only one branch runs at a time. Relay forwards terminal bytes unchanged, including colors, alternate-screen behavior, mouse input, enhanced keyboard sequences, bracketed paste, and resize events. It reserves one prefix chord—`Ctrl+]`, then `R`—so ordinary native keys remain available.
+Only one branch runs at a time. Relay forwards terminal bytes unchanged, including colors, alternate-screen behavior, mouse input, enhanced keyboard sequences, bracketed paste, and resize events. It reserves the distinct enhanced `Ctrl+Shift+H` sequence and `F6` for direct switching. `Ctrl+]`, then `R`, remains a compatibility fallback that opens Relay's small selector.
 
 The current release pairs each interface with its own engine: Codex TUI with Codex, and OpenCode TUI with OpenCode. Running the literal OpenCode TUI against the Codex engine would require a complete, bidirectional translation between their live protocols, approvals, tools, streaming events, session semantics, and commands. Relay does not claim that adapter exists yet.
+
+There is no separate skin setting in this release: switching harnesses also switches to that harness's native interface. A Codex engine with the OpenCode interface—or the reverse—is the cross-pairing protocol work described above, not a theme toggle.
 
 ## How context moves
 
@@ -100,17 +102,21 @@ relay
 
 Relay uses the most recent task bound to that directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
 
-| Input                 | Owner          | Action                                                    |
-| --------------------- | -------------- | --------------------------------------------------------- |
-| `/`, letters, `Enter` | Native TUI     | Type and run native slash commands normally               |
-| `Escape`              | Native TUI     | Close its active dialog or autocomplete                   |
-| `Ctrl+C`              | Native TUI     | Interrupt or exit according to native behavior            |
-| `Ctrl+]`, then `R`    | Relay          | Open the harness selector when the native session is idle |
-| `↑` / `↓`, `Enter`    | Relay selector | Choose Codex or OpenCode                                  |
-| `Escape`              | Relay selector | Return to the current harness                             |
-| `q`                   | Relay selector | Exit Relay                                                |
+| Input                              | Owner          | Action                                                |
+| ---------------------------------- | -------------- | ----------------------------------------------------- |
+| `/`, letters, `Enter`              | Native TUI     | Type and run native slash commands normally           |
+| `Escape`                           | Native TUI     | Close its active dialog or autocomplete               |
+| `Ctrl+C`                           | Native TUI     | Interrupt or exit according to native behavior        |
+| `Ctrl+Shift+H`                     | Relay          | Switch directly to the other harness when idle        |
+| `F6` (`Fn+F6` with Mac media keys) | Relay          | Switch directly to the other harness when idle        |
+| `Ctrl+]`, then `R`                 | Relay          | Open the harness selector as a compatibility fallback |
+| `Up` / `Down`, `Enter`             | Relay selector | Choose Codex or OpenCode                              |
+| `Escape`                           | Relay selector | Return to the current harness                         |
+| `q`                                | Relay selector | Exit Relay                                            |
 
-Relay refuses to detach while a turn is active, because doing so could strand an approval or lose streaming state. The terminal bell sounds; wait for the turn to finish, then use the switch chord again.
+Relay refuses to detach while a turn is active, because doing so could strand an approval or lose streaming state. The terminal bell sounds; wait for the turn to finish, then use the switch key again.
+
+Relay cannot safely add `/harness` to both native command palettes today. Codex and OpenCode own different composer implementations, and Relay sees terminal bytes rather than semantic editor state. Intercepting the text would break native completion, Vim mode, dialogs, history editing, or external editors. Relay therefore leaves every slash command native and reserves only distinct keyboard sequences outside ordinary text entry.
 
 Native session navigation remains native. Relay detects a Codex thread created or resumed inside the Codex TUI, and an OpenCode session that becomes active through native work, then updates the task binding and imports its completed turns. Merely highlighting a different OpenCode session and switching away before any activity may not produce a server event; in that narrow case Relay can reopen the prior binding.
 
@@ -170,6 +176,8 @@ bun run build
 ```
 
 The implementation style is informed by [Effect Solutions](https://github.com/kitlangton/effect-solutions), [OpenCode](https://github.com/anomalyco/opencode), and [Executor](https://github.com/UsefulSoftwareCo/executor). Relay is not affiliated with OpenAI or the OpenCode project.
+
+Release demos and native TUI checks can use [Terminal Control](https://github.com/anomalyco/terminal-control). It records general PTY applications, including Codex; OpenCode additionally needs its `--host opentui` handshake. Relay does not depend on it at runtime. Raw `.termctrl` timelines include terminal output and typed input, so keep them local and share only reviewed exports such as scrubbed MP4s.
 
 Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 

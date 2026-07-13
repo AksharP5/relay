@@ -10,6 +10,8 @@ interface SelectorInput extends EventEmitter {
 }
 
 interface SelectorOutput {
+  readonly columns?: number;
+  readonly rows?: number;
   write: (data: string | Uint8Array) => unknown;
 }
 
@@ -22,9 +24,73 @@ export interface SelectorIo {
 const defaultIo = (): SelectorIo => ({ input: process.stdin, output: process.stdout });
 const alternateScreen = "\u001b[?1049h\u001b[2J\u001b[H\u001b[?25l";
 const restoreScreen = "\u001b[?25h\u001b[?1049l";
-const options: ReadonlyArray<Harness> = ["opencode", "codex"];
+const clearScreen = "\u001b[2J\u001b[H";
+const options: ReadonlyArray<Harness> = ["codex", "opencode"];
 
 const label = (harness: Harness) => (harness === "opencode" ? "OpenCode" : "Codex");
+const fit = (value: string, width: number) => value.slice(0, Math.max(1, width));
+
+interface SelectorFrameInput {
+  readonly current: Harness;
+  readonly selected: Harness;
+  readonly columns?: number | undefined;
+  readonly rows?: number | undefined;
+}
+
+interface FrameLine {
+  readonly text: string;
+  readonly selected?: boolean;
+  readonly bold?: boolean;
+  readonly dim?: boolean;
+}
+
+/** Produces an ASCII-width-safe frame so both native harness labels share a column. */
+export const renderSelectorFrame = (input: SelectorFrameInput) => {
+  const columns = Math.max(1, input.columns ?? 80);
+  const rows = Math.max(1, input.rows ?? 24);
+  const labelWidth = Math.max(...options.map((harness) => label(harness).length));
+  const optionLines: Array<FrameLine> = options.map((harness) => ({
+    text: `${harness === input.selected ? ">" : " "} ${label(harness).padEnd(labelWidth)}${
+      harness === input.current ? "  current" : ""
+    }`,
+    selected: harness === input.selected,
+  }));
+  const help =
+    columns >= 48
+      ? "Up/Down select   Enter switch   Esc cancel"
+      : columns >= 26
+        ? "Up/Down   Enter   Esc"
+        : "Enter / Esc";
+  const spacious: Array<FrameLine> = [
+    { text: "Relay", bold: true },
+    { text: "" },
+    { text: "Switch harness" },
+    { text: "" },
+    ...optionLines,
+    { text: "" },
+    { text: help, dim: true },
+  ];
+  const compact: Array<FrameLine> = [
+    { text: "Relay", bold: true },
+    { text: "Switch harness" },
+    ...optionLines,
+    { text: help, dim: true },
+  ];
+  const lines = rows >= spacious.length + 2 ? spacious : compact;
+  const fitted = lines.map((line) => ({ ...line, text: fit(line.text, columns) }));
+  const contentWidth = Math.max(...fitted.map((line) => line.text.length), 1);
+  const left = Math.max(0, Math.floor((columns - contentWidth) / 2));
+  const top = rows > fitted.length ? Math.floor((rows - fitted.length) / 2) : 0;
+  const indent = " ".repeat(left);
+  const rendered = fitted.map((line) => {
+    const value = `${indent}${line.text}`;
+    if (line.selected) return `\u001b[7m${value}\u001b[0m`;
+    if (line.bold) return `\u001b[1m${value}\u001b[0m`;
+    if (line.dim) return `\u001b[2m${value}\u001b[0m`;
+    return value;
+  });
+  return `${clearScreen}${"\r\n".repeat(top)}${rendered.join("\r\n")}\r\n`;
+};
 
 /** A brief Relay-owned screen. The selected harness's real TUI renders everything else. */
 export const selectHarness = (
@@ -37,14 +103,15 @@ export const selectHarness = (
   let pending = "";
   let escapeTimer: ReturnType<typeof setTimeout> | undefined;
 
-  const render = () => {
-    const rows = options
-      .map((harness, index) => `${index === selected ? "›" : " "} ${label(harness)}`)
-      .join("\r\n");
+  const render = () =>
     io.output.write(
-      `\u001b[2J\u001b[H\r\n  Relay\r\n\r\n  Switch native harness\r\n\r\n  ${rows}\r\n\r\n  ↑/↓ choose · Enter open · Esc cancel · q quit\r\n`,
+      renderSelectorFrame({
+        current,
+        selected: options[selected]!,
+        columns: io.output.columns,
+        rows: io.output.rows,
+      }),
     );
-  };
 
   return new Promise((resolve) => {
     let settled = false;
@@ -57,6 +124,7 @@ export const selectHarness = (
       signalSource.off("SIGINT", onInterrupt);
       signalSource.off("SIGTERM", onTerminate);
       signalSource.off("SIGQUIT", onQuit);
+      signalSource.off("SIGWINCH", onResize);
       io.input.pause?.();
       io.input.setRawMode?.(initialRawMode);
       io.output.write(restoreScreen);
@@ -68,13 +136,22 @@ export const selectHarness = (
     };
     const consume = () => {
       while (pending.length > 0 && !settled) {
-        if (pending.startsWith("\u001b[")) {
-          if (pending.length < 3) return;
-          const sequence = pending.slice(0, 3);
-          pending = pending.slice(3);
-          if (sequence === "\u001b[A" || sequence === "\u001b[D") move(-1);
-          else if (sequence === "\u001b[B" || sequence === "\u001b[C") move(1);
-          else finish(current);
+        if (pending.startsWith("\u001b[") || pending.startsWith("\u001bO")) {
+          const start = 2;
+          let final = -1;
+          for (let index = start; index < pending.length; index += 1) {
+            const code = pending.charCodeAt(index);
+            if (code >= 0x40 && code <= 0x7e) {
+              final = index;
+              break;
+            }
+          }
+          if (final === -1) return;
+          const sequence = pending.slice(0, final + 1);
+          pending = pending.slice(final + 1);
+          const direction = sequence.at(-1);
+          if (direction === "A" || direction === "D") move(-1);
+          else if (direction === "B" || direction === "C") move(1);
           continue;
         }
         if (pending[0] === "\u001b") {
@@ -118,6 +195,7 @@ export const selectHarness = (
     const onInterrupt = () => onSignal("SIGINT");
     const onTerminate = () => onSignal("SIGTERM");
     const onQuit = () => onSignal("SIGQUIT");
+    const onResize = () => render();
 
     io.output.write(alternateScreen);
     io.input.setRawMode?.(true);
@@ -127,6 +205,7 @@ export const selectHarness = (
     signalSource.on("SIGINT", onInterrupt);
     signalSource.on("SIGTERM", onTerminate);
     signalSource.on("SIGQUIT", onQuit);
+    signalSource.on("SIGWINCH", onResize);
     render();
   });
 };

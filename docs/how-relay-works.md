@@ -18,11 +18,13 @@ Relay keeps only one harness stack alive:
 
 Native sessions are persisted by their own harnesses, so stopping the temporary backend does not discard a materialized conversation.
 
-## Why the switch chord has a prefix
+## Why switching uses distinct keys
 
-Relay does not intercept `/`, `Escape`, `Ctrl+C`, or ordinary text. It reserves `Ctrl+]`, then `R`, similar to a terminal multiplexer prefix.
+Relay does not intercept `/`, `Escape`, `Ctrl+C`, or ordinary text. `Ctrl+Shift+H` is the primary direct switch in terminals that report enhanced keyboard input. `F6` provides a function-key path, and `Ctrl+]`, then `R`, remains a compatibility fallback that opens the selector.
 
-The input router recognizes legacy control bytes and the enhanced CSI-u keyboard encoding used by modern terminals. It also understands bracketed-paste boundaries, including markers split across input chunks, so pasted control characters cannot accidentally switch harnesses. If `Ctrl+]` is not followed by `R`, Relay forwards it to the native application after a short timeout.
+The input router recognizes legacy function-key sequences, CSI-u and Kitty enhanced keyboard encodings, and xterm's modified-key form. It consumes only a key press, not a repeat or release. Legacy `Ctrl+H` remains Backspace because terminals that cannot distinguish `Ctrl+Shift+H` must not lose ordinary editing. Relay also understands bracketed-paste boundaries, including markers split across input chunks, so pasted shortcut bytes cannot accidentally switch harnesses. If `Ctrl+]` is not followed by `R`, Relay forwards it to the native application after a short timeout.
+
+Relay does not implement `/harness` by watching for those characters. At the PTY boundary, the same bytes could belong to a native composer, dialog, search field, Vim command, recalled history entry, or external editor. Only the upstream TUI knows that state. A raw text interceptor would compromise the native behavior Relay exists to preserve.
 
 Switching is allowed only while the current native session reports idle. During a busy or retrying turn, Relay leaves the frontend connected and sounds the terminal bell. This preserves live output and interactive approval state.
 

@@ -47,6 +47,9 @@ describe("native input routing", () => {
     const slash = router.route(Buffer.from("/resume"));
     expect(Buffer.from(slash.forward).toString()).toBe("/resume");
     expect(slash.switchRequested).toBe(false);
+    const relayLikeCommand = router.route(Buffer.from("/harness\r"));
+    expect(Buffer.from(relayLikeCommand.forward).toString()).toBe("/harness\r");
+    expect(relayLikeCommand.switchRequested).toBe(false);
 
     const prefix = router.route(Buffer.from([0x1d]));
     expect(prefix.forward).toHaveLength(0);
@@ -55,6 +58,33 @@ describe("native input routing", () => {
     expect(chord.forward).toHaveLength(0);
     expect(chord.afterSwitch).toHaveLength(0);
     expect(chord.switchRequested).toBe(true);
+    expect(chord.switchIntent).toBe("selector");
+  });
+
+  it("recognizes direct toggle keys without stealing legacy Backspace", () => {
+    for (const sequence of [
+      "\u001b[104;6u",
+      "\u001b[72;6:1u",
+      "\u001b[104:72;6u",
+      "\u001b[27;6;72~",
+      "\u001b[17~",
+      "\u001b[57369;1:1u",
+    ]) {
+      const routed = new NativeInputRouter().route(Buffer.from(sequence));
+      expect(routed.switchRequested).toBe(true);
+      expect(routed.switchIntent).toBe("toggle");
+      expect(routed.forward).toHaveLength(0);
+    }
+
+    const backspace = new NativeInputRouter().route(Buffer.from([0x08]));
+    expect(Buffer.from(backspace.forward)).toEqual(Buffer.from([0x08]));
+    expect(backspace.switchRequested).toBe(false);
+
+    for (const event of ["\u001b[104;6:2u", "\u001b[104;6:3u"]) {
+      const routed = new NativeInputRouter().route(Buffer.from(event));
+      expect(Buffer.from(routed.forward).toString()).toBe(event);
+      expect(routed.switchRequested).toBe(false);
+    }
   });
 
   it("forwards Escape immediately and preserves bytes after a switch chord", () => {
@@ -75,6 +105,10 @@ describe("native input routing", () => {
       "\u001b[200~before\u001dr-after\u001b[201~",
     );
     expect(pasted.switchRequested).toBe(false);
+    const pastedToggle = new NativeInputRouter().route(
+      Buffer.from("\u001b[200~\u001b[104;6u\u001b[17~\u001b[201~"),
+    );
+    expect(pastedToggle.switchRequested).toBe(false);
     router.route(Buffer.from([0x1d]));
     expect(router.route(Buffer.from("r")).switchRequested).toBe(true);
   });
@@ -129,9 +163,8 @@ describe("native PTY host", () => {
     expect(output.text()).toContain("\u001b[2J\u001b[HFAKE_NATIVE_READY:");
     expect(output.text()).toContain(`INPUT:${Buffer.from("/resume").toString("hex")}`);
 
-    input.emit("data", Buffer.from([0x1d]));
-    input.emit("data", Buffer.from("r"));
-    expect(await result).toEqual({ reason: "switch" });
+    input.emit("data", Buffer.from("\u001b[104;6u"));
+    expect(await result).toEqual({ reason: "switch", intent: "toggle" });
     expect(output.text()).toContain(":TRAILING_OUTPUT");
     expect(input.rawModes).toEqual([true, false]);
     expect(input.pauseCalls).toBe(1);
@@ -199,7 +232,7 @@ describe("native PTY host", () => {
     idle = true;
     input.emit("data", Buffer.from([0x1d]));
     input.emit("data", Buffer.from("r"));
-    expect(await result).toEqual({ reason: "switch" });
+    expect(await result).toEqual({ reason: "switch", intent: "selector" });
   });
 
   it("buffers post-chord input while checking and restores its order after a veto", async () => {

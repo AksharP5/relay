@@ -18,3 +18,8 @@ coverage/
 .vscode/
 *.log
 *.tmp
+
+# Terminal Control timelines may contain prompts, output, paths, or secrets
+*.termctrl
+.termctrl/
+.termctrl-artifacts/

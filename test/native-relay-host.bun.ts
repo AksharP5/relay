@@ -5,7 +5,7 @@ import type { Harness, NativeTranscriptTurn, RelayMessage, RelayThread } from ".
 import type { NativeRelayController } from "../src/native/controller.ts";
 import { NativeSessionUnavailable } from "../src/native/errors.ts";
 import { launchNativeRelay, type NativeBackend } from "../src/native/relay-host.ts";
-import { selectHarness } from "../src/native/selector.ts";
+import { renderSelectorFrame, selectHarness } from "../src/native/selector.ts";
 
 const now = "2026-07-13T00:00:00.000Z";
 
@@ -229,7 +229,9 @@ describe("native Relay host", () => {
     let launches = 0;
     await launchNativeRelay(controller, {
       startBackend,
-      selectHarness: async () => "opencode",
+      selectHarness: async () => {
+        throw new Error("direct toggle should not open the selector");
+      },
       runTui: async (command, onSwitchRequest) => {
         const harness = command.executable as Harness;
         launches += 1;
@@ -240,7 +242,7 @@ describe("native Relay host", () => {
         });
         if (launches === 1) {
           expect(await onSwitchRequest()).toBe(true);
-          return { reason: "switch" };
+          return { reason: "switch", intent: "toggle" };
         }
         return { reason: "exit", exitCode: 0 };
       },
@@ -659,7 +661,24 @@ describe("native Relay host", () => {
 });
 
 describe("native harness selector", () => {
-  it("changes harness with arrows and restores the terminal", async () => {
+  const stripAnsi = (value: string) => value.replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+
+  it("aligns both harness labels and stays within narrow terminal widths", () => {
+    for (const columns of [20, 40, 80]) {
+      const frame = stripAnsi(
+        renderSelectorFrame({ current: "codex", selected: "opencode", columns, rows: 24 }),
+      );
+      const lines = frame.split("\r\n");
+      expect(lines.every((line) => line.length <= columns)).toBe(true);
+      const codex = lines.find((line) => line.includes("Codex"));
+      const opencode = lines.find((line) => line.includes("OpenCode"));
+      expect(codex).toBeDefined();
+      expect(opencode).toBeDefined();
+      expect(codex!.indexOf("Codex")).toBe(opencode!.indexOf("OpenCode"));
+    }
+  });
+
+  it("changes harness with fragmented modified arrows and restores the terminal", async () => {
     class Input extends EventEmitter {
       isRaw = false;
       modes: Array<boolean> = [];
@@ -679,7 +698,8 @@ describe("native harness selector", () => {
       input,
       output: { write: (value) => void output.push(String(value)) },
     });
-    input.emit("data", "\u001b[B\r");
+    input.emit("data", "\u001b[1;");
+    input.emit("data", "2B\r");
 
     expect(await selection).toBe("codex");
     expect(input.modes).toEqual([true, false]);
@@ -700,16 +720,25 @@ describe("native harness selector", () => {
     const input = new Input();
     const signals = new EventEmitter();
     const output: Array<string> = [];
+    const selectorOutput = {
+      columns: 80,
+      rows: 24,
+      write: (value: string | Uint8Array) => void output.push(String(value)),
+    };
     const selection = selectHarness("codex", {
       input,
-      output: { write: (value) => void output.push(String(value)) },
+      output: selectorOutput,
       signalSource: signals,
     });
+    selectorOutput.columns = 42;
+    signals.emit("SIGWINCH");
+    expect(output.filter((chunk) => chunk.includes("Switch harness"))).toHaveLength(2);
     signals.emit("SIGINT");
 
     expect(await selection).toBeUndefined();
     expect(input.isRaw).toBe(false);
     expect(signals.listenerCount("SIGINT")).toBe(0);
+    expect(signals.listenerCount("SIGWINCH")).toBe(0);
     expect(output.join("")).toContain("\u001b[?1049l");
   });
 });
