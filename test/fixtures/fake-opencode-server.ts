@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import { readFileSync, writeFileSync } from "node:fs";
+
 let revertMessageID: string | undefined = "msg_003";
 let createdSessions = 0;
 let retryHistoryAttempts = 0;
@@ -98,6 +100,20 @@ const server = Bun.serve({
     if (url.pathname.endsWith("/message") && request.method === "GET") {
       if (url.pathname.includes("/ses_retry/") && retryHistoryAttempts++ === 0)
         return new Response("transient", { status: 503 });
+      const recoveryFile = Bun.env.RELAY_TEST_RECOVERY_FILE;
+      if (url.pathname.includes("/ses_recover/") && recoveryFile) {
+        const attempts = Number(
+          (() => {
+            try {
+              return readFileSync(recoveryFile, "utf8");
+            } catch {
+              return "0";
+            }
+          })(),
+        );
+        writeFileSync(recoveryFile, String(attempts + 1));
+        if (attempts < 4) return new Response("stuck attached server", { status: 503 });
+      }
       return Response.json([
         { info: { id: "msg_001", role: "user" }, parts: [{ type: "text", text: "first" }] },
         {

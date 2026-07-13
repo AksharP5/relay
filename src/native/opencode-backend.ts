@@ -6,6 +6,15 @@ import type { NativeTuiCommand } from "./pty-host.ts";
 
 type JsonObject = Record<string, unknown>;
 
+class OpenCodeReadError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 const asObject = (value: unknown): JsonObject | undefined =>
   value !== null && typeof value === "object" ? (value as JsonObject) : undefined;
 
@@ -99,15 +108,15 @@ export class OpenCodeNativeBackend {
     }
   }
 
-  #url(path: string) {
-    const url = new URL(path, this.#server.baseUrl);
+  #url(path: string, server: RunningOpenCodeServer = this.#server) {
+    const url = new URL(path, server.baseUrl);
     url.searchParams.set("directory", this.#cwd);
     return url;
   }
 
-  #headers(json = false) {
+  #headers(json = false, server: RunningOpenCodeServer = this.#server) {
     return {
-      authorization: this.#server.authorization,
+      authorization: server.authorization,
       ...(json ? { "content-type": "application/json" } : {}),
     };
   }
@@ -226,7 +235,7 @@ export class OpenCodeNativeBackend {
     return current;
   }
 
-  async #get(path: string, timeoutMs: number) {
+  async #get(path: string, timeoutMs: number, server: RunningOpenCodeServer = this.#server) {
     let lastFailure: unknown;
     const deadline = Date.now() + timeoutMs;
     for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -234,8 +243,8 @@ export class OpenCodeNativeBackend {
       if (remaining <= 0)
         throw lastFailure ?? new DOMException("The operation timed out", "TimeoutError");
       try {
-        const response = await fetch(this.#url(path), {
-          headers: this.#headers(),
+        const response = await fetch(this.#url(path, server), {
+          headers: this.#headers(false, server),
           signal: AbortSignal.any([
             this.#requestAbort.signal,
             AbortSignal.timeout(Math.max(1, remaining)),
@@ -306,19 +315,33 @@ export class OpenCodeNativeBackend {
     await response.body?.cancel();
   }
 
-  async read(sessionId: string) {
+  async #readFrom(server: RunningOpenCodeServer, sessionId: string) {
     const [messagesResponse, sessionResponse] = await Promise.all([
-      this.#get(`/session/${encodeURIComponent(sessionId)}/message`, 30_000),
-      this.#get(`/session/${encodeURIComponent(sessionId)}`, 30_000),
+      this.#get(`/session/${encodeURIComponent(sessionId)}/message`, 30_000, server),
+      this.#get(`/session/${encodeURIComponent(sessionId)}`, 30_000, server),
     ]);
-    if (messagesResponse.status === 404 || messagesResponse.status === 410)
+    if (messagesResponse.status === 404 || messagesResponse.status === 410) {
+      await messagesResponse.body?.cancel();
       throw new NativeSessionUnavailable("opencode", sessionId);
-    if (!messagesResponse.ok)
-      throw new Error(`OpenCode history failed with HTTP ${messagesResponse.status}`);
-    if (sessionResponse.status === 404 || sessionResponse.status === 410)
+    }
+    if (!messagesResponse.ok) {
+      await messagesResponse.body?.cancel();
+      throw new OpenCodeReadError(
+        `OpenCode history failed with HTTP ${messagesResponse.status}`,
+        messagesResponse.status,
+      );
+    }
+    if (sessionResponse.status === 404 || sessionResponse.status === 410) {
+      await sessionResponse.body?.cancel();
       throw new NativeSessionUnavailable("opencode", sessionId);
-    if (!sessionResponse.ok)
-      throw new Error(`OpenCode session state failed with HTTP ${sessionResponse.status}`);
+    }
+    if (!sessionResponse.ok) {
+      await sessionResponse.body?.cancel();
+      throw new OpenCodeReadError(
+        `OpenCode session state failed with HTTP ${sessionResponse.status}`,
+        sessionResponse.status,
+      );
+    }
     const session = asObject(await sessionResponse.json());
     const revertedMessageId = asObject(session?.revert)?.messageID;
     const messages: unknown = await messagesResponse.json();
@@ -333,6 +356,28 @@ export class OpenCodeNativeBackend {
         .map((turn) => turn.id)
         .filter((id) => !visible.has(id)),
     };
+  }
+
+  async read(sessionId: string) {
+    try {
+      return await this.#readFrom(this.#server, sessionId);
+    } catch (cause) {
+      if (!(cause instanceof OpenCodeReadError) || cause.status < 500 || cause.status > 504)
+        throw cause;
+      // OpenCode can leave the server that hosted an attached TUI unable to
+      // read history just after detach. A fresh authenticated local server can
+      // safely read the same persisted session without mutating or rerunning it.
+      const recovery = await startOpenCodeServer(
+        this.#executable,
+        this.#cwd,
+        this.#requestAbort.signal,
+      );
+      try {
+        return await this.#readFrom(recovery, sessionId);
+      } finally {
+        await recovery.close();
+      }
+    }
   }
 
   async isIdle(sessionId: string) {

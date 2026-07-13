@@ -1,4 +1,6 @@
-import { chmod } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "bun:test";
 
@@ -55,6 +57,25 @@ describe("OpenCode native backend", () => {
     expect(parseOpenCodeNativeTurns(messages, "user-2")).toEqual([
       { id: "user-1", prompt: "Keep", response: "Kept." },
     ]);
+  });
+
+  it("recovers a detached server's persistent history 5xx through a fresh local server", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-read-recovery-"));
+    const marker = join(directory, "attempts");
+    const previousMarker = Bun.env.RELAY_TEST_RECOVERY_FILE;
+    Bun.env.RELAY_TEST_RECOVERY_FILE = marker;
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    try {
+      await expect(backend.read("ses_recover")).resolves.toEqual({
+        turns: [],
+        hiddenTurnIds: [],
+      });
+    } finally {
+      await backend.close();
+      if (previousMarker === undefined) delete Bun.env.RELAY_TEST_RECOVERY_FILE;
+      else Bun.env.RELAY_TEST_RECOVERY_FILE = previousMarker;
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("creates authenticated sessions and returns the native attach command", async () => {
