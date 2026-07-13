@@ -163,6 +163,53 @@ describe("Relay CLI storage", () => {
     expect(result.stderr).toContain("Run relay new first");
   });
 
+  it("defers current-task transcript recovery from listing to export", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-metadata-list-"));
+    tempRoots.push(root);
+    await runRelay(root, ["new", "Metadata only"]);
+    const [threadId] = await readdir(join(root, "threads"));
+    const events = join(root, "threads", threadId!, "events.jsonl");
+    const partial = '{"id":"interrupted-tail"';
+    await appendFile(events, partial);
+
+    const listed = await runRelay(root, ["list"]);
+    expect(listed.exitCode).toBe(0);
+    expect(listed.stdout).toContain("Metadata only");
+    expect(await readFile(events, "utf8")).toBe(partial);
+
+    const exported = await runRelay(root, ["export", "--out", join(root, "task.json")]);
+    expect(exported.exitCode).toBe(0);
+    expect((await readFile(events, "utf8")).trim()).toBe("");
+  });
+
+  it("lists and resolves tasks without scanning unrelated transcripts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-metadata-resolution-"));
+    tempRoots.push(root);
+    await runRelay(root, ["new", "Unrelated broken task"]);
+    const [unrelatedId] = await readdir(join(root, "threads"));
+    const unrelatedEvents = join(root, "threads", unrelatedId!, "events.jsonl");
+    const invalid = "not-json\n";
+    await writeFile(unrelatedEvents, invalid);
+
+    const created = await runRelay(root, ["new", "Clean target task"]);
+    const targetId = created.stdout.match(/[0-9a-f]{8}/)?.[0];
+    expect(targetId).toBeDefined();
+
+    const listed = await runRelay(root, ["list"]);
+    expect(listed.exitCode).toBe(0);
+    expect(listed.stdout).toContain("Unrelated broken task");
+    expect(listed.stdout).toContain("Clean target task");
+
+    const exported = await runRelay(root, [
+      "export",
+      targetId!,
+      "--out",
+      join(root, "target.json"),
+    ]);
+    expect(exported.exitCode).toBe(0);
+    expect(await readFile(unrelatedEvents, "utf8")).toBe(invalid);
+  });
+
   it("exports a versioned task and deletes only Relay-owned records", async () => {
     const root = await mkdtemp(join(tmpdir(), "relay-export-delete-"));
     tempRoots.push(root);

@@ -7,7 +7,7 @@ $ cd my-project
 $ relay
 ```
 
-Relay opens the selected harness exactly as its own CLI renders it. Codex looks and behaves like Codex; OpenCode looks and behaves like OpenCode. Type `/` and the native command palette owns the input. Press `Escape` and the native dialog closes normally.
+Relay opens the selected harness exactly as its own CLI renders it. Codex looks and behaves like Codex; OpenCode looks and behaves like OpenCode. Type `/` and the native command palette owns the input. `Escape` remains owned by that native TUI, including any version-specific behavior.
 
 To switch harnesses immediately, press `F6`. Relay carries the completed conversation forward and opens the other real TUI. On a Mac keyboard configured for media keys, use `Fn+F6`. `Ctrl+Shift+H` can be configured as an optional second key; see [Terminal shortcuts](#terminal-shortcuts).
 
@@ -129,7 +129,7 @@ Relay uses the most recent task bound to that directory or creates a new local t
 | Input                              | Owner      | Action                                         |
 | ---------------------------------- | ---------- | ---------------------------------------------- |
 | `/`, letters, `Enter`              | Native TUI | Type and run native slash commands normally    |
-| `Escape`                           | Native TUI | Close its active dialog or autocomplete        |
+| `Escape`                           | Native TUI | Handle according to that TUI's native behavior |
 | `Ctrl+C`                           | Native TUI | Interrupt or exit according to native behavior |
 | `F6` (`Fn+F6` with Mac media keys) | Relay      | Switch directly to the other harness when idle |
 | configured `Ctrl+Shift+H`          | Relay      | Optional terminal-specific second switch key   |

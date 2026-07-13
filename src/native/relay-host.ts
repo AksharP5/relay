@@ -486,7 +486,9 @@ export const launchNativeRelay = async (
       process.exitCode = signalExitCode(pendingSignal);
       return;
     }
-    lease = await controller.acquireLease(thread.id);
+    const acquired = await controller.acquireLease(thread.id);
+    lease = acquired;
+    thread = acquired.thread;
     let harness = thread.activeHarness;
     let armToggleLatch = false;
     while (true) {

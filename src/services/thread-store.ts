@@ -103,6 +103,12 @@ const isVisible = (
   return !key || !hidden.has(key);
 };
 
+const visibleMessages = (messages: ReadonlyArray<RelayMessage>, visibility: NativeVisibility) => {
+  const hidden = new Set(visibility.hidden);
+  const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
+  return messages.filter((message) => isVisible(message, hidden, links));
+};
+
 const atomicTextWrite = async (path: string, value: string) => {
   await ensureBase();
   const temp = `${path}.${crypto.randomUUID()}.tmp`;
@@ -215,9 +221,7 @@ const readMessages = async (id: string, options: { readonly repairTail?: boolean
     readRawMessages(id, options),
     readVisibility(id),
   ]);
-  const hidden = new Set(visibility.hidden);
-  const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
-  return messages.filter((message) => isVisible(message, hidden, links));
+  return visibleMessages(messages, visibility);
 };
 
 const scanMessages = async (id: string, onMessage: (message: RelayMessage) => void) => {
@@ -417,6 +421,40 @@ async function liveLockExists(id: string) {
   return false;
 }
 
+interface RecoveredThread {
+  readonly thread: RelayThread;
+  readonly messages: ReadonlyArray<RelayMessage>;
+}
+
+const recoverThreadLocked = async (thread: RelayThread): Promise<RecoveredThread> => {
+  const latest = (await readThreadFile(thread.id))?.value ?? thread;
+  const latestPending = await readJson<PendingTurn>(pendingPath(thread.id), PendingTurn);
+  const latestMessages = await readRawMessages(thread.id, { repairTail: true });
+  if (latestPending) {
+    const existingIds = new Set(latestMessages.map((message) => message.id));
+    const missing = latestPending.messages.filter((message) => !existingIds.has(message.id));
+    if (missing.length > 0) {
+      await appendFile(
+        eventsPath(thread.id),
+        `${missing.map((message) => JSON.stringify(message)).join("\n")}\n`,
+        { encoding: "utf8", mode: 0o600 },
+      );
+    }
+    await writeThread(latestPending.thread);
+    await rm(pendingPath(thread.id), { force: true });
+    return {
+      thread: latestPending.thread,
+      messages: [...latestMessages, ...missing],
+    };
+  }
+
+  const repairedSeq = latestMessages.at(-1)?.seq ?? 0;
+  if (repairedSeq === latest.lastSeq) return { thread: latest, messages: latestMessages };
+  const repaired = { ...latest, lastSeq: repairedSeq };
+  await writeThread(repaired);
+  return { thread: repaired, messages: latestMessages };
+};
+
 const recoverThread = async (thread: RelayThread): Promise<RelayThread> => {
   if (await liveLockExists(thread.id)) return thread;
 
@@ -429,35 +467,13 @@ const recoverThread = async (thread: RelayThread): Promise<RelayThread> => {
   }
 
   try {
-    const latest = (await readThreadFile(thread.id))?.value ?? thread;
-    const latestPending = await readJson<PendingTurn>(pendingPath(thread.id), PendingTurn);
-    const latestMessages = await readRawMessages(thread.id, { repairTail: true });
-    if (latestPending) {
-      const existingIds = new Set(latestMessages.map((message) => message.id));
-      const missing = latestPending.messages.filter((message) => !existingIds.has(message.id));
-      if (missing.length > 0) {
-        await appendFile(
-          eventsPath(thread.id),
-          `${missing.map((message) => JSON.stringify(message)).join("\n")}\n`,
-          { encoding: "utf8", mode: 0o600 },
-        );
-      }
-      await writeThread(latestPending.thread);
-      await rm(pendingPath(thread.id), { force: true });
-      return latestPending.thread;
-    }
-
-    const repairedSeq = latestMessages.at(-1)?.seq ?? 0;
-    if (repairedSeq === latest.lastSeq) return latest;
-    const repaired = { ...latest, lastSeq: repairedSeq };
-    await writeThread(repaired);
-    return repaired;
+    return (await recoverThreadLocked(thread)).thread;
   } finally {
     await lock.release();
   }
 };
 
-const readThread = async (id: string): Promise<RelayThread | undefined> => {
+const readThreadMetadata = async (id: string): Promise<RelayThread | undefined> => {
   const stored = await readThreadFile(id);
   if (!stored) return undefined;
   if (stored.legacy && !(await liveLockExists(id))) {
@@ -472,7 +488,12 @@ const readThread = async (id: string): Promise<RelayThread | undefined> => {
       await lock?.release();
     }
   }
-  return recoverThread(stored.value);
+  return stored.value;
+};
+
+const readThread = async (id: string): Promise<RelayThread | undefined> => {
+  const thread = await readThreadMetadata(id);
+  return thread ? recoverThread(thread) : undefined;
 };
 
 function processIsAlive(pid: number) {
@@ -611,6 +632,10 @@ export class ThreadStore extends Context.Service<
   {
     readonly create: (input: CreateThreadInput) => Effect.Effect<RelayThread, StoreError>;
     readonly current: () => Effect.Effect<
+      RelayThread,
+      StoreError | NoCurrentThread | ThreadNotFound
+    >;
+    readonly currentMetadata: () => Effect.Effect<
       RelayThread,
       StoreError | NoCurrentThread | ThreadNotFound
     >;
@@ -768,6 +793,40 @@ export class ThreadStore extends Context.Service<
       });
     }),
 
+    currentMetadata: Effect.fn("ThreadStore.currentMetadata")(function* () {
+      const index = yield* Effect.tryPromise({
+        try: () => loadIndex(),
+        catch: (cause) =>
+          new StoreError({ operation: "read index", message: errorMessage(cause), cause }),
+      });
+      if (index.currentThreadId === null) {
+        return yield* new NoCurrentThread({
+          message: "No Relay task is selected. Run relay new first.",
+        });
+      }
+
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const thread = await readThreadMetadata(index.currentThreadId!);
+          if (!thread) {
+            throw new ThreadNotFound({
+              threadId: index.currentThreadId!,
+              message: `Relay task ${index.currentThreadId!} was not found`,
+            });
+          }
+          return thread;
+        },
+        catch: (cause) =>
+          cause instanceof ThreadNotFound
+            ? cause
+            : new StoreError({
+                operation: "read current thread metadata",
+                message: errorMessage(cause),
+                cause,
+              }),
+      });
+    }),
+
     get: Effect.fn("ThreadStore.get")((id: string) =>
       Effect.tryPromise({
         try: async () => {
@@ -787,7 +846,7 @@ export class ThreadStore extends Context.Service<
       Effect.tryPromise({
         try: async () => {
           const index = await loadIndex();
-          const threads = await Promise.all(index.threadIds.map((id) => readThread(id)));
+          const threads = await Promise.all(index.threadIds.map((id) => readThreadMetadata(id)));
           return threads.filter((thread): thread is RelayThread => thread !== undefined);
         },
         catch: (cause) =>
@@ -833,18 +892,20 @@ export class ThreadStore extends Context.Service<
             try {
               const current = await readThreadFile(thread.id);
               if (!current) throw new Error(`Relay task ${thread.id} no longer exists`);
+              const recovered = await recoverThreadLocked(current.value);
+              const messages = visibleMessages(recovered.messages, await readVisibility(thread.id));
               return {
                 formatVersion: 1 as const,
                 exportedAt: new Date().toISOString(),
                 task: {
-                  id: current.value.id,
-                  title: current.value.title,
-                  cwd: current.value.cwd,
-                  activeHarness: current.value.activeHarness,
-                  createdAt: current.value.createdAt,
-                  updatedAt: current.value.updatedAt,
+                  id: recovered.thread.id,
+                  title: recovered.thread.title,
+                  cwd: recovered.thread.cwd,
+                  activeHarness: recovered.thread.activeHarness,
+                  createdAt: recovered.thread.createdAt,
+                  updatedAt: recovered.thread.updatedAt,
                 },
-                messages: (await readMessages(thread.id)).map((message) => ({
+                messages: messages.map((message) => ({
                   seq: message.seq,
                   role: message.role,
                   content: message.content,

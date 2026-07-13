@@ -12,7 +12,10 @@ import { RelayService } from "../services/relay-service.ts";
 
 export interface NativeRelayController {
   readonly loadLocalThread: (preferredHarness?: Harness) => Promise<RelayThread>;
-  readonly acquireLease: (threadId: string) => Promise<{ readonly release: () => Promise<void> }>;
+  readonly acquireLease: (threadId: string) => Promise<{
+    readonly thread: RelayThread;
+    readonly release: () => Promise<void>;
+  }>;
   readonly switchHarness: (threadId: string, harness: Harness) => Promise<RelayThread>;
   readonly delta: (
     threadId: string,

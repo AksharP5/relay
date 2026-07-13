@@ -108,7 +108,10 @@ export class RelayService extends Context.Service<
     }) => Effect.Effect<RelayThread, unknown>;
     readonly acquireNativeLease: (
       threadId: string,
-    ) => Effect.Effect<{ readonly release: () => Promise<void> }, unknown>;
+    ) => Effect.Effect<
+      { readonly thread: RelayThread; readonly release: () => Promise<void> },
+      unknown
+    >;
     readonly switchNativeHarness: (
       threadId: string,
       harness: Harness,
@@ -260,7 +263,7 @@ export class RelayService extends Context.Service<
         Effect.gen(function* () {
           const thread = yield* resolveTask(threadId);
           yield* store.setCurrent(thread.id);
-          return thread;
+          return yield* store.get(thread.id);
         }),
       );
 
@@ -281,14 +284,14 @@ export class RelayService extends Context.Service<
 
       const exportTask = Effect.fn("RelayService.exportTask")((threadId?: string) =>
         Effect.gen(function* () {
-          const thread = threadId ? yield* resolveTask(threadId) : yield* store.current();
+          const thread = threadId ? yield* resolveTask(threadId) : yield* store.currentMetadata();
           return yield* store.exportTask(thread);
         }),
       );
 
       const deleteTask = Effect.fn("RelayService.deleteTask")((threadId?: string) =>
         Effect.gen(function* () {
-          const thread = threadId ? yield* resolveTask(threadId) : yield* store.current();
+          const thread = threadId ? yield* resolveTask(threadId) : yield* store.currentMetadata();
           return yield* store.deleteTask(thread);
         }),
       );
@@ -486,7 +489,14 @@ export class RelayService extends Context.Service<
         abandonNativeHandoff,
         importNativeTurns,
         acquireNativeLease: (threadId) =>
-          store.get(threadId).pipe(Effect.flatMap(store.acquireExecutionLease)),
+          Effect.gen(function* () {
+            const initial = yield* store.get(threadId);
+            const lease = yield* store.acquireExecutionLease(initial);
+            const thread = yield* store
+              .get(threadId)
+              .pipe(Effect.tapError(() => Effect.promise(lease.release)));
+            return { thread, release: lease.release };
+          }),
         switchNativeHarness: (threadId, harness) => switchNativeHarness(harness, threadId),
         dropNativeBinding,
         dataRoot: store.root,

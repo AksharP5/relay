@@ -23,7 +23,7 @@ const makeController = () => {
 
   const controller: NativeRelayController = {
     loadLocalThread: async () => thread,
-    acquireLease: async () => ({ release: async () => {} }),
+    acquireLease: async () => ({ thread, release: async () => {} }),
     switchHarness: async (_threadId, harness) => {
       thread = { ...thread, activeHarness: harness };
       return thread;
@@ -142,7 +142,10 @@ describe("native Relay host", () => {
       ...base,
       acquireLease: async () => {
         events.push("lease acquired");
-        return { release: async () => void events.push("lease released") };
+        return {
+          thread: await base.loadLocalThread(),
+          release: async () => void events.push("lease released"),
+        };
       },
     };
 
@@ -155,6 +158,30 @@ describe("native Relay host", () => {
       }),
     ).rejects.toThrow("startup failed");
     expect(events).toEqual(["lease acquired", "backend started", "lease released"]);
+  });
+
+  it("launches the harness recovered while acquiring the native lease", async () => {
+    const { controller: base } = makeController();
+    const stale = await base.loadLocalThread();
+    let startedHarness: Harness | undefined;
+    const controller: NativeRelayController = {
+      ...base,
+      loadLocalThread: async () => stale,
+      acquireLease: async () => ({
+        thread: { ...stale, activeHarness: "opencode" },
+        release: async () => {},
+      }),
+    };
+
+    await expect(
+      launchNativeRelay(controller, {
+        startBackend: async (harness) => {
+          startedHarness = harness;
+          throw new Error("stop after harness selection");
+        },
+      }),
+    ).rejects.toThrow("stop after harness selection");
+    expect(startedHarness).toBe("opencode");
   });
 
   it("closes a detached backend when an external interrupt arrives before the native TUI", async () => {
