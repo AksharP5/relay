@@ -39,7 +39,7 @@ A Relay task contains:
 
 Bindings are lazy. A cold Codex task opens the base native TUI and lets Codex create its own thread on the first real turn. This matters because Codex does not persist a newly started empty app-server thread. When a cold Codex session already has a cross-harness handoff, Relay starts the thread and injects that handoff on the same app-server connection before closing it, making the session safely resumable.
 
-OpenCode can create and persist an empty session before the attached TUI starts.
+A cold OpenCode task with no handoff attaches without a session so OpenCode owns its normal welcome screen and creates the session on first native activity. Warm tasks resume their binding, while a cold destination with cross-harness context creates and seeds a resumable session before attachment.
 
 ## The synchronization sequence
 

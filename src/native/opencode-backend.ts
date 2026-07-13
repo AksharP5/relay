@@ -289,16 +289,22 @@ export class OpenCodeNativeBackend {
   }
 
   /** Detects sessions created or used through native /new and /sessions commands. */
-  async resolveSession(fallbackSessionId: string) {
+  async resolveSession(fallbackSessionId?: string) {
     return this.#observedRoot ?? fallbackSessionId;
   }
 
-  command(sessionId: string): NativeTuiCommand {
+  command(sessionId?: string): NativeTuiCommand {
     this.#observeTui = true;
     this.#observedRoot = sessionId;
     return {
       executable: this.#executable,
-      args: ["attach", this.#server.baseUrl, "--dir", this.#cwd, "--session", sessionId],
+      args: [
+        "attach",
+        this.#server.baseUrl,
+        "--dir",
+        this.#cwd,
+        ...(sessionId ? ["--session", sessionId] : []),
+      ],
       cwd: this.#cwd,
       env: { OPENCODE_SERVER_PASSWORD: this.#server.password },
     };

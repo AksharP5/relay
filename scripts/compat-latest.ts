@@ -207,9 +207,30 @@ try {
 const openCodeBackend = await OpenCodeNativeBackend.start(opencode, process.cwd());
 let openCodeProbeSessionId: string | undefined;
 try {
+  const coldCommand = openCodeBackend.command();
+  if (coldCommand.args.includes("--session")) {
+    throw new Error("OpenCode cold native startup tried to attach an empty session");
+  }
+  if ((await openCodeBackend.resolveSession()) !== undefined) {
+    throw new Error("OpenCode cold native observer resolved a session before one existed");
+  }
+
   const sessionId = await openCodeBackend.ensureSession({ title: "Relay native event probe" });
   openCodeProbeSessionId = sessionId;
-  openCodeBackend.command(sessionId);
+  let observedSessionId: string | undefined;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    observedSessionId = await openCodeBackend.resolveSession();
+    if (observedSessionId === sessionId) break;
+    await Bun.sleep(25);
+  }
+  if (observedSessionId !== sessionId) {
+    throw new Error("OpenCode cold native event observer did not discover the created session");
+  }
+
+  const warmCommand = openCodeBackend.command(sessionId);
+  if (!warmCommand.args.includes("--session")) {
+    throw new Error("OpenCode warm native startup did not resume its observed session");
+  }
   if ((await openCodeBackend.resolveSession(sessionId)) !== sessionId) {
     throw new Error("OpenCode native event resolver changed the attached session");
   }

@@ -60,6 +60,11 @@ describe("OpenCode native backend", () => {
   it("creates authenticated sessions and returns the native attach command", async () => {
     const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
     try {
+      const coldCommand = backend.command();
+      expect(coldCommand.args).toContain("attach");
+      expect(coldCommand.args).not.toContain("--session");
+      expect(await backend.resolveSession()).toBeUndefined();
+
       const sessionId = await backend.ensureSession({ title: "Relay task" });
       expect(sessionId).toBe("ses_created");
       const command = backend.command(sessionId);
@@ -98,7 +103,7 @@ describe("OpenCode native backend", () => {
       expect(nativeSession.ok).toBe(true);
       const created = (await nativeSession.json()) as { id: string };
       await Bun.sleep(10);
-      expect(await backend.resolveSession(sessionId)).toBe(created.id);
+      expect(await backend.resolveSession()).toBe(created.id);
 
       const childSession = await fetch(new URL(`/session?directory=${process.cwd()}`, baseUrl), {
         method: "POST",
