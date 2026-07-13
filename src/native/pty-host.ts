@@ -38,6 +38,8 @@ export interface NativePtyIo {
 
 export interface NativePtyOptions {
   readonly prefixTimeoutMs?: number;
+  /** Return false to leave the native TUI running (for example, during an active turn). */
+  readonly onSwitchRequest?: () => boolean | Promise<boolean>;
 }
 
 const defaultIo = (): NativePtyIo => ({
@@ -73,7 +75,7 @@ const stopChild = async (child: ReturnType<typeof Bun.spawn>) => {
 
 /**
  * Hosts an upstream TUI in a real PTY. Output is forwarded unchanged and all
- * input except Relay's Ctrl+R switch chord is written unchanged to the child.
+ * input except Relay's Ctrl+] then R switch chord is written unchanged to the child.
  */
 export const runNativeTui = async (
   command: NativeTuiCommand,
@@ -85,7 +87,9 @@ export const runNativeTui = async (
   const router = new NativeInputRouter();
   const initialRawMode = io.input.isRaw === true;
   let switchRequested = false;
+  let switchCheckPending = false;
   let parentSignal: "SIGHUP" | "SIGTERM" | "SIGQUIT" | undefined;
+  let hostFailure: Error | undefined;
   let stopping: Promise<void> | undefined;
   let prefixTimer: ReturnType<typeof setTimeout> | undefined;
   let terminal: Bun.Terminal | undefined;
@@ -94,6 +98,7 @@ export const runNativeTui = async (
   const ptyEof = new Promise<void>((resolve) => (resolvePtyEof = resolve));
   const inputQueue: Array<Uint8Array> = [];
   const outputQueue: Array<Uint8Array> = [];
+  const outputDrainWaiters = new Set<() => void>();
   let outputBlocked = false;
 
   const flushInput = () => {
@@ -124,6 +129,8 @@ export const runNativeTui = async (
         return;
       }
     }
+    for (const resolve of outputDrainWaiters) resolve();
+    outputDrainWaiters.clear();
   };
   const writeOutput = (data: Uint8Array) => {
     if (outputBlocked) {
@@ -142,10 +149,23 @@ export const runNativeTui = async (
     const bytes = typeof chunk === "string" ? Buffer.from(chunk) : new Uint8Array(chunk);
     const routed = router.route(bytes);
     writeInput(routed.forward);
-    if (!routed.switchRequested || switchRequested) return;
-    switchRequested = true;
-    if (child) stopping = stopChild(child);
-    return;
+    if (!routed.switchRequested || switchRequested || switchCheckPending) return;
+    switchCheckPending = true;
+    void Promise.resolve(options.onSwitchRequest?.() ?? true)
+      .then((allowed) => {
+        switchCheckPending = false;
+        if (!allowed || switchRequested || parentSignal) {
+          if (!allowed) writeOutput(Uint8Array.of(0x07));
+          return;
+        }
+        switchRequested = true;
+        if (child) stopping = stopChild(child);
+      })
+      .catch((cause) => {
+        switchCheckPending = false;
+        hostFailure = cause instanceof Error ? cause : new Error(String(cause));
+        if (child) stopping = stopChild(child);
+      });
   };
   const flushPrefix = () => {
     prefixTimer = undefined;
@@ -203,7 +223,18 @@ export const runNativeTui = async (
     clearInterval(prefixPoll);
     if (stopping) await stopping;
     await Promise.race([ptyEof, Bun.sleep(250)]);
-    if (outputQueue.length > 0) await Promise.race([Bun.sleep(250), new Promise(flushOutput)]);
+    if (outputQueue.length > 0 || outputBlocked) {
+      let cancelWait: (() => void) | undefined;
+      const drained = new Promise<void>((resolve) => {
+        const done = () => resolve();
+        cancelWait = () => outputDrainWaiters.delete(done);
+        outputDrainWaiters.add(done);
+        flushOutput();
+      });
+      await Promise.race([drained, Bun.sleep(250)]);
+      cancelWait?.();
+    }
+    if (hostFailure) throw hostFailure;
     if (parentSignal) return { reason: "signal", signal: parentSignal };
     return switchRequested ? { reason: "switch" } : { reason: "exit", exitCode };
   } finally {

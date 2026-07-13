@@ -152,4 +152,34 @@ describe("native PTY host", () => {
     expect(await result).toEqual({ reason: "signal", signal: "SIGTERM" });
     expect(input.rawModes).toEqual([true, false]);
   });
+
+  it("keeps the native frontend alive when an active turn vetoes switching", async () => {
+    const input = new TestInput();
+    const output = new TestOutput();
+    const resize = new EventEmitter();
+    let idle = false;
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output, resizeSource: resize },
+      { onSwitchRequest: () => idle },
+    );
+    running.push(result);
+
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from([0x1d]));
+    input.emit("data", Buffer.from("r"));
+    await Bun.sleep(25);
+    input.emit("data", Buffer.from("/resume"));
+    await Bun.sleep(25);
+    expect(output.text()).toContain(`INPUT:${Buffer.from("/resume").toString("hex")}`);
+
+    idle = true;
+    input.emit("data", Buffer.from([0x1d]));
+    input.emit("data", Buffer.from("r"));
+    expect(await result).toEqual({ reason: "switch" });
+  });
 });
