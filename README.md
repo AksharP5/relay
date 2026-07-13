@@ -9,6 +9,8 @@ $ relay
 
 Relay opens the selected harness exactly as its own CLI renders it. Codex looks and behaves like Codex; OpenCode looks and behaves like OpenCode. Type `/` and the native command palette owns the input. `Escape` remains owned by that native TUI, including any version-specific behavior.
 
+> **Platform support:** Relay supports macOS and glibc Linux. Native Windows is not supported yet.
+
 To switch harnesses while the current session is idle, press `Ctrl+Q`. Relay carries the completed conversation forward and opens the other real TUI. `F6` remains available as a fallback (`Fn+F6` when macOS treats the function row as media keys). See [Terminal shortcuts](#terminal-shortcuts) for the Zellij caveat.
 
 ## Why use Relay?
@@ -62,6 +64,13 @@ Handoffs are bounded to the newest 200 messages and 120,000 characters. This kee
 Read [How Relay keeps context](docs/how-relay-works.md) for lifecycle details and edge cases.
 
 ## Install
+
+### Supported platforms
+
+- macOS on Apple Silicon or Intel
+- glibc Linux on arm64 or x64
+
+Native Windows is not supported. Relay's terminal host currently depends on Unix pseudo-terminal and process semantics; Windows support requires a dedicated ConPTY backend rather than another npm binary. A glibc-based WSL distribution is treated as Linux, but WSL is not currently covered by Relay's automated compatibility tests.
 
 ### Runtime prerequisites
 
@@ -189,7 +198,7 @@ Use `relay delete [id] --force` to erase one task's Relay-owned records. Deletio
 
 ## Current boundaries
 
-- Relay currently supports Codex and OpenCode on macOS and Linux. Windows PTY hosting is not implemented.
+- Relay supports Codex and OpenCode on macOS and glibc Linux. Native Windows PTY hosting is not implemented.
 - Relay prevents two tasks from running agents in the same git checkout, including tasks started from nested or symlinked paths. Use separate git worktrees for intentional concurrency.
 - Cross-engine continuity includes completed visible text and the working tree, not hidden state.
 - A turn must finish in its source TUI before Relay switches; partial streaming output is not mirrored into the destination TUI.
