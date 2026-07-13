@@ -27,11 +27,6 @@ case "$system/$machine" in
     ;;
 esac
 
-if [ "$system" = Linux ] && ! getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
-  echo "Relay currently requires glibc on Linux; musl Linux is not supported yet." >&2
-  exit 1
-fi
-
 for executable in \
   "$package_root/node_modules/@akshar5/$native/bin/relay" \
   "$package_root/../$native/bin/relay"
@@ -41,7 +36,16 @@ do
   fi
 done
 
+if [ "$system" = Linux ] && command -v getconf >/dev/null 2>&1 && \
+  ! getconf GNU_LIBC_VERSION >/dev/null 2>&1
+then
+  echo "Relay currently requires glibc on Linux; musl Linux is not supported yet." >&2
+  exit 1
+fi
+
 echo "Relay's native package (@akshar5/$native) is missing." >&2
-echo "Reinstall Relay so npm can restore it:" >&2
-echo "  npm install --global @akshar5/relay@latest" >&2
+echo "Reinstall with optional dependencies enabled:" >&2
+echo "  npm install @akshar5/relay@latest --include=optional" >&2
+echo "For a global installation:" >&2
+echo "  npm install --global @akshar5/relay@latest --include=optional" >&2
 exit 1
