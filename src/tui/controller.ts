@@ -1,5 +1,5 @@
 import { Effect, type ManagedRuntime } from "effect";
-import type { Harness, RelayMessage, RelayThread } from "../domain.ts";
+import type { Harness, HarnessTurnProgress, RelayMessage, RelayThread } from "../domain.ts";
 import { NoCurrentThread } from "../errors.ts";
 import { RelayService } from "../services/relay-service.ts";
 
@@ -19,6 +19,7 @@ export interface TuiController {
   readonly ask: (input: {
     readonly prompt: string;
     readonly harness: Harness;
+    readonly onProgress?: (progress: HarnessTurnProgress) => void;
   }) => Promise<Pick<TuiSnapshot, "thread" | "messages">>;
   readonly switchHarness: (harness: Harness) => Promise<RelayThread | null>;
 }

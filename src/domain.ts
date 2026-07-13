@@ -52,7 +52,12 @@ export interface HarnessTurnInput {
   readonly handoff: ReadonlyArray<RelayMessage>;
   readonly sessionId?: string;
   readonly model?: string;
+  readonly onProgress?: (progress: HarnessTurnProgress) => void;
 }
+
+export type HarnessTurnProgress =
+  | { readonly type: "activity"; readonly label: string }
+  | { readonly type: "text"; readonly text: string };
 
 export interface HarnessTurnResult {
   readonly sessionId: string;

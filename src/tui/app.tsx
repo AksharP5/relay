@@ -55,6 +55,7 @@ export const RelayApp = (props: RelayAppProps) => {
   const [pickerOpen, setPickerOpen] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [pendingPrompt, setPendingPrompt] = createSignal("");
+  const [streamingResponse, setStreamingResponse] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   let composer: TextareaRenderable | undefined;
 
@@ -89,17 +90,26 @@ export const RelayApp = (props: RelayAppProps) => {
 
     composer?.clear();
     setPendingPrompt(prompt);
+    setStreamingResponse("");
     setBusy(true);
     setError(null);
     try {
-      const next = await props.controller.ask({ prompt, harness: selectedHarness() });
+      const next = await props.controller.ask({
+        prompt,
+        harness: selectedHarness(),
+        onProgress: (progress) => {
+          if (progress.type === "text") setStreamingResponse(progress.text);
+        },
+      });
       setSnapshot((current) => ({ ...current, ...next }));
       setSelectedHarness(next.thread?.activeHarness ?? selectedHarness());
       setPendingPrompt("");
+      setStreamingResponse("");
     } catch (cause) {
       setError(errorMessage(cause));
       composer?.setText(prompt);
       setPendingPrompt("");
+      setStreamingResponse("");
     } finally {
       setBusy(false);
       focusComposer();
@@ -172,9 +182,23 @@ export const RelayApp = (props: RelayAppProps) => {
           </box>
         </Show>
         <Show when={busy()}>
-          <text fg={harnessColor(selectedHarness())}>
-            {harnessName(selectedHarness())} is working…
-          </text>
+          <Show
+            when={streamingResponse().length > 0}
+            fallback={
+              <text fg={harnessColor(selectedHarness())}>
+                {harnessName(selectedHarness())} is working…
+              </text>
+            }
+          >
+            <box flexDirection="column" paddingBottom={1}>
+              <text fg={harnessColor(selectedHarness())}>
+                <strong>{harnessName(selectedHarness())}</strong>
+              </text>
+              <text fg={theme.text} wrapMode="word">
+                {streamingResponse()}
+              </text>
+            </box>
+          </Show>
         </Show>
       </scrollbox>
 

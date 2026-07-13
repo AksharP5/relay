@@ -1,6 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 import { resolve } from "node:path";
-import type { Harness, RelayMessage, RelayThread } from "../domain.ts";
+import type { Harness, HarnessTurnProgress, RelayMessage, RelayThread } from "../domain.ts";
 import { CliError, ThreadNotFound } from "../errors.ts";
 import { HarnessService, type HarnessStatus } from "../harnesses/harness-service.ts";
 import { ThreadStore } from "./thread-store.ts";
@@ -9,6 +9,7 @@ export interface AskInput {
   readonly prompt: string;
   readonly harness?: Harness;
   readonly model?: string;
+  readonly onProgress?: (progress: HarnessTurnProgress) => void;
 }
 
 export interface AskResult {
@@ -89,6 +90,7 @@ export class RelayService extends Context.Service<
               handoff,
               ...(binding ? { sessionId: binding.sessionId } : {}),
               ...(input.model ? { model: input.model } : {}),
+              ...(input.onProgress ? { onProgress: input.onProgress } : {}),
             });
 
             const committed = yield* store.commitTurn(thread, {

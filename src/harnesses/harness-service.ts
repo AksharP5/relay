@@ -61,18 +61,25 @@ export class HarnessService extends Context.Service<
             });
 
           const prompt = composePrompt(input.handoff, input.prompt);
+          input.onProgress?.({ type: "activity", label: `Starting ${harness}` });
           let parsedSessionId = input.sessionId;
           let parsedText = "";
           const onStdoutLine = (line: string) => {
             if (harness === "codex") {
               const event = parseCodexOutput(line);
               parsedSessionId = event.sessionId ?? parsedSessionId;
-              if (event.text) parsedText = event.text;
+              if (event.text) {
+                parsedText = event.text;
+                input.onProgress?.({ type: "text", text: parsedText });
+              }
               return;
             }
             const event = parseOpenCodeEvent(line);
             parsedSessionId = event.sessionId ?? parsedSessionId;
-            if (event.textPart !== undefined) parsedText += event.textPart;
+            if (event.textPart !== undefined) {
+              parsedText += event.textPart;
+              input.onProgress?.({ type: "text", text: parsedText });
+            }
           };
           const args =
             harness === "codex"

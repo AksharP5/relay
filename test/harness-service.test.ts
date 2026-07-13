@@ -5,6 +5,7 @@ import { ProcessRunner, type ProcessInput } from "../src/services/process-runner
 
 const runWithFake = async (harness: "codex" | "opencode", sessionId?: string) => {
   let received: ProcessInput | undefined;
+  const progress: Array<string> = [];
   const fakeRunner = Layer.succeed(ProcessRunner, {
     which: () => Effect.succeed(`/usr/local/bin/${harness}`),
     run: (input) =>
@@ -44,24 +45,29 @@ const runWithFake = async (harness: "codex" | "opencode", sessionId?: string) =>
         prompt: "Current request",
         handoff: [],
         ...(sessionId ? { sessionId } : {}),
+        onProgress: (event) => {
+          if (event.type === "text") progress.push(event.text);
+        },
       });
     }).pipe(Effect.provide(HarnessService.layer), Effect.provide(fakeRunner)),
   );
-  return { result, received: received! };
+  return { result, received: received!, progress };
 };
 
 describe("HarnessService", () => {
   it("sends OpenCode prompts over stdin instead of argv", async () => {
-    const { result, received } = await runWithFake("opencode");
+    const { result, received, progress } = await runWithFake("opencode");
     expect(received.stdin).toBe("Current request");
     expect(received.args).not.toContain("Current request");
     expect(result).toEqual({ sessionId: "opencode-session", text: "OpenCode response" });
+    expect(progress).toEqual(["OpenCode response"]);
   });
 
   it("resumes Codex with the native session id and streams the response", async () => {
-    const { result, received } = await runWithFake("codex", "codex-existing");
+    const { result, received, progress } = await runWithFake("codex", "codex-existing");
     expect(received.args).toContain("codex-existing");
     expect(received.stdin).toBe("Current request");
     expect(result.text).toBe("Codex response");
+    expect(progress).toEqual(["Codex response"]);
   });
 });

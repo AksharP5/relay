@@ -62,7 +62,7 @@ describe("Relay TUI", () => {
         return null;
       },
       ask: async (input) => {
-        asks.push(input);
+        asks.push({ prompt: input.prompt, harness: input.harness });
         return { thread: makeThread(input.harness), messages };
       },
     };
@@ -109,5 +109,28 @@ describe("Relay TUI", () => {
     const frame = renderer.captureCharFrame();
     expect(frame).toContain("Do not lose this draft");
     expect(frame).toContain("Codex ▾");
+  });
+
+  it("renders ephemeral native output while a turn is running", async () => {
+    const turn = Promise.withResolvers<Pick<TuiSnapshot, "thread" | "messages">>();
+    const controller: TuiController = {
+      load: async () => initial,
+      switchHarness: async () => null,
+      ask: async (input) => {
+        input.onProgress?.({ type: "text", text: "Streaming native response" });
+        return turn.promise;
+      },
+    };
+
+    renderer = await testRender(() => <RelayApp controller={controller} initial={initial} />, {
+      width: 72,
+      height: 24,
+    });
+    await renderer.mockInput.typeText("Start the turn");
+    renderer.mockInput.pressEnter();
+    await renderer.waitForFrame((frame) => frame.includes("Streaming native response"));
+
+    turn.resolve({ thread: makeThread("codex"), messages: [] });
+    await renderer.waitForFrame((frame) => !frame.includes("Streaming native response"));
   });
 });
