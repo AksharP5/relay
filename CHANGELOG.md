@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/AksharP5/relay/compare/v0.1.3...v0.1.4) (2026-07-13)
+
+
+### Bug Fixes
+
+* **release:** allow tag recovery after skipped gates ([3847f12](https://github.com/AksharP5/relay/commit/3847f12ecc9f7e0985e8324dca204c7fd4e37eba))
+* **release:** gate recovery jobs directly ([43a0d2c](https://github.com/AksharP5/relay/commit/43a0d2ccd21342bdd4a22149805ab83213077297))
+
 ## [0.1.3](https://github.com/AksharP5/relay/compare/v0.1.2...v0.1.3) (2026-07-13)
 
 
