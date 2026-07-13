@@ -2,16 +2,14 @@
 
 Carry one coding task between Codex and OpenCode.
 
-Relay gives each harness a turn without making you restart the conversation. Begin in Codex, ask OpenCode for a second pass, then return to the same Codex session with the new work in context.
+Relay is a terminal workspace where Codex and OpenCode can take turns on the same task. The transcript, composer, and working directory stay put; the harness is a selector you can change at any time.
 
 ```console
-$ relay new "Fix the checkout flow" --with codex
-$ relay ask "Find the cause and implement a fix"
-
-$ relay ask --with opencode "Review that fix and run the focused tests"
-
-$ relay ask --with codex "Address the review and finish the task"
+$ cd my-project
+$ relay
 ```
+
+Write the first request, press `Enter`, and Relay starts the task with Codex. Press `Ctrl+R` to choose OpenCode for the next turn. Switching does not close the interface, clear the draft, or start another harness until you send a message.
 
 ## Why Relay?
 
@@ -19,10 +17,11 @@ Coding harnesses have different strengths. One may have the model, tools, interf
 
 Relay makes the handoff a normal part of the task:
 
-- **Use the right harness per turn.** Switch with `--with codex` or `--with opencode`.
+- **Use the right harness per turn.** Choose Codex or OpenCode beside the composer without leaving the task.
 - **Keep native sessions.** Relay resumes the same Codex and OpenCode sessions on later turns.
-- **Keep one understandable history.** Relay records the user and assistant messages that cross the boundary.
-- **Stay lightweight.** No daemon, background indexer, or duplicated vendor database.
+- **Keep one understandable workspace.** The canonical transcript stays visible while each response is labeled by the harness that produced it.
+- **Switch without rebuilding everything.** A harness receives only the conversation it has not seen yet, then resumes normally on later turns.
+- **Stay lightweight.** No daemon, background indexer, shadow transcript, or copy of a vendor session database.
 - **Keep your existing setup.** Authentication, models, tools, agents, and permissions remain owned by Codex and OpenCode.
 
 ## How it works
@@ -34,15 +33,17 @@ A Relay task is a small canonical conversation plus a binding to each native har
 3. When you switch, Relay sends only the conversation added since that harness last ran.
 4. The harness still inspects and edits the shared working directory as usual.
 
-Relay stores message text plus small task metadata under `~/.local/share/relay`. Metadata includes the task title and ID, working directory, active harness, native session IDs, synchronization cursors, and timestamps. It does **not** copy Codex or OpenCode session databases, store their credentials, or retain raw tool output. Only the harness handling the current turn is launched.
+Relay stores message text plus small task metadata under `~/.local/share/relay`. Metadata includes the task title and ID, working directory, active harness, native session IDs, synchronization cursors, and timestamps. It does **not** copy Codex or OpenCode session databases, store their credentials, or retain raw tool output. Partial streamed text exists only in the running interface; the completed response is the only copy Relay commits. Only the harness handling the current turn is launched.
+
+This provides practical continuity, not identical hidden state. A receiving harness gets the visible dialogue it missed and inspects the shared working tree. Hidden reasoning, private tool traces, provider caches, and harness-specific internals do not cross the boundary.
 
 Read [How Relay keeps context](docs/how-relay-works.md) for the full model and its boundaries.
 
 ## Status
 
-Relay is an early, working release for local Codex and OpenCode CLIs. The core loop—create, switch, resume, and switch back—has live adapter coverage on macOS. Linux should work anywhere Bun and both harness CLIs are available; Windows has not been tested yet.
+Relay is an early, working release for local Codex and OpenCode CLIs. The persistent TUI, create/switch/resume loop, and headless commands are tested on macOS. Linux should work anywhere Bun and the selected harness CLIs are available; Windows has not been tested yet.
 
-Relay currently carries text conversation between harnesses. Attachments, live streaming, automatic import of turns made outside Relay, and additional harnesses are not in v0.1.
+Relay currently carries text conversation between harnesses and shows text events exposed by their supported JSON interfaces. Rich tool-call rendering, attachments, automatic import of turns made outside Relay, and additional harnesses are not in v0.1.
 
 ## Install
 
@@ -66,31 +67,43 @@ relay doctor
 
 `relay doctor` reports whether both native CLIs can be found and shows their versions. Relay v0.1 has been live-tested with Codex CLI 0.133.0 and OpenCode 1.15.5; adapter changes in other versions may require an update.
 
-## Quick start
+## Use the TUI
 
 From the project you want the agents to work on:
 
 ```bash
+relay
+```
+
+The first submitted message creates a Relay task lazily, so opening and leaving an empty TUI writes no task or native session. The interface then stays open across every turn.
+
+| Input                   | Action                                          |
+| ----------------------- | ----------------------------------------------- |
+| `Enter`                 | Send the draft through the selected harness     |
+| `Shift+Enter`           | Add a newline                                   |
+| `Ctrl+R`                | Open or close the Codex/OpenCode selector       |
+| `↑` / `↓`, then `Enter` | Choose a harness while the selector is open     |
+| `Escape`                | Close the selector without changing the harness |
+| `Ctrl+C`                | Exit Relay                                      |
+
+The harness name beside the composer is also clickable in terminals with mouse support. Selecting a harness changes only the next turn; its native process is started lazily when you submit.
+
+A task stays attached to the directory where it was created. Relay stops a turn with a directory-mismatch message rather than editing the wrong project. The headless commands can create, inspect, and select tasks when needed:
+
+```bash
+relay list
+relay thread <id>
 relay new "Improve the parser" --with codex
+```
+
+## Headless use
+
+The TUI is the primary interface. The same engine also has commands for scripts, automation, diagnostics, and explicit model selection:
+
+```bash
 relay ask "Find the edge case and add a regression test"
 relay ask --with opencode "Review the implementation for cases Codex missed"
-relay ask --with codex "Apply the useful review findings"
-```
-
-A Relay task stays attached to the directory where it was created. If another task is globally selected and you run `relay ask` from a different project, Relay stops with a directory-mismatch message instead of editing the old project. Use `relay list`, `relay thread <id>`, or `relay new` to select the right task.
-
-You can also change the default harness without running a model:
-
-```bash
-relay use opencode
-relay ask "Continue from here"
-```
-
-Relay forwards an explicit model when you provide one:
-
-```bash
-relay ask --with codex --model gpt-5.4 "Run one more review"
-relay ask --with opencode --model openai/gpt-5 "Compare the alternatives"
+relay ask --with codex --model <model-name> "Apply the useful findings"
 ```
 
 Model names and availability belong to the selected harness and provider.
@@ -99,6 +112,7 @@ Model names and availability belong to the selected harness and provider.
 
 | Command                                               | Purpose                                       |
 | ----------------------------------------------------- | --------------------------------------------- |
+| `relay`                                               | Open the persistent conversation TUI          |
 | `relay doctor`                                        | Check Codex and OpenCode availability         |
 | `relay new [name] [--with harness]`                   | Start and select a Relay task                 |
 | `relay ask [--with harness] [--model name] <message>` | Run the next turn                             |
@@ -132,7 +146,7 @@ Conversation text can still contain sensitive information. Protect the Relay dat
 
 ## Development
 
-Relay is written in TypeScript with [Effect](https://effect.website/) and Bun. Effect services keep storage, process execution, and harness behavior independently testable while tagged errors keep expected failures explicit.
+Relay is written in TypeScript with [Effect](https://effect.website/), Bun, Solid, and [OpenTUI](https://github.com/anomalyco/opentui). Effect services keep storage, process execution, and harness behavior independently testable; OpenTUI provides native terminal rendering and input without a browser or local web server.
 
 ```bash
 bun install

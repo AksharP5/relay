@@ -1,6 +1,6 @@
 # How Relay keeps context
 
-Relay coordinates a task; it does not replace either coding harness.
+Relay coordinates a task; it does not replace either coding harness. The TUI is the shared surface, while Codex and OpenCode remain the engines that inspect files, use tools, and produce each turn.
 
 ## One task, two native sessions
 
@@ -27,6 +27,8 @@ The shared working directory carries the actual code changes. The receiving harn
 
 Relay intentionally does not copy hidden reasoning, raw terminal output, tool call payloads, provider cache entries, or private harness metadata. Those details are often large, vendor-specific, sensitive, and less reliable than the workspace itself.
 
+While a turn runs, supported text events can appear immediately in the TUI. This partial view lives only in process memory. On success, Relay replaces it with the single canonical response; on failure, it discards it and restores the user's draft.
+
 ## The native sessions are real
 
 Relay invokes the supported Codex and OpenCode CLIs and records their returned session IDs. Subsequent turns resume those IDs. Run `relay native codex` or `relay native opencode` to print the corresponding native resume command.
@@ -35,7 +37,7 @@ The Relay timeline remains the cross-harness source of truth. If you open a nati
 
 ## Why this stays small
 
-Relay uses append-only JSON Lines for canonical messages and a small JSON metadata file per task. It does not mirror the Codex or OpenCode databases. Only one child process—the harness handling the current turn—runs, and it exits when the turn finishes. Harness output is parsed as a stream; Relay retains only the final response, session ID, and a bounded diagnostic tail.
+Relay uses append-only JSON Lines for canonical messages and a small JSON metadata file per task. It does not mirror the Codex or OpenCode databases. The TUI is one foreground process. Only one child process—the harness handling the current turn—runs, and it exits when the turn finishes. Harness output is parsed as a stream; Relay persists only the final response, session ID, and synchronization cursor. A bounded diagnostic tail exists in memory only while the process runs.
 
 Relay creates its directories for the current user only (`0700`) and transcript files as private (`0600`) on Unix-like systems. Existing Relay files are tightened when read or rewritten.
 

@@ -1,6 +1,18 @@
-# Command guide
+# TUI and command guide
 
-All task commands operate on the currently selected Relay task. Run commands from the project directory you want the harnesses to edit. Relay refuses to run a turn when the shell's current directory differs from the task's saved directory.
+Run Relay from the project directory you want the harnesses to edit. Relay refuses to run a turn when the current directory differs from the task's saved directory.
+
+## Open the workspace
+
+```bash
+relay
+```
+
+Bare `relay` opens the persistent TUI. Type a request and press `Enter`. Use `Ctrl+R` to select Codex or OpenCode without closing the interface; the selection applies to the next submitted turn. `Shift+Enter` inserts a newline and `Ctrl+C` exits.
+
+Opening an empty workspace does not create a task. Relay creates it from the first request, using the current directory and selected harness.
+
+The remaining commands are useful for diagnostics, scripting, and task management. They operate on the currently selected Relay task.
 
 ## Check your setup
 
