@@ -32,7 +32,7 @@ const errorMessage = (value: unknown) => {
   return typeof object?.message === "string" ? object.message : JSON.stringify(value);
 };
 
-class AppServerConnection {
+export class AppServerConnection {
   readonly #child: ReturnType<typeof Bun.spawn>;
   readonly #pending = new Map<number, PendingRequest>();
   readonly #listeners = new Set<(message: JsonObject) => void>();
@@ -55,8 +55,13 @@ class AppServerConnection {
     });
   }
 
-  static async start(command: string, cwd: string, timeoutMs: number) {
-    const child = Bun.spawn([command, "app-server", "--stdio"], {
+  static async #start(
+    command: string,
+    args: ReadonlyArray<string>,
+    cwd: string,
+    timeoutMs: number,
+  ) {
+    const child = Bun.spawn([command, ...args], {
       cwd,
       env: Bun.env,
       stdin: "pipe",
@@ -80,6 +85,19 @@ class AppServerConnection {
       await connection.close();
       throw cause;
     }
+  }
+
+  static start(command: string, cwd: string, timeoutMs: number) {
+    return AppServerConnection.#start(command, ["app-server", "--stdio"], cwd, timeoutMs);
+  }
+
+  static connectSocket(command: string, cwd: string, socketPath: string, timeoutMs: number) {
+    return AppServerConnection.#start(
+      command,
+      ["app-server", "proxy", "--sock", socketPath],
+      cwd,
+      timeoutMs,
+    );
   }
 
   #write(message: JsonObject) {
@@ -190,6 +208,137 @@ class AppServerConnection {
       }
       await this.#child.exited.catch(() => undefined);
     }
+  }
+}
+
+export class WebSocketAppServerConnection {
+  readonly #socket: WebSocket;
+  readonly #pending = new Map<number, PendingRequest>();
+  #nextId = 1;
+  #closed = false;
+
+  private constructor(socket: WebSocket) {
+    this.#socket = socket;
+    socket.addEventListener("message", (event) => this.#handleMessage(String(event.data)));
+    socket.addEventListener("close", () => this.#fail(new Error("Codex websocket closed")));
+    socket.addEventListener("error", () => this.#fail(new Error("Codex websocket failed")));
+  }
+
+  static async connect(url: string, token: string, timeoutMs = 15_000) {
+    const BunWebSocket = WebSocket as unknown as new (
+      url: string,
+      options: Bun.WebSocketOptions,
+    ) => WebSocket;
+    const socket = new BunWebSocket(url, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Timed out connecting to Codex")), timeoutMs);
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener("error", () => reject(new Error("Could not connect to Codex")), {
+          once: true,
+        });
+      });
+    } catch (cause) {
+      socket.close();
+      throw cause;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+
+    const connection = new WebSocketAppServerConnection(socket);
+    try {
+      await connection.request(
+        "initialize",
+        {
+          clientInfo: { name: "relay", title: "Relay", version: "0.1.0" },
+          capabilities: null,
+        },
+        timeoutMs,
+      );
+      connection.#write({ method: "initialized" });
+      return connection;
+    } catch (cause) {
+      await connection.close();
+      throw cause;
+    }
+  }
+
+  #write(message: JsonObject) {
+    if (this.#closed || this.#socket.readyState !== WebSocket.OPEN)
+      throw new Error("Codex websocket is closed");
+    this.#socket.send(JSON.stringify(message));
+  }
+
+  request(method: string, params: JsonObject, timeoutMs = 30 * 60 * 1_000) {
+    const id = this.#nextId++;
+    return new Promise<unknown>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(new Error(`Timed out waiting for Codex ${method}`));
+      }, timeoutMs);
+      this.#pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timeout);
+          resolve(value);
+        },
+        reject: (cause) => {
+          clearTimeout(timeout);
+          reject(cause);
+        },
+      });
+      try {
+        this.#write({ id, method, params });
+      } catch (cause) {
+        clearTimeout(timeout);
+        this.#pending.delete(id);
+        reject(cause);
+      }
+    });
+  }
+
+  #handleMessage(raw: string) {
+    let message: JsonObject;
+    try {
+      message = JSON.parse(raw) as JsonObject;
+    } catch {
+      this.#fail(new Error("Codex websocket returned invalid JSON"));
+      return;
+    }
+
+    if ((typeof message.id === "number" || typeof message.id === "string") && message.method) {
+      this.#write({
+        id: message.id,
+        error: { code: -32601, message: "Relay is not the interactive Codex client" },
+      });
+      return;
+    }
+    if (typeof message.id !== "number") return;
+    const pending = this.#pending.get(message.id);
+    if (!pending) return;
+    this.#pending.delete(message.id);
+    if (message.error !== undefined) pending.reject(new Error(errorMessage(message.error)));
+    else pending.resolve(message.result);
+  }
+
+  #fail(cause: Error) {
+    if (this.#closed) return;
+    this.#closed = true;
+    for (const pending of this.#pending.values()) pending.reject(cause);
+    this.#pending.clear();
+  }
+
+  async close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    if (this.#socket.readyState === WebSocket.CLOSED) return;
+    const closed = new Promise<void>((resolve) =>
+      this.#socket.addEventListener("close", () => resolve(), { once: true }),
+    );
+    this.#socket.close();
+    await Promise.race([closed, Bun.sleep(250)]);
   }
 }
 
