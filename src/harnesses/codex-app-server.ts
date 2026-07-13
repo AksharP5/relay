@@ -1,5 +1,5 @@
 import type { HarnessTurnProgress } from "../domain.ts";
-import { readStream } from "../services/process-runner.ts";
+import { readStream, stopProcessTree } from "../services/process-runner.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -191,23 +191,7 @@ export class AppServerConnection {
 
   async close() {
     this.#closed = true;
-    if (this.#child.exitCode !== null) return;
-    try {
-      if (process.platform !== "win32") process.kill(-this.#child.pid, "SIGTERM");
-      else this.#child.kill("SIGTERM");
-    } catch {
-      this.#child.kill("SIGTERM");
-    }
-    await Promise.race([this.#child.exited, Bun.sleep(1_000)]);
-    if (this.#child.exitCode === null) {
-      try {
-        if (process.platform !== "win32") process.kill(-this.#child.pid, "SIGKILL");
-        else this.#child.kill("SIGKILL");
-      } catch {
-        this.#child.kill("SIGKILL");
-      }
-      await this.#child.exited.catch(() => undefined);
-    }
+    await stopProcessTree(this.#child);
   }
 }
 

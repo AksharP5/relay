@@ -3,7 +3,7 @@ import { Effect, Fiber } from "effect";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ProcessRunner } from "../src/services/process-runner.ts";
+import { ProcessRunner, stopProcessTree } from "../src/services/process-runner.ts";
 
 describe("ProcessRunner on Bun", () => {
   it("writes stdin and closes the child pipe", async () => {
@@ -63,6 +63,30 @@ describe("ProcessRunner on Bun", () => {
 
       expect(output.exitCode).not.toBe(0);
       await Bun.sleep(1_100);
+      await expect(readFile(marker, "utf8")).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("kills an ignoring descendant after the process-group leader exits", async () => {
+    if (process.platform === "win32") return;
+    const root = await mkdtemp(join(tmpdir(), "relay-descendant-"));
+    const marker = join(root, "orphan-finished");
+    try {
+      const child = Bun.spawn(
+        [
+          "/bin/sh",
+          "-c",
+          `trap 'exit 0' TERM; (trap '' TERM; sleep 0.5; printf done > "$1") & wait`,
+          "relay-descendant-test",
+          marker,
+        ],
+        { stdout: "ignore", stderr: "ignore", detached: true },
+      );
+      await Bun.sleep(50);
+      await stopProcessTree(child, 100);
+      await Bun.sleep(550);
       await expect(readFile(marker, "utf8")).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });

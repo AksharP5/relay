@@ -19,7 +19,6 @@ export interface ProcessOutput {
 }
 
 const signalProcessTree = (child: ReturnType<typeof Bun.spawn>, signal: NodeJS.Signals) => {
-  if (child.exitCode !== null) return;
   if (process.platform !== "win32") {
     try {
       process.kill(-child.pid, signal);
@@ -28,6 +27,7 @@ const signalProcessTree = (child: ReturnType<typeof Bun.spawn>, signal: NodeJS.S
       // Fall through when the process group has already exited.
     }
   }
+  if (child.exitCode !== null) return;
   try {
     child.kill(signal);
   } catch {
@@ -35,18 +35,22 @@ const signalProcessTree = (child: ReturnType<typeof Bun.spawn>, signal: NodeJS.S
   }
 };
 
+export const stopProcessTree = async (child: ReturnType<typeof Bun.spawn>, graceMs = 1_000) => {
+  signalProcessTree(child, "SIGTERM");
+  const leaderExited = await Promise.race([
+    child.exited.then(() => true),
+    Bun.sleep(graceMs).then(() => false),
+  ]);
+  // On POSIX, descendants retain the detached process-group id after the
+  // leader exits. Always escalate the group; ESRCH is safely ignored.
+  if (process.platform !== "win32" || !leaderExited) signalProcessTree(child, "SIGKILL");
+  if (child.exitCode === null) await child.exited.catch(() => undefined);
+};
+
 const makeTerminator = (child: ReturnType<typeof Bun.spawn>) => {
   let terminating: Promise<void> | undefined;
   return () => {
-    terminating ??= (async () => {
-      signalProcessTree(child, "SIGTERM");
-      const exited = await Promise.race([
-        child.exited.then(() => true),
-        Bun.sleep(1_000).then(() => false),
-      ]);
-      if (!exited) signalProcessTree(child, "SIGKILL");
-      await child.exited.catch(() => undefined);
-    })();
+    terminating ??= stopProcessTree(child);
     return terminating;
   };
 };

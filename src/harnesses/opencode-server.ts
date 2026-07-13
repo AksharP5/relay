@@ -1,5 +1,5 @@
 import type { HarnessCommand } from "../domain.ts";
-import { readStream } from "../services/process-runner.ts";
+import { readStream, stopProcessTree } from "../services/process-runner.ts";
 
 interface OpenCodeCommand {
   readonly name?: unknown;
@@ -17,32 +17,6 @@ const matchesRelayPrompt = (nativeText: string, expectedPrompt: string) => {
   const start = normalized.lastIndexOf(startTag);
   if (start < 0 || !normalized.endsWith(endTag)) return false;
   return normalized.slice(start + startTag.length, -endTag.length) === expectedPrompt;
-};
-
-const stopChild = async (child: ReturnType<typeof Bun.spawn>) => {
-  if (child.exitCode !== null) return;
-  if (process.platform !== "win32") {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {
-      child.kill("SIGTERM");
-    }
-  } else {
-    child.kill("SIGTERM");
-  }
-  await Promise.race([child.exited, Bun.sleep(1_000)]);
-  if (child.exitCode === null) {
-    if (process.platform !== "win32") {
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {
-        child.kill("SIGKILL");
-      }
-    } else {
-      child.kill("SIGKILL");
-    }
-    await child.exited.catch(() => undefined);
-  }
 };
 
 export interface RunningOpenCodeServer {
@@ -66,7 +40,7 @@ export const startOpenCodeServer = async (
     detached: process.platform !== "win32",
   });
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
-    await stopChild(child);
+    await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
   }
 
@@ -97,10 +71,10 @@ export const startOpenCodeServer = async (
       baseUrl,
       password,
       authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
-      close: () => stopChild(child),
+      close: () => stopProcessTree(child),
     };
   } catch (cause) {
-    await stopChild(child);
+    await stopProcessTree(child);
     throw cause;
   }
 };
@@ -119,7 +93,7 @@ export const discoverOpenCodeCommands = async (
     detached: process.platform !== "win32",
   });
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
-    await stopChild(child);
+    await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
   }
 
@@ -169,7 +143,7 @@ export const discoverOpenCodeCommands = async (
         : [],
     );
   } finally {
-    await stopChild(child);
+    await stopProcessTree(child);
   }
 };
 
@@ -193,7 +167,7 @@ export const runOpenCodeControl = async (
     detached: process.platform !== "win32",
   });
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
-    await stopChild(child);
+    await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
   }
 
@@ -323,7 +297,7 @@ export const runOpenCodeControl = async (
       ? "OpenCode compacted its native context."
       : "OpenCode stopped sharing this session.";
   } finally {
-    await stopChild(child);
+    await stopProcessTree(child);
   }
 };
 
@@ -348,7 +322,7 @@ export const runOpenCodeCommand = async (
     detached: process.platform !== "win32",
   });
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
-    await stopChild(child);
+    await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
   }
   let resolveUrl: (value: string) => void;
@@ -419,6 +393,6 @@ export const runOpenCodeCommand = async (
     if (!text) throw new Error(`OpenCode /${input.command} completed without a text response`);
     return { sessionId, text };
   } finally {
-    await stopChild(child);
+    await stopProcessTree(child);
   }
 };

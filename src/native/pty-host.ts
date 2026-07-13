@@ -1,5 +1,6 @@
 import type { EventEmitter } from "node:events";
 
+import { stopProcessTree } from "../services/process-runner.ts";
 import { NativeInputRouter } from "./input-router.ts";
 
 export interface NativeTuiCommand {
@@ -56,26 +57,6 @@ const dimensions = (output: HostOutput) => ({
   cols: Math.max(1, output.columns ?? 80),
   rows: Math.max(1, output.rows ?? 24),
 });
-
-const killProcessGroup = (child: ReturnType<typeof Bun.spawn>, signal: NodeJS.Signals) => {
-  if (child.exitCode !== null) return;
-  try {
-    if (process.platform !== "win32") process.kill(-child.pid, signal);
-    else child.kill(signal);
-  } catch {
-    child.kill(signal);
-  }
-};
-
-const stopChild = async (child: ReturnType<typeof Bun.spawn>) => {
-  if (child.exitCode !== null) return;
-  killProcessGroup(child, "SIGTERM");
-  await Promise.race([child.exited, Bun.sleep(1_000)]);
-  if (child.exitCode === null) {
-    killProcessGroup(child, "SIGKILL");
-    await child.exited.catch(() => undefined);
-  }
-};
 
 /**
  * Hosts an upstream TUI in a real PTY. Output is forwarded unchanged and all
@@ -184,13 +165,13 @@ export const runNativeTui = async (
         pendingSwitchInput.length = 0;
         switchCheckPending = false;
         switchRequested = true;
-        if (child) stopping = stopChild(child);
+        if (child) stopping = stopProcessTree(child);
       })
       .catch((cause) => {
         pendingSwitchInput.length = 0;
         switchCheckPending = false;
         hostFailure = cause instanceof Error ? cause : new Error(String(cause));
-        if (child) stopping = stopChild(child);
+        if (child) stopping = stopProcessTree(child);
       });
   };
   const flushPrefix = () => {
@@ -204,7 +185,7 @@ export const runNativeTui = async (
   const onSignal = (signal: "SIGHUP" | "SIGTERM" | "SIGQUIT") => {
     if (parentSignal) return;
     parentSignal = signal;
-    if (child) stopping = stopChild(child);
+    if (child) stopping = stopProcessTree(child);
   };
   const onHangup = () => onSignal("SIGHUP");
   const onTerminate = () => onSignal("SIGTERM");
@@ -265,7 +246,7 @@ export const runNativeTui = async (
     io.resizeSource.off("SIGTERM", onTerminate);
     io.resizeSource.off("SIGQUIT", onQuit);
     io.input.setRawMode?.(initialRawMode);
-    if (child && child.exitCode === null) await stopChild(child);
+    if (child) await stopProcessTree(child);
     if (terminal && !terminal.closed) terminal.close();
   }
 };

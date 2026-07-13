@@ -5,33 +5,13 @@ import { join } from "node:path";
 
 import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { WebSocketAppServerConnection } from "../harnesses/codex-app-server.ts";
-import { readStream } from "../services/process-runner.ts";
+import { readStream, stopProcessTree } from "../services/process-runner.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
 type JsonObject = Record<string, unknown>;
 
 const asObject = (value: unknown): JsonObject | undefined =>
   value !== null && typeof value === "object" ? (value as JsonObject) : undefined;
-
-const stopChild = async (child: ReturnType<typeof Bun.spawn>) => {
-  if (child.exitCode !== null) return;
-  try {
-    if (process.platform !== "win32") process.kill(-child.pid, "SIGTERM");
-    else child.kill("SIGTERM");
-  } catch {
-    child.kill("SIGTERM");
-  }
-  await Promise.race([child.exited, Bun.sleep(1_000)]);
-  if (child.exitCode === null) {
-    try {
-      if (process.platform !== "win32") process.kill(-child.pid, "SIGKILL");
-      else child.kill("SIGKILL");
-    } catch {
-      child.kill("SIGKILL");
-    }
-    await child.exited.catch(() => undefined);
-  }
-};
 
 const reservePort = () =>
   new Promise<number>((resolve, reject) => {
@@ -236,7 +216,7 @@ export class CodexNativeBackend {
         cwd,
       });
     } catch (cause) {
-      await stopChild(child);
+      await stopProcessTree(child);
       await rm(runtimeDirectory, { recursive: true, force: true });
       throw cause;
     }
@@ -437,7 +417,7 @@ export class CodexNativeBackend {
   async close() {
     if (this.#closed) return;
     this.#closed = true;
-    await stopChild(this.#child);
+    await stopProcessTree(this.#child);
     await rm(this.#runtimeDirectory, { recursive: true, force: true });
   }
 }
