@@ -44,10 +44,10 @@ The current release pairs each interface with its own engine: Codex TUI with Cod
 
 A Relay task stores a small canonical log and a binding for each harness.
 
-1. Relay imports completed native user/final-assistant turns.
-2. It compares the destination binding’s synchronization cursor with the canonical log.
-3. It injects only missing messages into the destination session without running a model.
-4. It starts the destination’s real TUI attached to that session.
+1. Relay reads the destination’s completed native transcript.
+2. It compares the persisted synchronization cursor with the canonical log.
+3. It injects only missing messages, then advances the cursor after confirmation.
+4. It imports newly discovered native turns and starts the destination’s real TUI.
 
 OpenCode receives a synthetic, hidden `noReply` message. Codex receives structured app-server history items. Neither handoff causes an inference request. After the handoff, the native session resumes normally, preserving the stable prefix that provider prompt caches prefer.
 
@@ -86,7 +86,7 @@ relay doctor
 
 The build creates a standalone Relay executable for the current platform. Re-run `bun run build` after pulling changes.
 
-Relay targets the latest stable releases rather than silently pinning old harnesses. The current native contract is live-tested with Codex CLI `0.144.2` and OpenCode `1.17.18`. A scheduled compatibility workflow installs both `@latest` packages every day and exercises their schemas, authenticated local servers, session creation, hidden handoff injection, resume, status, and cleanup without a model call. Manual compatibility runs cover macOS as well as Linux.
+Relay targets the latest stable releases rather than silently pinning old harnesses. The current automated contract passes with Codex CLI `0.144.2` and OpenCode `1.17.18`. On every relevant `main` change and once per day, compatibility CI installs both `@latest` packages and exercises their schemas, authenticated local servers, event streams, session creation, hidden handoff injection, resume, deleted-session recovery, status, and cleanup without a model call. Manual compatibility runs cover macOS as well as Linux. The PTY byte path also has automated terminal tests; release candidates are smoke-tested with the real installed TUIs.
 
 Relay does not auto-update tools on startup. That would add latency, network traffic, and an unexpected global machine mutation. `relay doctor` reports the locally installed versions; Relay’s CI detects upstream changes, and releases should pass `bun run compat:latest` against the latest harnesses.
 
@@ -134,7 +134,7 @@ See the [command guide](docs/commands.md) for full examples.
 
 ## Storage and performance
 
-Relay stores canonical visible message text and task metadata under `~/.local/share/relay` by default. Metadata includes the task ID, directory, active harness, native session IDs, synchronization cursors, and timestamps.
+Relay stores canonical visible message text and task metadata under `~/.local/share/relay` by default. Metadata includes the task ID, directory, active harness, native session IDs, synchronization cursors, native undo visibility, and timestamps.
 
 It does not copy credential files, vendor session databases, raw terminal output, or tool traces. Canonical messages use append-only JSON Lines and are streamed from disk with bounded windows. While a TUI is active, Relay keeps only small routing queues and the handoff delta needed for a switch.
 
@@ -152,7 +152,7 @@ Set `RELAY_DATA_DIR` to place Relay’s canonical log elsewhere. Protect it like
 - Relay currently supports Codex and OpenCode on macOS and Linux. Windows PTY hosting is not implemented.
 - Cross-engine continuity includes completed visible text and the working tree, not hidden state.
 - Attachments and rich tool events stay in their native session; they are not translated into the other harness.
-- Native undo, compaction, sharing, and session commands still use native semantics. Relay imports completed turns opportunistically; it will not rewrite vendor-owned storage to force two histories to become identical.
+- Native undo, compaction, sharing, and session commands still use native semantics. Relay reconciles explicit OpenCode undo/redo visibility for completed imported turns, but it will not rewrite vendor-owned storage to force two histories to become identical.
 - If a harness edits files and then fails, the workspace may be ahead of the canonical conversation. Inspect `git status` before retrying.
 - Literal cross-pairing—such as OpenCode’s TUI over Codex—is future protocol-adapter work, not a cosmetic skin toggle.
 

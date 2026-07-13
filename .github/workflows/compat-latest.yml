@@ -4,6 +4,16 @@ on:
   schedule:
     - cron: "17 13 * * *"
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - ".github/workflows/compat-latest.yml"
+      - "scripts/compat-latest.ts"
+      - "src/harnesses/**"
+      - "src/native/**"
   pull_request:
     paths:
       - ".github/workflows/compat-latest.yml"

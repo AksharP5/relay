@@ -43,13 +43,16 @@ OpenCode can create and persist an empty session before the attached TUI starts.
 
 Before opening a bound destination, Relay:
 
-1. reads completed native turns and imports any it has not seen;
-2. reads canonical messages after the destination binding’s `lastSyncedSeq`;
-3. injects that delta without asking a model to respond;
-4. advances the synchronization cursor only after injection succeeds;
-5. launches the native frontend.
+1. reads a snapshot of completed native turns and explicit native visibility state;
+2. reads canonical messages after the persisted destination `lastSyncedSeq`;
+3. removes messages already represented in a newly selected native transcript;
+4. injects the remaining delta without asking a model to respond;
+5. advances the synchronization cursor only after injection succeeds;
+6. imports newly discovered native turns, reconciles OpenCode undo/redo visibility, and launches the native frontend.
 
-After the frontend exits, Relay resolves the session that was actually active, imports completed turns idempotently using native turn IDs, and performs one final delta check.
+Computing the delta before importing out-of-band native turns is intentional. Importing first could advance the destination cursor past cross-harness messages that still need delivery.
+
+After the frontend exits, Relay resolves the session that was actually active and performs the same synchronization again. Headless turns are linked to their native turn IDs on first attachment rather than duplicated. OpenCode turns hidden by native undo remain in the append-only log with a visibility tombstone, so redo can restore them without reusing or renumbering message sequences.
 
 If native `/new`, `/resume`, or session navigation moves to another materialized session, Relay rebinds the current task and avoids reinjecting messages already present in that native transcript. A selection that produces no server-visible activity can be impossible to distinguish from the prior session; Relay keeps the previous binding rather than guessing.
 
@@ -99,6 +102,7 @@ By default:
     <relay-task-id>/
       thread.json
       events.jsonl
+      native-visibility.json  # created when native IDs or undo state need linking
 ```
 
 Relay creates directories with mode `0700` and files with mode `0600` on Unix-like systems. Message storage is append-oriented and recoverable through a small pending-turn journal. Reads stream and bound the retained window rather than loading an unlimited transcript into memory.
@@ -107,7 +111,8 @@ Set `RELAY_DATA_DIR` to use another location.
 
 ## Failure behavior
 
-- A second writer to one task is rejected while a storage transition is running.
+- A task-wide run lease prevents a second Relay TUI, headless turn, or native control from using the same task concurrently. Short state locks still protect metadata transitions inside the owning TUI.
+- A definitively deleted vendor session is replaced once with a cold session and the bounded canonical handoff. Transient, authentication, and generic protocol failures do not discard bindings.
 - A task cannot run from a different working directory without explicit selection or creation there.
 - Binding and synchronization cursors advance only after confirmed operations.
 - A failed native turn may still have edited files; Relay does not pretend the workspace rolled back.

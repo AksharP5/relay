@@ -12,7 +12,7 @@ Relay invokes locally installed Codex and OpenCode CLIs with the user's existing
 
 Relay stores canonical conversation text, task titles and IDs, absolute working directories, active-harness state, native session identifiers, synchronization cursors, and timestamps locally. Relay creates these directories and files for the current user only on Unix-like systems, but it does not encrypt data at rest. Anyone who gains access as that user may be able to read it.
 
-Relay sends prompts to both harness CLIs over stdin and retains only bounded process diagnostics in memory. The harnesses can still write their own native histories according to their own configuration.
+Headless turns send prompts through each harness CLI’s supported non-interactive input. In the native workspace, terminal input travels unchanged through a pseudo-terminal; context handoffs use the authenticated local Codex WebSocket or OpenCode HTTP API. Relay retains only bounded process diagnostics in memory. The harnesses can still write their own native histories according to their own configuration.
 
 While a native workspace is open, Relay owns a temporary loopback-only backend. Codex uses an ephemeral capability token stored in a private temporary file and passed to the TUI by environment-variable name. OpenCode uses an ephemeral Basic-auth password passed through the environment. Relay does not place either secret in child-process arguments, write it to task metadata, or keep the backend alive after leaving that harness.
 

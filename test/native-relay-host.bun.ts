@@ -156,7 +156,7 @@ describe("native Relay host", () => {
       });
       expect(process.exitCode).toBe(143);
     } finally {
-      process.exitCode = previousExitCode;
+      process.exitCode = previousExitCode ?? 0;
     }
     expect(launched).toBe(false);
     expect(closed).toBe(true);
