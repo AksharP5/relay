@@ -265,8 +265,8 @@ jobs:
             npm publish "$tarball" --access public --provenance
           }
 
-          publish_package "@akshar5/relay-darwin-arm64" "artifacts/akshar5-relay-darwin-arm64-${VERSION}.tgz"
-          publish_package "@akshar5/relay-darwin-x64" "artifacts/akshar5-relay-darwin-x64-${VERSION}.tgz"
-          publish_package "@akshar5/relay-linux-arm64-gnu" "artifacts/akshar5-relay-linux-arm64-gnu-${VERSION}.tgz"
-          publish_package "@akshar5/relay-linux-x64-gnu" "artifacts/akshar5-relay-linux-x64-gnu-${VERSION}.tgz"
-          publish_package "@akshar5/relay" "artifacts/akshar5-relay-${VERSION}.tgz"
+          publish_package "@akshar5/relay-darwin-arm64" "./artifacts/akshar5-relay-darwin-arm64-${VERSION}.tgz"
+          publish_package "@akshar5/relay-darwin-x64" "./artifacts/akshar5-relay-darwin-x64-${VERSION}.tgz"
+          publish_package "@akshar5/relay-linux-arm64-gnu" "./artifacts/akshar5-relay-linux-arm64-gnu-${VERSION}.tgz"
+          publish_package "@akshar5/relay-linux-x64-gnu" "./artifacts/akshar5-relay-linux-x64-gnu-${VERSION}.tgz"
+          publish_package "@akshar5/relay" "./artifacts/akshar5-relay-${VERSION}.tgz"
