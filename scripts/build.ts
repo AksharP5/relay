@@ -1,8 +1,24 @@
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+
+const [targetArg, outfileArg] = process.argv.slice(2);
+
+if (targetArg && !outfileArg) {
+  console.error("Usage: bun scripts/build.ts [target outfile]");
+  process.exit(2);
+}
+
+const outfile = outfileArg ?? "dist/relay";
+await mkdir(dirname(outfile), { recursive: true });
+
 const result = await Bun.build({
   entrypoints: ["src/cli.ts"],
   target: "bun",
   compile: {
-    outfile: "dist/relay",
+    ...(targetArg ? { target: targetArg as Bun.Build.CompileTarget } : {}),
+    outfile,
+    autoloadDotenv: false,
+    autoloadBunfig: false,
   },
 });
 
