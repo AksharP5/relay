@@ -26,6 +26,24 @@ const initial: TuiSnapshot = {
     { harness: "codex", installed: true, healthy: true, version: "codex 1" },
     { harness: "opencode", installed: true, healthy: true, version: "opencode 1" },
   ],
+  capabilities: [
+    {
+      harness: "codex",
+      models: [{ id: "gpt-5.6-sol", name: "GPT-5.6-Sol", isDefault: true }],
+      commands: [
+        { name: "model", description: "Choose the Codex model", source: "relay" },
+        { name: "review", description: "Review the working tree", source: "native" },
+      ],
+    },
+    {
+      harness: "opencode",
+      models: [{ id: "openai/gpt-5.6-sol", name: "openai/gpt-5.6-sol" }],
+      commands: [
+        { name: "model", description: "Choose the OpenCode model", source: "relay" },
+        { name: "commit", description: "Create a commit", source: "native" },
+      ],
+    },
+  ],
 };
 
 afterEach(() => {
@@ -61,6 +79,8 @@ describe("Relay TUI", () => {
         switches.push(harness);
         return null;
       },
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
       ask: async (input) => {
         asks.push({ prompt: input.prompt, harness: input.harness });
         return { thread: makeThread(input.harness), messages };
@@ -94,6 +114,8 @@ describe("Relay TUI", () => {
     const controller: TuiController = {
       load: async () => initial,
       switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
       ask: async () => {
         throw new Error("Harness connection failed");
       },
@@ -116,6 +138,8 @@ describe("Relay TUI", () => {
     const controller: TuiController = {
       load: async () => initial,
       switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
       ask: async (input) => {
         input.onProgress?.({ type: "text", text: "Streaming native response" });
         return turn.promise;

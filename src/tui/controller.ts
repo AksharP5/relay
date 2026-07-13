@@ -1,6 +1,12 @@
 import { Effect, type ManagedRuntime } from "effect";
 import { resolve } from "node:path";
-import type { Harness, HarnessTurnProgress, RelayMessage, RelayThread } from "../domain.ts";
+import type {
+  Harness,
+  HarnessCapabilities,
+  HarnessTurnProgress,
+  RelayMessage,
+  RelayThread,
+} from "../domain.ts";
 import { NoCurrentThread } from "../errors.ts";
 import { RelayService, titleFromPrompt } from "../services/relay-service.ts";
 
@@ -13,6 +19,7 @@ export interface TuiSnapshot {
     readonly healthy: boolean;
     readonly version?: string;
   }>;
+  readonly capabilities: ReadonlyArray<HarnessCapabilities>;
 }
 
 export interface TuiController {
@@ -20,9 +27,12 @@ export interface TuiController {
   readonly ask: (input: {
     readonly prompt: string;
     readonly harness: Harness;
+    readonly model?: string;
+    readonly command?: string;
     readonly onProgress?: (progress: HarnessTurnProgress) => void;
   }) => Promise<Pick<TuiSnapshot, "thread" | "messages">>;
   readonly switchHarness: (harness: Harness) => Promise<RelayThread | null>;
+  readonly refreshCapabilities: (harness: Harness) => Promise<HarnessCapabilities>;
 }
 
 const isNoCurrentThread = (error: unknown): error is NoCurrentThread =>
@@ -53,11 +63,28 @@ export const makeTuiController = (
       runtime.runPromise(
         Effect.gen(function* () {
           const relay = yield* RelayService;
-          const harnesses = yield* relay.doctor();
+          const [harnesses, capabilities] = yield* Effect.all(
+            [
+              relay.doctor(),
+              Effect.all(
+                ["codex", "opencode"].map((harness) =>
+                  relay.capabilities(harness as Harness).pipe(
+                    Effect.orElseSucceed(() => ({
+                      harness: harness as Harness,
+                      models: [],
+                      commands: [],
+                    })),
+                  ),
+                ),
+                { concurrency: 2 },
+              ),
+            ],
+            { concurrency: 2 },
+          );
           const thread = yield* selectDirectoryTask(relay);
           activeThreadId = thread?.id;
           const messages = thread ? yield* relay.historyForDisplay(thread.id) : [];
-          return { thread, messages, harnesses };
+          return { thread, messages, harnesses, capabilities };
         }),
       ),
     ask: (input) =>
@@ -90,6 +117,13 @@ export const makeTuiController = (
             Effect.map((thread) => thread as RelayThread | null),
             Effect.catchIf(isNoCurrentThread, () => Effect.succeed(null)),
           );
+        }),
+      ),
+    refreshCapabilities: (harness) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          return yield* relay.capabilities(harness);
         }),
       ),
   };

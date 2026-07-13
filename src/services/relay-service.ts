@@ -1,6 +1,12 @@
 import { Context, Effect, Layer } from "effect";
 import { resolve } from "node:path";
-import type { Harness, HarnessTurnProgress, RelayMessage, RelayThread } from "../domain.ts";
+import type {
+  Harness,
+  HarnessCapabilities,
+  HarnessTurnProgress,
+  RelayMessage,
+  RelayThread,
+} from "../domain.ts";
 import { CliError, ThreadNotFound } from "../errors.ts";
 import { HarnessService, type HarnessStatus } from "../harnesses/harness-service.ts";
 import { ThreadStore } from "./thread-store.ts";
@@ -10,6 +16,7 @@ export interface AskInput {
   readonly threadId?: string;
   readonly harness?: Harness;
   readonly model?: string;
+  readonly command?: string;
   readonly onProgress?: (progress: HarnessTurnProgress) => void;
 }
 
@@ -47,6 +54,10 @@ export class RelayService extends Context.Service<
       threadId: string,
     ) => Effect.Effect<ReadonlyArray<RelayMessage>, unknown>;
     readonly doctor: () => Effect.Effect<ReadonlyArray<HarnessStatus>>;
+    readonly capabilities: (
+      harness: Harness,
+      cwd?: string,
+    ) => Effect.Effect<HarnessCapabilities, unknown>;
     readonly dataRoot: string;
   }
 >()("@relay/RelayService") {
@@ -98,6 +109,7 @@ export class RelayService extends Context.Service<
               handoff,
               ...(binding ? { sessionId: binding.sessionId } : {}),
               ...(model ? { model } : {}),
+              ...(input.command ? { command: input.command } : {}),
               ...(input.onProgress ? { onProgress: input.onProgress } : {}),
             });
 
@@ -174,6 +186,10 @@ export class RelayService extends Context.Service<
         Effect.all([harnesses.status("codex"), harnesses.status("opencode")], { concurrency: 2 }),
       );
 
+      const capabilities = Effect.fn("RelayService.capabilities")(
+        (harness: Harness, cwd = process.cwd()) => harnesses.capabilities(harness, cwd),
+      );
+
       return {
         newThread,
         ask,
@@ -185,6 +201,7 @@ export class RelayService extends Context.Service<
         historyFor,
         historyForDisplay,
         doctor,
+        capabilities,
         dataRoot: store.root,
       };
     }),

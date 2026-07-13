@@ -53,7 +53,28 @@ export interface HarnessTurnInput {
   readonly handoff: ReadonlyArray<RelayMessage>;
   readonly sessionId?: string;
   readonly model?: string;
+  readonly command?: string;
   readonly onProgress?: (progress: HarnessTurnProgress) => void;
+}
+
+export interface HarnessModel {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly isDefault?: boolean;
+}
+
+export interface HarnessCommand {
+  readonly name: string;
+  readonly description: string;
+  readonly source: "relay" | "native";
+  readonly acceptsArguments?: boolean;
+}
+
+export interface HarnessCapabilities {
+  readonly harness: Harness;
+  readonly models: ReadonlyArray<HarnessModel>;
+  readonly commands: ReadonlyArray<HarnessCommand>;
 }
 
 export type HarnessTurnProgress =

@@ -72,4 +72,40 @@ describe("HarnessService", () => {
     expect(result.text).toBe("Codex response");
     expect(progress).toEqual(["Codex response"]);
   });
+
+  it("runs a selected OpenCode slash command through the native command flag", async () => {
+    let received: ProcessInput | undefined;
+    const fakeRunner = Layer.succeed(ProcessRunner, {
+      which: () => Effect.succeed("/usr/local/bin/opencode"),
+      run: (input) =>
+        Effect.sync(() => {
+          received = input;
+          input.onStdoutLine?.(
+            JSON.stringify({ type: "step_start", sessionID: "opencode-session" }),
+          );
+          input.onStdoutLine?.(
+            JSON.stringify({
+              type: "text",
+              sessionID: "opencode-session",
+              part: { text: "Command response" },
+            }),
+          );
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }),
+    });
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* HarnessService;
+        return yield* service.run("opencode", {
+          cwd: "/tmp/project",
+          prompt: "ship it",
+          command: "commit",
+          handoff: [],
+        });
+      }).pipe(Effect.provide(HarnessService.layer), Effect.provide(fakeRunner)),
+    );
+    expect(received?.args).toContain("--command");
+    expect(received?.args).toContain("commit");
+  });
 });

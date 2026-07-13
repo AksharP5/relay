@@ -66,6 +66,7 @@ describe("TUI task routing", () => {
       historyFor: (id) => Effect.succeed(histories.get(id) ?? []),
       historyForDisplay: (id) => Effect.succeed(histories.get(id) ?? []),
       doctor: () => Effect.succeed([]),
+      capabilities: (harness) => Effect.succeed({ harness, models: [], commands: [] }),
       dataRoot: "/tmp/relay-test",
     };
     const runtime = ManagedRuntime.make(Layer.succeed(RelayService, service));
@@ -109,6 +110,7 @@ describe("TUI task routing", () => {
       historyFor: () => Effect.succeed([response]),
       historyForDisplay: () => Effect.succeed([response]),
       doctor: () => Effect.succeed([]),
+      capabilities: (harness) => Effect.succeed({ harness, models: [], commands: [] }),
       dataRoot: "/tmp/relay-test",
     };
     const runtime = ManagedRuntime.make(Layer.succeed(RelayService, service));
