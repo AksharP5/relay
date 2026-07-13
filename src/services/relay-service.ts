@@ -122,12 +122,6 @@ export class RelayService extends Context.Service<
             const model = input.model ?? binding?.model;
             const handoff = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
 
-            if (input.command && handoff.length > 0) {
-              return yield* new CliError({
-                message: `Before running /${input.command}, send one normal ${harness} message so Relay can synchronize the conversation safely.`,
-              });
-            }
-
             const nativeResult = yield* harnesses.run(harness, {
               cwd: thread.cwd,
               prompt: input.prompt,

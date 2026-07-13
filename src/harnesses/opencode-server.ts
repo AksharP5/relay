@@ -239,3 +239,111 @@ export const runOpenCodeControl = async (
     await stopChild(child);
   }
 };
+
+export const runOpenCodeCommand = async (
+  executable: string,
+  input: {
+    readonly cwd: string;
+    readonly command: string;
+    readonly arguments: string;
+    readonly handoffText?: string;
+    readonly sessionId?: string;
+    readonly model?: string;
+  },
+) => {
+  const password = crypto.randomUUID();
+  const child = Bun.spawn([executable, "serve", "--hostname", "127.0.0.1", "--port", "0"], {
+    cwd: input.cwd,
+    env: { ...Bun.env, OPENCODE_SERVER_PASSWORD: password },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    detached: process.platform !== "win32",
+  });
+  if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
+    await stopChild(child);
+    throw new Error("OpenCode server output pipes are unavailable");
+  }
+  let resolveUrl: (value: string) => void;
+  let rejectUrl: (cause: Error) => void;
+  const serverUrl = new Promise<string>((resolve, reject) => {
+    resolveUrl = resolve;
+    rejectUrl = reject;
+  });
+  const inspectLine = (line: string) => {
+    const match = line.match(/opencode server listening on (http:\/\/\S+)/i);
+    if (match?.[1]) resolveUrl(match[1]);
+  };
+  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
+  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
+  void child.exited.then((code) =>
+    rejectUrl!(new Error(`OpenCode server exited with code ${code}`)),
+  );
+
+  try {
+    const baseUrl = await Promise.race([
+      serverUrl,
+      Bun.sleep(15_000).then(() => {
+        throw new Error("Timed out starting OpenCode");
+      }),
+    ]);
+    const headers = {
+      authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
+      "content-type": "application/json",
+    };
+    let sessionId = input.sessionId;
+    if (!sessionId) {
+      const createUrl = new URL("/session", baseUrl);
+      createUrl.searchParams.set("directory", input.cwd);
+      const createResponse = await fetch(createUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ title: "Relay task" }),
+      });
+      if (!createResponse.ok)
+        throw new Error(`OpenCode session creation failed with HTTP ${createResponse.status}`);
+      const session = (await createResponse.json()) as { id?: unknown };
+      if (typeof session.id !== "string") throw new Error("OpenCode did not return a session id");
+      sessionId = session.id;
+    }
+    if (input.handoffText) {
+      const handoffUrl = new URL(`/session/${encodeURIComponent(sessionId)}/message`, baseUrl);
+      handoffUrl.searchParams.set("directory", input.cwd);
+      const handoffResponse = await fetch(handoffUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          noReply: true,
+          parts: [{ type: "text", text: input.handoffText }],
+        }),
+      });
+      if (!handoffResponse.ok)
+        throw new Error(`OpenCode handoff failed with HTTP ${handoffResponse.status}`);
+    }
+    const commandUrl = new URL(`/session/${encodeURIComponent(sessionId)}/command`, baseUrl);
+    commandUrl.searchParams.set("directory", input.cwd);
+    const commandResponse = await fetch(commandUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        command: input.command,
+        arguments: input.arguments,
+        ...(input.model ? { model: input.model } : {}),
+      }),
+    });
+    if (!commandResponse.ok)
+      throw new Error(`OpenCode /${input.command} failed with HTTP ${commandResponse.status}`);
+    const message = (await commandResponse.json()) as {
+      parts?: Array<{ type?: unknown; text?: unknown }>;
+    };
+    const text = (message.parts ?? [])
+      .filter((part) => part.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("")
+      .trim();
+    if (!text) throw new Error(`OpenCode /${input.command} completed without a text response`);
+    return { sessionId, text };
+  } finally {
+    await stopChild(child);
+  }
+};

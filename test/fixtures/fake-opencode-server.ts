@@ -16,12 +16,15 @@ const server = Bun.serve({
         { name: "skill-command", source: "skill" },
       ]);
     }
-    if (/\/session\/[^/]+$/.test(url.pathname)) {
+    if (url.pathname === "/session" && request.method === "POST") {
+      return Response.json({ id: "ses_created" });
+    }
+    if (/\/session\/[^/]+$/.test(url.pathname) && request.method === "GET") {
       return Response.json({
         ...(revertMessageID ? { revert: { messageID: revertMessageID } } : {}),
       });
     }
-    if (url.pathname.endsWith("/message")) {
+    if (url.pathname.endsWith("/message") && request.method === "GET") {
       return Response.json([
         { info: { id: "msg_001", role: "user" }, parts: [] },
         {
@@ -35,6 +38,9 @@ const server = Bun.serve({
         },
       ]);
     }
+    if (url.pathname.endsWith("/message") && request.method === "POST") return Response.json({});
+    if (url.pathname.endsWith("/command") && request.method === "POST")
+      return Response.json({ parts: [{ type: "text", text: "Command response" }] });
     if (url.pathname.endsWith("/summarize") && request.method === "POST")
       return Response.json(true);
     if (url.pathname.endsWith("/share") && request.method === "POST")

@@ -1,7 +1,11 @@
 import { chmod } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { discoverOpenCodeCommands, runOpenCodeControl } from "../src/harnesses/opencode-server.ts";
+import {
+  discoverOpenCodeCommands,
+  runOpenCodeCommand,
+  runOpenCodeControl,
+} from "../src/harnesses/opencode-server.ts";
 
 const executable = fileURLToPath(new URL("./fixtures/fake-opencode-server.ts", import.meta.url));
 
@@ -57,5 +61,15 @@ describe("OpenCode command discovery", () => {
     expect(unshare).toBe("OpenCode stopped sharing this session.");
     expect(undo).toBe("OpenCode undid the previous turn and file changes.");
     expect(redo).toBe("OpenCode restored the previously undone turn.");
+  });
+
+  it("seeds missed context before a first native prompt command", async () => {
+    const result = await runOpenCodeCommand(executable, {
+      cwd: process.cwd(),
+      command: "commit",
+      arguments: "release-ready",
+      handoffText: "prior Relay conversation",
+    });
+    expect(result).toEqual({ sessionId: "ses_created", text: "Command response" });
   });
 });

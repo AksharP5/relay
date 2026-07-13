@@ -20,6 +20,10 @@ for await (const line of lines) {
     send({ id: message.id, result: { thread: { id: "codex-thread" } } });
     continue;
   }
+  if (message.method === "thread/inject_items") {
+    send({ id: message.id, result: {} });
+    continue;
+  }
   if (message.method === "thread/compact/start") {
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId: "codex-thread", turn: { id: "t1" } } });

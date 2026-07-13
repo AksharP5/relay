@@ -14,6 +14,7 @@ interface CodexCommandInput {
   readonly sessionId?: string;
   readonly model?: string;
   readonly arguments: string;
+  readonly handoffText?: string;
   readonly onProgress?: (progress: HarnessTurnProgress) => void;
 }
 
@@ -237,6 +238,18 @@ export const runCodexCommand = async (
           ...(input.model ? { model: input.model } : {}),
         });
     const sessionId = threadIdFrom(threadResult);
+    if (input.handoffText) {
+      await connection.request("thread/inject_items", {
+        threadId: sessionId,
+        items: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: input.handoffText }],
+          },
+        ],
+      });
+    }
     const completion = waitForCommand(connection, sessionId, input.onProgress);
 
     try {

@@ -10,10 +10,14 @@ import type {
   HarnessTurnResult,
 } from "../domain.ts";
 import { HarnessError, HarnessUnavailable } from "../errors.ts";
-import { composePrompt } from "../handoff.ts";
+import { buildHandoff, composePrompt } from "../handoff.ts";
 import { ProcessRunner } from "../services/process-runner.ts";
 import { runCodexCommand } from "./codex-app-server.ts";
-import { discoverOpenCodeCommands, runOpenCodeControl } from "./opencode-server.ts";
+import {
+  discoverOpenCodeCommands,
+  runOpenCodeCommand,
+  runOpenCodeControl,
+} from "./opencode-server.ts";
 import { parseCodexOutput, parseOpenCodeEvent } from "./parsing.ts";
 
 export interface HarnessStatus {
@@ -226,6 +230,7 @@ export class HarnessService extends Context.Service<
                   command: input.command as "compact" | "review",
                   cwd: input.cwd,
                   arguments: nativePrompt,
+                  ...(input.handoff.length ? { handoffText: buildHandoff(input.handoff) } : {}),
                   ...(input.sessionId ? { sessionId: input.sessionId } : {}),
                   ...(input.model ? { model: input.model } : {}),
                   ...(input.onProgress ? { onProgress: input.onProgress } : {}),
@@ -235,6 +240,25 @@ export class HarnessService extends Context.Service<
                   harness,
                   message: cause instanceof Error ? cause.message : String(cause),
                   stderr: cause instanceof Error ? cause.stack : String(cause),
+                }),
+            });
+          }
+
+          if (harness === "opencode" && input.command) {
+            return yield* Effect.tryPromise({
+              try: () =>
+                runOpenCodeCommand(command, {
+                  cwd: input.cwd,
+                  command: input.command!,
+                  arguments: nativePrompt,
+                  ...(input.handoff.length ? { handoffText: buildHandoff(input.handoff) } : {}),
+                  ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+                  ...(input.model ? { model: input.model } : {}),
+                }),
+              catch: (cause) =>
+                new HarnessError({
+                  harness,
+                  message: cause instanceof Error ? cause.message : String(cause),
                 }),
             });
           }
