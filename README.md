@@ -75,27 +75,19 @@ One npm-based way to install or update both harnesses is:
 npm install --global @openai/codex@latest opencode-ai@latest
 ```
 
-### Prebuilt binary
-
-A tagged release contains ready-to-run archives for Apple Silicon and Intel macOS, plus x64 and arm64 glibc Linux. Bun is not required to run those binaries. Download the archive and `SHA256SUMS` from the [GitHub release](https://github.com/AksharP5/relay/releases), verify the archive, then install its `relay` executable somewhere on `PATH`:
+### Install Relay
 
 ```bash
-archive=(relay-v*.tar.gz)
-grep -F "  ${archive[0]}" SHA256SUMS | shasum -a 256 --check
-tar -xzf "${archive[0]}"
-mkdir -p "$HOME/.local/bin"
-install -m 0755 relay-v*/relay "$HOME/.local/bin/relay"
+npm install --global @akshar5/relay@latest
 relay doctor
 ```
 
-Linux users can use `sha256sum --check SHA256SUMS` instead. Ensure `$HOME/.local/bin` is on `PATH`. The first macOS artifacts are unsigned and not notarized, so macOS may require an explicit local trust decision. Relay does not ask users to bypass Gatekeeper silently.
+That one command installs a ready-to-run native executable for the current machine. Relay supports Apple Silicon and Intel macOS, plus x64 and arm64 glibc Linux. npm selects only the matching platform package; it does not download the other executables. Bun is not required at runtime, and the tiny launcher replaces itself with Relay instead of leaving an extra process in memory.
 
-Release archives have GitHub build-provenance attestations. With the GitHub CLI installed, verify one with:
+Update with the same command:
 
 ```bash
-gh attestation verify relay-v*.tar.gz \
-  --repo AksharP5/relay \
-  --signer-workflow AksharP5/relay/.github/workflows/release.yml
+npm install --global @akshar5/relay@latest
 ```
 
 ### Build from source
@@ -112,7 +104,7 @@ bun link
 relay doctor
 ```
 
-The build creates a standalone Relay executable for the current platform. Re-run `bun run build` after pulling changes. A GitHub tag that exposes only the automatically generated “Source code” archives is a source-only release: users still need Bun and must build Relay themselves. Relay's release workflow now produces platform binaries, checksums, and attestations so tagged releases do not stop at that source-only state.
+The build creates a standalone Relay executable for the current platform. Re-run `bun run build` after pulling changes. Source builds are for contributors; npm is the supported installation channel.
 
 Relay targets the latest stable releases rather than silently pinning old harnesses. The current automated contract passes with Codex CLI `0.144.3` and OpenCode `1.17.20`. On every relevant `main` change and once per day, compatibility CI installs both `@latest` packages on Linux and macOS and exercises their schemas, authenticated local servers, event streams, session creation, hidden handoff injection, resume, deleted-session recovery, status, and cleanup without a model call. The PTY byte path also has automated terminal tests.
 
