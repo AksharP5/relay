@@ -109,3 +109,5 @@ Relay does not yet have a per-task delete command. To remove all Relay metadata 
 Relay exits with status `0` after a successful command and `1` after invalid input, missing state, a missing harness, or a failed native turn. Native error details are printed to standard error when available.
 
 The native harness receives a 30-minute process timeout. A failed or timed-out harness may have changed files even though Relay does not add the turn to canonical history; inspect `git status` and the workspace before retrying.
+
+If a warm native session reaches its context limit, run `/compact` and retry or select a model with a larger context window. A cold cross-harness handoff is bounded automatically; Relay retains the newest 200 messages up to 120,000 characters and points the receiving harness to `relay history` when older context was omitted.
