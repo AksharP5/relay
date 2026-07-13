@@ -1,4 +1,5 @@
 import { Context, Effect, Layer } from "effect";
+import { trackManagedProcess, untrackManagedProcess } from "./process-registry.ts";
 
 export interface ProcessInput {
   readonly command: string;
@@ -36,15 +37,19 @@ const signalProcessTree = (child: ReturnType<typeof Bun.spawn>, signal: NodeJS.S
 };
 
 export const stopProcessTree = async (child: ReturnType<typeof Bun.spawn>, graceMs = 1_000) => {
-  signalProcessTree(child, "SIGTERM");
-  const leaderExited = await Promise.race([
-    child.exited.then(() => true),
-    Bun.sleep(graceMs).then(() => false),
-  ]);
-  // On POSIX, descendants retain the detached process-group id after the
-  // leader exits. Always escalate the group; ESRCH is safely ignored.
-  if (process.platform !== "win32" || !leaderExited) signalProcessTree(child, "SIGKILL");
-  if (child.exitCode === null) await child.exited.catch(() => undefined);
+  try {
+    signalProcessTree(child, "SIGTERM");
+    const leaderExited = await Promise.race([
+      child.exited.then(() => true),
+      Bun.sleep(graceMs).then(() => false),
+    ]);
+    // On POSIX, descendants retain the detached process-group id after the
+    // leader exits. Always escalate the group; ESRCH is safely ignored.
+    if (process.platform !== "win32" || !leaderExited) signalProcessTree(child, "SIGKILL");
+    if (child.exitCode === null) await child.exited.catch(() => undefined);
+  } finally {
+    await untrackManagedProcess(child);
+  }
 };
 
 const makeTerminator = (child: ReturnType<typeof Bun.spawn>) => {
@@ -133,6 +138,7 @@ export class ProcessRunner extends Context.Service<
               stderr: "pipe",
               detached: process.platform !== "win32",
             });
+            await trackManagedProcess(child, "command");
             terminate = makeTerminator(child);
             onAbort = () => void terminate?.();
             signal.addEventListener("abort", onAbort, { once: true });
@@ -167,6 +173,7 @@ export class ProcessRunner extends Context.Service<
               throw cause;
             }
             const [stdout, stderr, exitCode] = result;
+            await stopProcessTree(child);
 
             return { exitCode, stdout, stderr };
           } finally {

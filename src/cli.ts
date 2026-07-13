@@ -10,6 +10,7 @@ import { parseArgs } from "./cli-args.ts";
 import type { Harness, RelayThread } from "./domain.ts";
 import { HarnessService } from "./harnesses/harness-service.ts";
 import { ProcessRunner } from "./services/process-runner.ts";
+import { cleanupOrphanedProcesses } from "./services/process-registry.ts";
 import { RelayService } from "./services/relay-service.ts";
 import { ThreadStore } from "./services/thread-store.ts";
 import { makeNativeRelayController } from "./native/controller.ts";
@@ -223,22 +224,41 @@ export const MainLayer = RelayService.layer.pipe(
 );
 
 if (import.meta.main) {
-  const argv = process.argv.slice(2);
-  if (argv.length === 0) {
-    const runtime = ManagedRuntime.make(MainLayer);
-    void launchNativeRelay(makeNativeRelayController(runtime))
-      .catch((error) => {
-        process.stderr.write(`${pc.red(renderError(error))}\n`);
-        process.exitCode = 1;
-      })
-      .finally(() => runtime.dispose());
-  } else {
-    pipe(
-      program(argv),
-      Effect.provide(MainLayer),
-      Effect.tapError((error) => Console.error(pc.red(renderError(error)))),
-      Effect.catch(() => Effect.sync(() => (process.exitCode = 1))),
-      BunRuntime.runMain,
-    );
+  try {
+    const recovery = await cleanupOrphanedProcesses();
+    if (recovery.failed > 0) {
+      throw new Error(
+        `Relay could not stop ${recovery.failed} process group${recovery.failed === 1 ? "" : "s"} left by an interrupted run`,
+      );
+    }
+    if (recovery.quarantined > 0) {
+      process.stderr.write(
+        `${pc.yellow(`Relay quarantined ${recovery.quarantined} invalid process ownership record${recovery.quarantined === 1 ? "" : "s"}.`)}\n`,
+      );
+    }
+  } catch (error) {
+    process.stderr.write(`${pc.red(renderError(error))}\n`);
+    process.exitCode = 1;
+  }
+
+  if (process.exitCode !== 1) {
+    const argv = process.argv.slice(2);
+    if (argv.length === 0) {
+      const runtime = ManagedRuntime.make(MainLayer);
+      void launchNativeRelay(makeNativeRelayController(runtime))
+        .catch((error) => {
+          process.stderr.write(`${pc.red(renderError(error))}\n`);
+          process.exitCode = 1;
+        })
+        .finally(() => runtime.dispose());
+    } else {
+      pipe(
+        program(argv),
+        Effect.provide(MainLayer),
+        Effect.tapError((error) => Console.error(pc.red(renderError(error)))),
+        Effect.catch(() => Effect.sync(() => (process.exitCode = 1))),
+        BunRuntime.runMain,
+      );
+    }
   }
 }

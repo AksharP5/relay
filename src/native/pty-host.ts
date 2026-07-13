@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 
 import { stopProcessTree } from "../services/process-runner.ts";
+import { trackManagedProcess, untrackManagedProcess } from "../services/process-registry.ts";
 import { NativeInputRouter } from "./input-router.ts";
 
 export interface NativeTuiCommand {
@@ -382,7 +383,13 @@ export const runNativeTui = async (
           const inputProxy = spawn(inputProxyExecutable, ["/dev/tty"], {
             stdio: ["ignore", "pipe", "ignore"],
             env: {},
+            detached: process.platform !== "win32",
           });
+          if (inputProxy.pid === undefined) throw new Error("Relay input reader did not start");
+          await trackManagedProcess(
+            inputProxy as typeof inputProxy & { readonly pid: number },
+            "terminal-input-reader",
+          );
           let reading = true;
           let proxyFailed = false;
           let proxyClosed = false;
@@ -414,6 +421,7 @@ export const runNativeTui = async (
             if (!exited && !proxyClosed) inputProxy.kill("SIGKILL");
             await Promise.race([closed, Bun.sleep(250)]);
             inputProxy.stdout.destroy();
+            await untrackManagedProcess(inputProxy as typeof inputProxy & { readonly pid: number });
           };
         } else {
           io.input.on("data", pump.listener);
@@ -455,6 +463,7 @@ export const runNativeTui = async (
       },
       detached: process.platform !== "win32",
     });
+    await trackManagedProcess(child, `${command.executable}-native-tui`);
     terminal = child.terminal;
     if (!terminal) throw new Error("Relay could not create a native pseudo-terminal");
     flushInput();

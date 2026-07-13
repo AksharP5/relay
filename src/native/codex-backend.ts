@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { AppServerError, WebSocketAppServerConnection } from "../harnesses/codex-app-server.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
+import { trackManagedProcess } from "../services/process-registry.ts";
 import { NativeSessionUnavailable } from "./errors.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
@@ -220,6 +221,7 @@ export class CodexNativeBackend {
         detached: process.platform !== "win32",
       },
     );
+    await trackManagedProcess(child, "codex-native-backend");
     let stderr = "";
     if (child.stdout instanceof ReadableStream) void readStream(child.stdout, { limit: 128_000 });
     if (child.stderr instanceof ReadableStream) {

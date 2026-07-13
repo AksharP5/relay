@@ -23,30 +23,22 @@ import {
   type NativeTranscriptTurn,
   type RelayTaskExport,
 } from "../domain.ts";
+import { relayDataRoot } from "./data-root.ts";
 
 const defaultIndex: RelayIndex = { currentThreadId: null, threadIds: [] };
 
 const errorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
-const dataRoot = () => {
-  const override = Bun.env.RELAY_DATA_DIR?.trim();
-  if (override) return override;
-
-  const home = Bun.env.HOME;
-  if (!home) return `${process.cwd()}/.relay`;
-  return `${home}/.local/share/relay`;
-};
-
-const threadDir = (id: string) => `${dataRoot()}/threads/${id}`;
+const threadDir = (id: string) => `${relayDataRoot()}/threads/${id}`;
 const metadataPath = (id: string) => `${threadDir(id)}/thread.json`;
 const eventsPath = (id: string) => `${threadDir(id)}/events.jsonl`;
-const indexPath = () => `${dataRoot()}/index.json`;
-const deletionPath = (id: string) => `${dataRoot()}/deletions/${id}.json`;
+const indexPath = () => `${relayDataRoot()}/index.json`;
+const deletionPath = (id: string) => `${relayDataRoot()}/deletions/${id}.json`;
 const pendingPath = (id: string) => `${threadDir(id)}/pending-turn.json`;
 const undoPath = (id: string) => `${threadDir(id)}/undo-stack.json`;
 const visibilityPath = (id: string) => `${threadDir(id)}/native-visibility.json`;
-const lockPath = (id: string) => `${dataRoot()}/locks/${id}`;
-const runLockPath = (id: string) => `${dataRoot()}/run-locks/${id}`;
+const lockPath = (id: string) => `${relayDataRoot()}/locks/${id}`;
+const runLockPath = (id: string) => `${relayDataRoot()}/run-locks/${id}`;
 const checkoutLockPath = async (cwd: string) => {
   const absolute = resolve(cwd);
   let root = await realpath(absolute).catch(() => absolute);
@@ -60,7 +52,7 @@ const checkoutLockPath = async (cwd: string) => {
     }
     root = parent;
   }
-  return `${dataRoot()}/checkout-locks/${createHash("sha256").update(root).digest("hex")}`;
+  return `${relayDataRoot()}/checkout-locks/${createHash("sha256").update(root).digest("hex")}`;
 };
 const maxEventLineChars = 4_000_000;
 const NativeVisibility = Schema.Struct({
@@ -77,12 +69,12 @@ const secureDirectory = async (path: string) => {
 };
 
 const ensureBase = async () => {
-  await secureDirectory(dataRoot());
-  await secureDirectory(`${dataRoot()}/threads`);
-  await secureDirectory(`${dataRoot()}/locks`);
-  await secureDirectory(`${dataRoot()}/run-locks`);
-  await secureDirectory(`${dataRoot()}/checkout-locks`);
-  await secureDirectory(`${dataRoot()}/deletions`);
+  await secureDirectory(relayDataRoot());
+  await secureDirectory(`${relayDataRoot()}/threads`);
+  await secureDirectory(`${relayDataRoot()}/locks`);
+  await secureDirectory(`${relayDataRoot()}/run-locks`);
+  await secureDirectory(`${relayDataRoot()}/checkout-locks`);
+  await secureDirectory(`${relayDataRoot()}/deletions`);
 };
 
 const readJson = async <A>(path: string, schema: Schema.Decoder<A>): Promise<A | undefined> => {
@@ -173,9 +165,9 @@ const DeletionJournal = Schema.Struct({
 
 const readDeletionJournals = async () => {
   const journals: Array<typeof DeletionJournal.Type> = [];
-  for (const entry of await readdir(`${dataRoot()}/deletions`)) {
+  for (const entry of await readdir(`${relayDataRoot()}/deletions`)) {
     if (!entry.endsWith(".json")) continue;
-    const path = `${dataRoot()}/deletions/${entry}`;
+    const path = `${relayDataRoot()}/deletions/${entry}`;
     await chmod(path, 0o600);
     journals.push(
       Schema.decodeUnknownSync(DeletionJournal)(JSON.parse(await readFile(path, "utf8"))),
@@ -683,7 +675,7 @@ export class ThreadStore extends Context.Service<
   }
 >()("@relay/ThreadStore") {
   static readonly layer = Layer.succeed(ThreadStore, {
-    root: dataRoot(),
+    root: relayDataRoot(),
 
     create: Effect.fn("ThreadStore.create")((input: CreateThreadInput) =>
       Effect.tryPromise({

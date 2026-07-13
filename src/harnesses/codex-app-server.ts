@@ -1,6 +1,7 @@
 import packageJson from "../../package.json" with { type: "json" };
 import type { HarnessTurnProgress } from "../domain.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
+import { trackManagedProcess } from "../services/process-registry.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -83,6 +84,7 @@ export class AppServerConnection {
       stderr: "pipe",
       detached: process.platform !== "win32",
     });
+    await trackManagedProcess(child, "codex-app-server");
     const connection = new AppServerConnection(child);
     try {
       await connection.#requestRaw(

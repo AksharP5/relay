@@ -1,5 +1,6 @@
 import type { HarnessCommand } from "../domain.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
+import { trackManagedProcess } from "../services/process-registry.ts";
 
 interface OpenCodeCommand {
   readonly name?: unknown;
@@ -53,6 +54,7 @@ export const startOpenCodeServer = async (
       detached: process.platform !== "win32",
     },
   );
+  await trackManagedProcess(child, "opencode-server");
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
     await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
@@ -119,6 +121,7 @@ export const discoverOpenCodeCommands = async (
     stderr: "pipe",
     detached: process.platform !== "win32",
   });
+  await trackManagedProcess(child, "opencode-command-server");
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
     await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
@@ -193,6 +196,7 @@ export const runOpenCodeControl = async (
     stderr: "pipe",
     detached: process.platform !== "win32",
   });
+  await trackManagedProcess(child, "opencode-control-server");
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
     await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
@@ -348,6 +352,7 @@ export const runOpenCodeCommand = async (
     stderr: "pipe",
     detached: process.platform !== "win32",
   });
+  await trackManagedProcess(child, "opencode-session-server");
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
     await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
