@@ -568,15 +568,43 @@ const acquireThreadLock = (id: string) =>
     "This Relay task already has a turn starting",
   );
 
+let indexQueue = Promise.resolve();
+
+const acquireLocalIndexLock = async () => {
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const previous = indexQueue;
+  indexQueue = previous.then(() => current);
+  await previous;
+  return release;
+};
+
 const acquireIndexLock = async () => {
-  const deadline = Date.now() + 5_000;
-  while (true) {
-    try {
-      return await acquireThreadLock("__index__");
-    } catch (cause) {
-      if (!(cause instanceof ThreadBusy) || Date.now() >= deadline) throw cause;
-      await Bun.sleep(10);
+  const releaseLocal = await acquireLocalIndexLock();
+  try {
+    const deadline = Date.now() + 5_000;
+    while (true) {
+      try {
+        const lock = await acquireThreadLock("__index__");
+        return {
+          release: async () => {
+            try {
+              await lock.release();
+            } finally {
+              releaseLocal();
+            }
+          },
+        };
+      } catch (cause) {
+        if (!(cause instanceof ThreadBusy) || Date.now() >= deadline) throw cause;
+        await Bun.sleep(5 + Math.floor(Math.random() * 15));
+      }
     }
+  } catch (cause) {
+    releaseLocal();
+    throw cause;
   }
 };
 
