@@ -164,4 +164,24 @@ describe("Relay CLI storage", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("already has a turn running");
   });
+
+  it("does not repair a partial event while a live writer owns the task lock", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-live-writer-"));
+    tempRoots.push(root);
+    await runRelay(root, ["new", "Live writer test"]);
+    const [threadId] = await readdir(join(root, "threads"));
+    const events = join(root, "threads", threadId!, "events.jsonl");
+    const partial = '{"id":"still-being-written"';
+    await appendFile(events, partial);
+
+    const lock = join(root, "locks", threadId!);
+    await mkdir(lock, { mode: 0o700 });
+    await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: process.pid }), {
+      mode: 0o600,
+    });
+
+    const history = await runRelay(root, ["history"]);
+    expect(history.exitCode).toBe(0);
+    expect(await readFile(events, "utf8")).toBe(partial);
+  });
 });

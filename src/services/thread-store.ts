@@ -61,7 +61,10 @@ const atomicTextWrite = async (path: string, value: string) => {
 const atomicJsonWrite = (path: string, value: unknown) =>
   atomicTextWrite(path, `${JSON.stringify(value, null, 2)}\n`);
 
-const readMessages = async (id: string): Promise<Array<RelayMessage>> => {
+const readMessages = async (
+  id: string,
+  options: { readonly repairTail?: boolean } = {},
+): Promise<Array<RelayMessage>> => {
   const file = Bun.file(eventsPath(id));
   if (!(await file.exists())) return [];
   await chmod(eventsPath(id), 0o600);
@@ -75,10 +78,12 @@ const readMessages = async (id: string): Promise<Array<RelayMessage>> => {
       messages.push(Schema.decodeUnknownSync(RelayMessage)(JSON.parse(line)));
     } catch (cause) {
       if (index !== lines.length - 1) throw cause;
-      await atomicTextWrite(
-        eventsPath(id),
-        messages.map((message) => JSON.stringify(message)).join("\n") + "\n",
-      );
+      if (options.repairTail) {
+        await atomicTextWrite(
+          eventsPath(id),
+          messages.map((message) => JSON.stringify(message)).join("\n") + "\n",
+        );
+      }
     }
   }
   return messages;
@@ -111,10 +116,6 @@ async function liveLockExists(id: string) {
 }
 
 const recoverThread = async (thread: RelayThread): Promise<RelayThread> => {
-  const pending = await readJson<PendingTurn>(pendingPath(thread.id), PendingTurn);
-  const messages = await readMessages(thread.id);
-  const lastSeq = messages.at(-1)?.seq ?? 0;
-  if (!pending && lastSeq === thread.lastSeq) return thread;
   if (await liveLockExists(thread.id)) return thread;
 
   let lock: Awaited<ReturnType<typeof acquireThreadLock>>;
@@ -128,7 +129,7 @@ const recoverThread = async (thread: RelayThread): Promise<RelayThread> => {
   try {
     const latest = (await readJson<RelayThread>(metadataPath(thread.id), RelayThread)) ?? thread;
     const latestPending = await readJson<PendingTurn>(pendingPath(thread.id), PendingTurn);
-    const latestMessages = await readMessages(thread.id);
+    const latestMessages = await readMessages(thread.id, { repairTail: true });
     if (latestPending) {
       const existingIds = new Set(latestMessages.map((message) => message.id));
       const missing = latestPending.messages.filter((message) => !existingIds.has(message.id));
