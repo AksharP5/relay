@@ -31,6 +31,11 @@ export interface NativeRelayController {
     readonly turns: ReadonlyArray<NativeTranscriptTurn>;
     readonly model?: string;
   }) => Promise<RelayThread>;
+  readonly dropBinding: (
+    threadId: string,
+    harness: Harness,
+    expectedSessionId: string,
+  ) => Promise<RelayThread>;
 }
 
 export const makeNativeRelayController = (
@@ -87,6 +92,13 @@ export const makeNativeRelayController = (
         Effect.gen(function* () {
           const relay = yield* RelayService;
           return yield* relay.importNativeTurns(input);
+        }),
+      ),
+    dropBinding: (threadId, harness, expectedSessionId) =>
+      run(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          return yield* relay.dropNativeBinding(threadId, harness, expectedSessionId);
         }),
       ),
   };

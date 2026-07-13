@@ -1,6 +1,7 @@
 import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { buildHandoff } from "../handoff.ts";
 import { startOpenCodeServer, type RunningOpenCodeServer } from "../harnesses/opencode-server.ts";
+import { NativeSessionUnavailable } from "./errors.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -111,9 +112,16 @@ export class OpenCodeNativeBackend {
         signal: AbortSignal.timeout(15_000),
       });
       if (!response.ok)
-        throw new Error(
-          `OpenCode session ${input.sessionId} is unavailable (HTTP ${response.status})`,
-        );
+        if (response.status === 404 || response.status === 410)
+          throw new NativeSessionUnavailable(
+            "opencode",
+            input.sessionId,
+            `OpenCode session ${input.sessionId} is unavailable (HTTP ${response.status})`,
+          );
+        else
+          throw new Error(
+            `OpenCode session lookup failed for ${input.sessionId} (HTTP ${response.status})`,
+          );
       this.#baselineSessions = new Map(
         (await this.#sessions()).map((session) => [session.id, session.updated]),
       );
@@ -162,8 +170,12 @@ export class OpenCodeNativeBackend {
         signal: AbortSignal.timeout(30_000),
       }),
     ]);
+    if (messagesResponse.status === 404 || messagesResponse.status === 410)
+      throw new NativeSessionUnavailable("opencode", sessionId);
     if (!messagesResponse.ok)
       throw new Error(`OpenCode history failed with HTTP ${messagesResponse.status}`);
+    if (sessionResponse.status === 404 || sessionResponse.status === 410)
+      throw new NativeSessionUnavailable("opencode", sessionId);
     if (!sessionResponse.ok)
       throw new Error(`OpenCode session state failed with HTTP ${sessionResponse.status}`);
     const session = asObject(await sessionResponse.json());

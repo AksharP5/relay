@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { CodexNativeBackend } from "../src/native/codex-backend.ts";
+import { NativeSessionUnavailable } from "../src/native/errors.ts";
 import { startOpenCodeServer } from "../src/harnesses/opencode-server.ts";
 
 const run = async (command: string, args: ReadonlyArray<string>) => {
@@ -115,6 +116,13 @@ try {
   }
   await resumedCodex.read(codexSessionId);
   await resumedCodex.delete(codexSessionId);
+  const missing = await resumedCodex
+    .ensureSession({ sessionId: codexSessionId })
+    .then(() => undefined)
+    .catch((cause) => cause);
+  if (!(missing instanceof NativeSessionUnavailable)) {
+    throw new Error("Codex deleted-session classification changed");
+  }
 } finally {
   await resumedCodex.close();
 }

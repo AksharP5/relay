@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
-import { WebSocketAppServerConnection } from "../harnesses/codex-app-server.ts";
+import { AppServerError, WebSocketAppServerConnection } from "../harnesses/codex-app-server.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
+import { NativeSessionUnavailable } from "./errors.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -88,6 +89,11 @@ export const selectResolvedCodexSession = (input: {
   );
   return input.recency.find((id) => eligible.has(id)) ?? [...eligible].at(-1) ?? input.fallback;
 };
+
+const isMissingCodexSession = (cause: unknown, sessionId: string) =>
+  cause instanceof AppServerError &&
+  cause.code === -32600 &&
+  cause.message === `no rollout found for thread id ${sessionId}`;
 
 const extractText = (content: unknown) =>
   Array.isArray(content)
@@ -251,11 +257,18 @@ export class CodexNativeBackend {
     }
     const connection = await this.#connect();
     try {
-      const result = await connection.request("thread/resume", {
-        threadId: input.sessionId,
-        cwd: this.#cwd,
-        ...(input.model ? { model: input.model } : {}),
-      });
+      const result = await connection
+        .request("thread/resume", {
+          threadId: input.sessionId,
+          cwd: this.#cwd,
+          ...(input.model ? { model: input.model } : {}),
+        })
+        .catch((cause) => {
+          if (isMissingCodexSession(cause, input.sessionId!)) {
+            throw new NativeSessionUnavailable("codex", input.sessionId!, cause.message);
+          }
+          throw cause;
+        });
       const sessionId = threadIdFrom(result);
       const loaded = await connection.request("thread/loaded/list", {});
       this.#baselineLoaded = new Set(stringDataFrom(loaded));
@@ -334,6 +347,9 @@ export class CodexNativeBackend {
         .catch((cause) => {
           if (cause instanceof Error && cause.message.includes("is not materialized yet")) {
             return { thread: { turns: [] } };
+          }
+          if (isMissingCodexSession(cause, sessionId)) {
+            throw new NativeSessionUnavailable("codex", sessionId, cause.message);
           }
           throw cause;
         });

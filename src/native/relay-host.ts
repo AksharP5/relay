@@ -1,6 +1,7 @@
 import type { Harness, NativeTranscriptTurn, RelayMessage, RelayThread } from "../domain.ts";
 import { CodexNativeBackend } from "./codex-backend.ts";
 import type { NativeRelayController } from "./controller.ts";
+import { NativeSessionUnavailable } from "./errors.ts";
 import { OpenCodeNativeBackend } from "./opencode-backend.ts";
 import { runNativeTui, type NativeTuiCommand, type NativeTuiExit } from "./pty-host.ts";
 import { selectHarness } from "./selector.ts";
@@ -173,19 +174,37 @@ const runHarness = async (
   let thread = await controller.switchHarness(initialThread.id, harness);
   const backend = await dependencies.startBackend(harness, thread.cwd);
   try {
-    const binding = thread.bindings[harness];
-    const storedModel = binding?.model ?? thread.preferredModels?.[harness];
-    // Once a native session exists, its own /model command owns the choice.
-    // Passing Relay's last-known model on every resume would overwrite it.
-    const launchModel = binding ? undefined : storedModel;
-    const initialDelta = await controller.delta(thread.id, harness);
-    const prepared = await backend.prepareSession({
-      ...(binding ? { sessionId: binding.sessionId } : {}),
-      ...(launchModel ? { model: launchModel } : {}),
-      title: thread.title,
-      handoff: initialDelta.messages,
-      handoffOmittedMessages: initialDelta.omittedMessages,
-    });
+    let binding = thread.bindings[harness];
+    let storedModel: string | undefined;
+    let launchModel: string | undefined;
+    let initialDelta: Awaited<ReturnType<NativeRelayController["delta"]>>;
+    let prepared: Awaited<ReturnType<NativeBackend["prepareSession"]>>;
+    let recoveredStaleBinding = false;
+
+    while (true) {
+      storedModel = binding?.model ?? thread.preferredModels?.[harness];
+      // Once a native session exists, its own /model command owns the choice.
+      // Passing Relay's last-known model on every resume would overwrite it.
+      launchModel = binding ? undefined : storedModel;
+      initialDelta = await controller.delta(thread.id, harness);
+      try {
+        prepared = await backend.prepareSession({
+          ...(binding ? { sessionId: binding.sessionId } : {}),
+          ...(launchModel ? { model: launchModel } : {}),
+          title: thread.title,
+          handoff: initialDelta.messages,
+          handoffOmittedMessages: initialDelta.omittedMessages,
+        });
+        break;
+      } catch (cause) {
+        if (!(cause instanceof NativeSessionUnavailable) || !binding || recoveredStaleBinding)
+          throw cause;
+        recoveredStaleBinding = true;
+        thread = await controller.dropBinding(thread.id, harness, binding.sessionId);
+        binding = thread.bindings[harness];
+      }
+    }
+
     let sessionId = prepared.sessionId;
     if (sessionId) {
       if (prepared.handoffInjected) {
@@ -213,21 +232,26 @@ const runHarness = async (
       return sessionId ? backend.isIdle(sessionId) : true;
     });
 
-    const resolvedSessionId = await backend.resolveSession(sessionId);
-    if (resolvedSessionId) {
-      const turns = await backend.read(resolvedSessionId);
-      const materialized =
-        turns.length > 0 || (await backend.isMaterialized?.(resolvedSessionId)) === true;
-      if (boundSessionId || materialized) {
-        thread = await synchronize({
-          controller,
-          backend,
-          thread,
-          harness,
-          sessionId: resolvedSessionId,
-          sessionChanged: resolvedSessionId !== boundSessionId,
-        });
+    try {
+      const resolvedSessionId = await backend.resolveSession(sessionId);
+      if (resolvedSessionId) {
+        const turns = await backend.read(resolvedSessionId);
+        const materialized =
+          turns.length > 0 || (await backend.isMaterialized?.(resolvedSessionId)) === true;
+        if (boundSessionId || materialized) {
+          thread = await synchronize({
+            controller,
+            backend,
+            thread,
+            harness,
+            sessionId: resolvedSessionId,
+            sessionChanged: resolvedSessionId !== boundSessionId,
+          });
+        }
       }
+    } catch (cause) {
+      if (!(cause instanceof NativeSessionUnavailable) || !boundSessionId) throw cause;
+      thread = await controller.dropBinding(thread.id, harness, boundSessionId);
     }
     return { thread, exit };
   } finally {

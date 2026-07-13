@@ -32,6 +32,19 @@ const errorMessage = (value: unknown) => {
   return typeof object?.message === "string" ? object.message : JSON.stringify(value);
 };
 
+export class AppServerError extends Error {
+  readonly code: number | undefined;
+  readonly data: unknown;
+
+  constructor(value: unknown) {
+    const object = asObject(value);
+    super(errorMessage(value));
+    this.name = "AppServerError";
+    this.code = typeof object?.code === "number" ? object.code : undefined;
+    this.data = object?.data;
+  }
+}
+
 export class AppServerConnection {
   readonly #child: ReturnType<typeof Bun.spawn>;
   readonly #pending = new Map<number, PendingRequest>();
@@ -170,7 +183,7 @@ export class AppServerConnection {
       const pending = this.#pending.get(message.id);
       if (!pending) return;
       this.#pending.delete(message.id);
-      if (message.error !== undefined) pending.reject(new Error(errorMessage(message.error)));
+      if (message.error !== undefined) pending.reject(new AppServerError(message.error));
       else pending.resolve(message.result);
       return;
     }
@@ -303,7 +316,7 @@ export class WebSocketAppServerConnection {
     const pending = this.#pending.get(message.id);
     if (!pending) return;
     this.#pending.delete(message.id);
-    if (message.error !== undefined) pending.reject(new Error(errorMessage(message.error)));
+    if (message.error !== undefined) pending.reject(new AppServerError(message.error));
     else pending.resolve(message.result);
   }
 

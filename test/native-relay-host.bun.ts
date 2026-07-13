@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { Harness, NativeTranscriptTurn, RelayMessage, RelayThread } from "../src/domain.ts";
 import type { NativeRelayController } from "../src/native/controller.ts";
+import { NativeSessionUnavailable } from "../src/native/errors.ts";
 import { launchNativeRelay, type NativeBackend } from "../src/native/relay-host.ts";
 import { selectHarness } from "../src/native/selector.ts";
 
@@ -89,6 +90,13 @@ const makeController = () => {
           },
         },
       };
+      return thread;
+    },
+    dropBinding: async (_threadId, harness, expectedSessionId) => {
+      if (thread.bindings[harness]?.sessionId !== expectedSessionId) return thread;
+      const bindings = { ...thread.bindings };
+      delete bindings[harness];
+      thread = { ...thread, bindings };
       return thread;
     },
   };
@@ -296,6 +304,77 @@ describe("native Relay host", () => {
 
     expect(preparedModels).toEqual([undefined]);
     expect(commandModels).toEqual([undefined]);
+  });
+
+  it("replaces a definitively deleted binding with the complete canonical handoff", async () => {
+    const { controller } = makeController();
+    await controller.bind({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "deleted-session",
+      lastSyncedSeq: 0,
+    });
+    await controller.importTurns({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "deleted-session",
+      turns: [{ id: "old-turn", prompt: "preserve me", response: "preserved" }],
+    });
+    const preparedSessions: Array<string | undefined> = [];
+    const preparedHandoffs: Array<Array<string>> = [];
+    const injected: Array<string> = [];
+    const backend: NativeBackend = {
+      prepareSession: async (input) => {
+        preparedSessions.push(input.sessionId);
+        preparedHandoffs.push(input.handoff.map((message) => message.content));
+        if (input.sessionId)
+          throw new NativeSessionUnavailable("codex", input.sessionId, "deleted");
+        return { sessionId: "replacement-session", handoffInjected: false };
+      },
+      inject: async (_sessionId, delta) =>
+        void injected.push(...delta.map((message) => message.content)),
+      read: async () => [],
+      isMaterialized: async () => true,
+      isIdle: async () => true,
+      resolveSession: async (fallback) => fallback,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      runTui: async () => ({ reason: "exit", exitCode: 0 }),
+    });
+
+    expect(preparedSessions).toEqual(["deleted-session", undefined]);
+    expect(preparedHandoffs).toEqual([[], ["preserve me", "preserved"]]);
+    expect(injected).toEqual(["preserve me", "preserved"]);
+  });
+
+  it("keeps a binding when native preparation fails without a missing-session error", async () => {
+    const { controller, thread } = makeController();
+    await controller.bind({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "preserved-session",
+      lastSyncedSeq: 0,
+    });
+    const backend: NativeBackend = {
+      prepareSession: async () => {
+        throw new Error("temporary transport failure");
+      },
+      inject: async () => {},
+      read: async () => [],
+      isIdle: async () => true,
+      resolveSession: async (fallback) => fallback,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await expect(
+      launchNativeRelay(controller, { startBackend: async () => backend }),
+    ).rejects.toThrow("temporary transport failure");
+    expect(thread().bindings.codex?.sessionId).toBe("preserved-session");
   });
 
   it("hands off pending cross-harness messages before importing out-of-band native turns", async () => {

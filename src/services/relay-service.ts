@@ -98,6 +98,11 @@ export class RelayService extends Context.Service<
       threadId: string,
       harness: Harness,
     ) => Effect.Effect<RelayThread, unknown>;
+    readonly dropNativeBinding: (
+      threadId: string,
+      harness: Harness,
+      expectedSessionId: string,
+    ) => Effect.Effect<RelayThread, unknown>;
     readonly dataRoot: string;
   }
 >()("@relay/RelayService") {
@@ -374,6 +379,20 @@ export class RelayService extends Context.Service<
           }),
       );
 
+      const dropNativeBinding = Effect.fn("RelayService.dropNativeBinding")(
+        (threadId: string, harness: Harness, expectedSessionId: string) =>
+          Effect.gen(function* () {
+            const lock = yield* store.acquireLock(threadId);
+            return yield* Effect.gen(function* () {
+              const thread = yield* store.get(threadId);
+              yield* validateNativeCwd(thread);
+              return thread.bindings[harness]?.sessionId === expectedSessionId
+                ? yield* store.dropBinding(thread, harness)
+                : thread;
+            }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+          }),
+      );
+
       return {
         newThread,
         ask,
@@ -392,6 +411,7 @@ export class RelayService extends Context.Service<
         importNativeTurns,
         acquireNativeLease: store.acquireRunLease,
         switchNativeHarness: (threadId, harness) => switchNativeHarness(harness, threadId),
+        dropNativeBinding,
         dataRoot: store.root,
       };
     }),
