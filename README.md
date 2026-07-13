@@ -136,7 +136,9 @@ Relay uses the most recent task bound to that directory or creates a new local t
 | `Ctrl+Q`                           | Relay      | Switch directly to the other harness when idle |
 | `F6` (`Fn+F6` with Mac media keys) | Relay      | Fallback switch key                            |
 
-Relay refuses to detach while a turn is active, because doing so could strand an approval or lose streaming state. The terminal bell sounds; wait for the turn to finish, then use the switch key again.
+Relay refuses to detach while a turn is active. The terminal bell sounds and the current TUI stays visible until its response, tool call, retry, approval, or question reaches a safe idle state. Wait for it to finish, then use the switch key again. The completed turn is imported before the other harness opens.
+
+This is a current safety boundary, not a claim that background switching is impossible. A safe background mode would temporarily keep the source runtime alive, preserve its approvals and output, open the destination, and hold destination model requests until the source turn finishes and crosses over. Otherwise two agents could branch from different conversation states while editing the same worktree. Relay's first release keeps one harness stack alive at a time, so partial output remains in its source TUI and never appears live inside the other native interface.
 
 Relay cannot safely add `/harness` to both stock native command palettes today. OpenCode exposes a local TUI command plugin API, but Codex does not expose a corresponding host-command extension point. Relay could intercept raw text only by guessing whether bytes belong to a composer, dialog, Vim state, search field, history edit, or external editor. That would compromise the native behavior Relay exists to preserve, so every slash command remains native.
 
@@ -146,7 +148,13 @@ Relay cannot safely add `/harness` to both stock native command palettes today. 
 
 Zellij's default keymap reserves `Ctrl+Q` for quitting. Use `F6` while inside Zellij, or change Zellij's binding if you want `Ctrl+Q` to reach Relay. Relay intentionally keeps `F6` as the unambiguous fallback.
 
-Native session navigation remains native. Relay detects a Codex thread created or resumed inside the Codex TUI, and an OpenCode session that becomes active through native work, then updates the task binding and imports its completed turns. Moving to another native session is an intentional context reset: Relay never appends older task history behind turns already completed there. Merely highlighting a different OpenCode session and switching away before any activity—or navigating during a rare event-stream gap—may not produce a trustworthy server event; Relay keeps the prior binding rather than guessing.
+### Bring an existing session into Relay
+
+Existing sessions remain in their native harness. To adopt one, run Relay from the same workspace, open Codex's `/resume` or OpenCode's `/sessions`, and select it normally. Once that session is idle, `Ctrl+Q` or `F6` imports its completed visible turns and opens the other harness with that context. OpenCode selection works even when you switch immediately after choosing the session; Relay reads the exact native continuation ID from OpenCode's graceful exit rather than guessing from screen content.
+
+The other harness binding is lazy. If it does not exist yet, Relay creates and seeds it only when you first switch there. Returning later resumes the same two native bindings.
+
+Selecting an existing session is an intentional context reset for the current Relay task: Relay adopts that session's completed conversation and does not append an unrelated older task transcript behind it. Only sessions from the current workspace can be adopted. Relay supports sessions exposed by the native picker; it does not add a second history browser for session kinds that Codex or OpenCode omit from their own UI.
 
 ## Headless commands
 
@@ -172,7 +180,7 @@ See the [command guide](docs/commands.md) for full examples.
 
 Relay stores canonical visible message text and task metadata under `~/.local/share/relay` by default. Metadata includes the task ID, directory, active harness, native session IDs, synchronization cursors, native undo visibility, and timestamps.
 
-It does not copy credential files, vendor session databases, raw terminal output, or tool traces. Canonical messages use append-only JSON Lines. Switch handoffs scan that log with a bounded message and character window; OpenCode recovery reads vendor history in cursor pages and immediately discards non-visible tool payloads. Task recovery and `relay history` may read the selected task's complete local canonical log. While a TUI is active, Relay otherwise keeps only small routing queues and the handoff delta needed for a switch.
+It does not copy credential files, vendor session databases, raw terminal output, or tool traces. Canonical messages use append-only JSON Lines. Switch handoffs scan that log with a bounded message and character window; OpenCode recovery reads vendor history in cursor pages and immediately discards non-visible tool payloads. Task recovery and `relay history` may read the selected task's complete local canonical log. While a TUI is active, Relay otherwise keeps only small routing queues, the handoff delta needed for a switch, and—for OpenCode only—an in-memory exit tail capped at 8 KiB so it can recognize the selected continuation ID. That tail is discarded when the native process exits and is never written to Relay storage.
 
 Each active backend binds only to loopback and uses an ephemeral capability secret:
 
@@ -192,6 +200,7 @@ Use `relay delete [id] --force` to erase one task's Relay-owned records. Deletio
 - Relay currently supports Codex and OpenCode on macOS and Linux. Windows PTY hosting is not implemented.
 - Relay prevents two tasks from running agents in the same git checkout, including tasks started from nested or symlinked paths. Use separate git worktrees for intentional concurrency.
 - Cross-engine continuity includes completed visible text and the working tree, not hidden state.
+- A turn must finish in its source TUI before Relay switches; partial streaming output is not mirrored into the destination TUI.
 - Attachments and rich tool events stay in their native session; they are not translated into the other harness.
 - Native undo, compaction, sharing, and session commands still use native semantics. Relay reconciles explicit OpenCode undo/redo visibility for completed imported turns, but it will not rewrite vendor-owned storage to force two histories to become identical.
 - If a harness edits files and then fails, the workspace may be ahead of the canonical conversation. Inspect `git status` before retrying.

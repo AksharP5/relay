@@ -16,7 +16,22 @@ Press `Ctrl+Q` to switch directly to the other harness. `F6` remains the fallbac
 
 `/harness` is intentionally not intercepted. It is ordinary native composer input, just like every other slash command. Relay cannot distinguish the main composer from native dialogs, Vim state, search fields, history edits, or an external editor by reading raw PTY bytes. Adding a fake text parser would make the native interfaces less reliable.
 
-If a native turn is active, Relay keeps the frontend attached and rings the terminal bell. Retry the switch after the turn becomes idle.
+If a native turn is active, Relay keeps the frontend attached and rings the terminal bell. Its response continues in that native TUI; retry the switch after the turn becomes idle. Relay then imports the completed turn before opening the destination. It does not mirror a partial response into the other TUI.
+
+## Adopt an existing native session
+
+Start Relay from the workspace that owns the session, then use the selected harness's own history command:
+
+1. In Codex, run `/resume`. In OpenCode, run `/sessions`.
+2. Select an existing session from the current workspace.
+3. Let any active turn finish.
+4. Press `Ctrl+Q` or `F6` to cross into the other harness.
+
+Relay rebinds the current task to the selected native session and imports its completed visible turns. If the destination harness has no binding yet, Relay creates and seeds one at this first switch; merely opening the source session does not create both sessions in advance.
+
+Native selection resets the current Relay task to the selected conversation. Relay does not place unrelated older Relay messages behind an already established native history. OpenCode's graceful exit identifies a newly selected session even when no new prompt was sent before switching. Relay refuses to adopt a session whose native working directory differs from the Relay task.
+
+Relay can adopt sessions that appear in the native picker. It does not expose a separate picker for headless or other session types that a vendor excludes from its own history UI.
 
 ## Check installed harnesses
 

@@ -26,7 +26,16 @@ The input router recognizes the legacy `Ctrl+Q` control byte, function-key seque
 
 Relay does not implement `/harness` by watching for those characters. At the PTY boundary, the same bytes could belong to a native composer, dialog, search field, Vim command, recalled history entry, or external editor. Only the upstream TUI knows that state. OpenCode can register a local plugin command, but stock Codex currently has no equivalent host-command extension point, so a clean command cannot be offered consistently across both native TUIs.
 
-Switching is allowed only while the current native session reports idle. During a busy or retrying turn, Relay leaves the frontend connected and sounds the terminal bell. This preserves live output and interactive approval state.
+Switching is allowed only while the current native session reports idle. During a busy or retrying turn, Relay leaves the frontend connected and sounds the terminal bell. This preserves live output and interactive approval state. Once the turn completes, the next switch imports its final visible response before opening the destination.
+
+Relay does not currently mirror partial output into another harness. Codex and OpenCode each own their active turn, tool state, approvals, and terminal rendering; the destination cannot safely consume a response that does not exist yet. A background switch is technically possible, but it requires a supervised overlap:
+
+1. keep the source backend—and, where required, its frontend—alive;
+2. open the destination without allowing a new model turn to race ahead;
+3. continue routing approvals and cancellation to the source;
+4. import the source's completed turn, then release the destination input and stop the source.
+
+That mode necessarily uses two temporary harness runtimes during the overlap. Relay's current one-stack lifecycle avoids that extra device usage and prevents concurrent agents from editing one worktree from different conversation states.
 
 ## One task, two native bindings
 
@@ -56,7 +65,9 @@ Computing the delta before importing out-of-band native turns is intentional. Im
 
 After the frontend exits, Relay resolves the session that was actually active and synchronizes it. Headless turns are linked to their native turn IDs on first attachment rather than duplicated. OpenCode turns hidden by native undo remain in the append-only log with a visibility tombstone, so redo can restore them without reusing or renumbering message sequences.
 
-If native `/new`, `/resume`, or session navigation moves to another materialized session, Relay treats that native action as an intentional context reset. It rebinds the current task and imports completed turns, but does not retroactively append the prior task log behind them. Future completed turns remain part of the canonical task and can cross to the other harness normally. A selection that produces no trustworthy server-visible activity can be impossible to distinguish from the prior session; Relay keeps the previous binding rather than guessing.
+If native `/new`, `/resume`, or session navigation moves to another materialized session, Relay treats that native action as an intentional context reset. It rebinds the current task and imports completed turns, but does not retroactively append the prior task log behind them. Future completed turns remain part of the canonical task and can cross to the other harness normally.
+
+Codex exposes its selected thread through the app-server connection. OpenCode's `/sessions` navigation is local to its TUI, so on graceful detach Relay also recognizes OpenCode's exact `Continue opencode -s ...` epilogue from a bounded in-memory output tail. This allows an immediate switch after selecting a previously standalone OpenCode session without persisting terminal output. Relay validates the selected session's native working directory before adoption; a session from another workspace is not merged into the task.
 
 ## What is injected
 
@@ -110,6 +121,8 @@ By default:
 ```
 
 Relay creates directories with mode `0700` and files with mode `0600` on Unix-like systems. Index and task metadata carry an explicit storage version; current unversioned files migrate atomically on first safe access, while files from an unknown future format are never rewritten. Message storage is append-oriented and recoverable through small pending-turn and pending-handoff journals. Handoff reads retain at most the bounded context window described above. OpenCode native recovery uses cursor pages and keeps only visible conversation text. Task recovery and explicit history inspection may read the selected task's complete canonical log.
+
+OpenCode session adoption uses an additional in-memory exit tail capped at 8 KiB. It exists only for the current PTY process, is used to extract the exact continuation session ID, and is discarded without being written to disk. Relay does not retain a scrollback copy.
 
 Set `RELAY_DATA_DIR` to use another location.
 
