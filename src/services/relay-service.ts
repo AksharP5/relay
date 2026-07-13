@@ -19,7 +19,7 @@ export interface AskResult {
   readonly handedOffMessages: number;
 }
 
-const titleFromPrompt = (prompt: string) => {
+export const titleFromPrompt = (prompt: string) => {
   const singleLine = prompt.replaceAll(/\s+/g, " ").trim();
   return singleLine.length <= 64 ? singleLine : `${singleLine.slice(0, 61)}...`;
 };
@@ -38,6 +38,7 @@ export class RelayService extends Context.Service<
     readonly current: () => Effect.Effect<RelayThread, unknown>;
     readonly list: () => Effect.Effect<ReadonlyArray<RelayThread>, unknown>;
     readonly history: () => Effect.Effect<ReadonlyArray<RelayMessage>, unknown>;
+    readonly historyFor: (threadId: string) => Effect.Effect<ReadonlyArray<RelayMessage>, unknown>;
     readonly doctor: () => Effect.Effect<ReadonlyArray<HarnessStatus>>;
     readonly dataRoot: string;
   }
@@ -154,6 +155,10 @@ export class RelayService extends Context.Service<
         }),
       );
 
+      const historyFor = Effect.fn("RelayService.historyFor")((threadId: string) =>
+        store.messages(threadId),
+      );
+
       const doctor = Effect.fn("RelayService.doctor")(() =>
         Effect.all([harnesses.status("codex"), harnesses.status("opencode")], { concurrency: 2 }),
       );
@@ -166,6 +171,7 @@ export class RelayService extends Context.Service<
         current: store.current,
         list: store.list,
         history,
+        historyFor,
         doctor,
         dataRoot: store.root,
       };
