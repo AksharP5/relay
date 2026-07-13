@@ -9,10 +9,16 @@ import { CodexNativeBackend } from "./codex-backend.ts";
 import type { NativeRelayController } from "./controller.ts";
 import { NativeSessionUnavailable } from "./errors.ts";
 import { OpenCodeNativeBackend } from "./opencode-backend.ts";
-import { runNativeTui, type NativeTuiCommand, type NativeTuiExit } from "./pty-host.ts";
+import {
+  runNativeTui,
+  type NativeParentSignal,
+  type NativeTuiCommand,
+  type NativeTuiExit,
+} from "./pty-host.ts";
 import { selectHarness } from "./selector.ts";
 
 export interface NativeBackend {
+  readonly preparesColdHandoff?: boolean;
   readonly prepareSession: (input: {
     readonly sessionId?: string;
     readonly model?: string;
@@ -50,6 +56,7 @@ const startBackend = async (harness: Harness, cwd: string): Promise<NativeBacken
   if (harness === "codex") {
     const backend = await CodexNativeBackend.start(executable, cwd);
     return {
+      preparesColdHandoff: true,
       prepareSession: ({ sessionId, model, handoff, handoffOmittedMessages }) =>
         backend.prepareSession({
           ...(sessionId ? { sessionId } : {}),
@@ -114,8 +121,8 @@ const defaultDependencies: NativeRelayHostDependencies = {
   signalSource: process,
 };
 
-const signalExitCode = (signal: "SIGHUP" | "SIGTERM" | "SIGQUIT") =>
-  ({ SIGHUP: 129, SIGTERM: 143, SIGQUIT: 131 })[signal];
+const signalExitCode = (signal: NativeParentSignal) =>
+  ({ SIGHUP: 129, SIGINT: 130, SIGTERM: 143, SIGQUIT: 131 })[signal];
 
 const messagesOutsideTranscript = (
   messages: ReadonlyArray<RelayMessage>,
@@ -153,9 +160,19 @@ const synchronize = async (input: {
   const messages = input.sessionChanged
     ? messagesOutsideTranscript(delta.messages, turns)
     : delta.messages;
-  if (messages.length > 0) await backend.inject(sessionId, messages, delta.omittedMessages);
+  let thread = input.thread;
+  if (messages.length > 0) {
+    thread = await controller.beginHandoff({
+      threadId: input.thread.id,
+      harness,
+      sessionId,
+      fromSeq: delta.binding?.lastSyncedSeq ?? 0,
+      throughSeq: delta.thread.lastSeq,
+    });
+    await backend.inject(sessionId, messages, delta.omittedMessages);
+  }
 
-  let thread = await controller.bind({
+  thread = await controller.bind({
     threadId: input.thread.id,
     harness,
     sessionId,
@@ -180,9 +197,12 @@ const runHarness = async (
   initialThread: RelayThread,
   harness: Harness,
   dependencies: NativeRelayHostDependencies,
-  getSignal: () => "SIGHUP" | "SIGTERM" | "SIGQUIT" | undefined,
+  getSignal: () => NativeParentSignal | undefined,
 ): Promise<{ readonly thread: RelayThread; readonly exit: NativeTuiExit }> => {
   let thread = await controller.switchHarness(initialThread.id, harness);
+  if (thread.pendingHandoffs?.[harness]) {
+    thread = await controller.abandonHandoff(thread.id, harness);
+  }
   const backend = await dependencies.startBackend(harness, thread.cwd);
   try {
     const startupSignal = getSignal();
@@ -200,6 +220,14 @@ const runHarness = async (
       // Passing Relay's last-known model on every resume would overwrite it.
       launchModel = binding ? undefined : storedModel;
       initialDelta = await controller.delta(thread.id, harness);
+      if (!binding && initialDelta.messages.length > 0 && backend.preparesColdHandoff) {
+        thread = await controller.beginHandoff({
+          threadId: thread.id,
+          harness,
+          fromSeq: 0,
+          throughSeq: initialDelta.thread.lastSeq,
+        });
+      }
       try {
         prepared = await backend.prepareSession({
           ...(binding ? { sessionId: binding.sessionId } : {}),
@@ -284,14 +312,16 @@ export const launchNativeRelay = async (
   overrides: Partial<NativeRelayHostDependencies> = {},
 ) => {
   const dependencies = { ...defaultDependencies, ...overrides };
-  let pendingSignal: "SIGHUP" | "SIGTERM" | "SIGQUIT" | undefined;
-  const onSignal = (signal: "SIGHUP" | "SIGTERM" | "SIGQUIT") => {
+  let pendingSignal: NativeParentSignal | undefined;
+  const onSignal = (signal: NativeParentSignal) => {
     pendingSignal ??= signal;
   };
   const onHangup = () => onSignal("SIGHUP");
+  const onInterrupt = () => onSignal("SIGINT");
   const onTerminate = () => onSignal("SIGTERM");
   const onQuit = () => onSignal("SIGQUIT");
   dependencies.signalSource.on("SIGHUP", onHangup);
+  dependencies.signalSource.on("SIGINT", onInterrupt);
   dependencies.signalSource.on("SIGTERM", onTerminate);
   dependencies.signalSource.on("SIGQUIT", onQuit);
 
@@ -335,6 +365,7 @@ export const launchNativeRelay = async (
   } finally {
     await lease?.release();
     dependencies.signalSource.off("SIGHUP", onHangup);
+    dependencies.signalSource.off("SIGINT", onInterrupt);
     dependencies.signalSource.off("SIGTERM", onTerminate);
     dependencies.signalSource.off("SIGQUIT", onQuit);
   }

@@ -29,6 +29,16 @@ export const HarnessBinding = Schema.Struct({
 });
 export type HarnessBinding = typeof HarnessBinding.Type;
 
+export const PendingNativeHandoff = Schema.Struct({
+  id: Schema.String,
+  harness: Harness,
+  sessionId: Schema.optional(Schema.String),
+  fromSeq: Schema.Number,
+  throughSeq: Schema.Number,
+  createdAt: Schema.String,
+});
+export type PendingNativeHandoff = typeof PendingNativeHandoff.Type;
+
 export const RelayThread = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
@@ -42,6 +52,12 @@ export const RelayThread = Schema.Struct({
     Schema.Struct({
       codex: Schema.optional(Schema.String),
       opencode: Schema.optional(Schema.String),
+    }),
+  ),
+  pendingHandoffs: Schema.optional(
+    Schema.Struct({
+      codex: Schema.optional(PendingNativeHandoff),
+      opencode: Schema.optional(PendingNativeHandoff),
     }),
   ),
   lastSeq: Schema.Number,

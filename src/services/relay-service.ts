@@ -84,6 +84,17 @@ export class RelayService extends Context.Service<
       readonly nativeCursor?: string;
       readonly model?: string;
     }) => Effect.Effect<RelayThread, unknown>;
+    readonly beginNativeHandoff: (input: {
+      readonly threadId: string;
+      readonly harness: Harness;
+      readonly sessionId?: string;
+      readonly fromSeq: number;
+      readonly throughSeq: number;
+    }) => Effect.Effect<RelayThread, unknown>;
+    readonly abandonNativeHandoff: (
+      threadId: string,
+      harness: Harness,
+    ) => Effect.Effect<RelayThread, unknown>;
     readonly importNativeTurns: (input: {
       readonly threadId: string;
       readonly harness: Harness;
@@ -362,6 +373,36 @@ export class RelayService extends Context.Service<
           }),
       );
 
+      const beginNativeHandoff = Effect.fn("RelayService.beginNativeHandoff")(
+        (input: {
+          readonly threadId: string;
+          readonly harness: Harness;
+          readonly sessionId?: string;
+          readonly fromSeq: number;
+          readonly throughSeq: number;
+        }) =>
+          Effect.gen(function* () {
+            const lock = yield* store.acquireLock(input.threadId);
+            return yield* Effect.gen(function* () {
+              const thread = yield* store.get(input.threadId);
+              yield* validateNativeCwd(thread);
+              return yield* store.beginNativeHandoff(thread, input);
+            }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+          }),
+      );
+
+      const abandonNativeHandoff = Effect.fn("RelayService.abandonNativeHandoff")(
+        (threadId: string, harness: Harness) =>
+          Effect.gen(function* () {
+            const lock = yield* store.acquireLock(threadId);
+            return yield* Effect.gen(function* () {
+              const thread = yield* store.get(threadId);
+              yield* validateNativeCwd(thread);
+              return yield* store.abandonNativeHandoff(thread, harness);
+            }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+          }),
+      );
+
       const importNativeTurns = Effect.fn("RelayService.importNativeTurns")(
         (input: {
           readonly threadId: string;
@@ -409,6 +450,8 @@ export class RelayService extends Context.Service<
         control,
         nativeDelta,
         bindNativeSession,
+        beginNativeHandoff,
+        abandonNativeHandoff,
         importNativeTurns,
         acquireNativeLease: store.acquireRunLease,
         switchNativeHarness: (threadId, harness) => switchNativeHarness(harness, threadId),

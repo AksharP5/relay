@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { Effect } from "effect";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,69 @@ afterAll(async () => {
 });
 
 describe("native transcript storage", () => {
+  it("recovers a stale run lease without allowing concurrent owners", async () => {
+    const created = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        return yield* store.create({
+          title: "Lease race",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+    const stale = join(directory, "run-locks", created.id);
+    await mkdir(stale, { recursive: true });
+    await writeFile(
+      join(stale, "owner.json"),
+      `${JSON.stringify({ pid: 2_147_483_647, createdAt: "2020-01-01T00:00:00.000Z" })}\n`,
+    );
+
+    const acquire = () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.acquireRunLease(created.id);
+        }).pipe(Effect.provide(ThreadStore.layer)),
+      );
+    const attempts = await Promise.allSettled(Array.from({ length: 50 }, acquire));
+    const owners = attempts.flatMap((attempt) =>
+      attempt.status === "fulfilled" ? [attempt.value] : [],
+    );
+    expect(owners.length).toBeLessThanOrEqual(1);
+    await Promise.all(owners.map((owner) => owner.release()));
+
+    const retry = await acquire();
+    await retry.release();
+  });
+
+  it("releasing an old lease cannot remove a newer owner's claim", async () => {
+    const created = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        return yield* store.create({
+          title: "Lease ownership",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+    const acquire = () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.acquireRunLease(created.id);
+        }).pipe(Effect.provide(ThreadStore.layer)),
+      );
+
+    const first = await acquire();
+    await first.release();
+    const second = await acquire();
+    await first.release();
+    await expect(acquire()).rejects.toThrow("already open");
+    await second.release();
+  });
+
   it("binds an empty session and idempotently imports native turns", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -96,13 +159,23 @@ describe("native transcript storage", () => {
           (yield* store.messagesSince(created.id, 0)).messages.map((message) => message.content),
         ).toEqual(["keep", "kept"]);
 
-        const redone = yield* store.importNativeTurns(undone, {
+        const reopenedCodex = yield* store.bindNativeSession(undone, {
+          harness: "codex",
+          sessionId: "codex-after-undo",
+          lastSyncedSeq: undone.lastSeq,
+        });
+
+        const redone = yield* store.importNativeTurns(reopenedCodex, {
           harness: "opencode",
           sessionId: "opencode-session",
           turns,
           hiddenTurnIds: [],
         });
         expect(redone.lastSeq).toBe(4);
+        expect(redone.bindings.codex).toBeUndefined();
+        expect(
+          (yield* store.messagesSince(created.id, 0)).messages.map((message) => message.content),
+        ).toEqual(["keep", "kept", "undo", "undone"]);
         expect((yield* store.messages(created.id)).map((message) => message.content)).toEqual([
           "keep",
           "kept",

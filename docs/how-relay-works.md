@@ -105,13 +105,14 @@ By default:
       native-visibility.json  # created when native IDs or undo state need linking
 ```
 
-Relay creates directories with mode `0700` and files with mode `0600` on Unix-like systems. Message storage is append-oriented and recoverable through a small pending-turn journal. Reads stream and bound the retained window rather than loading an unlimited transcript into memory.
+Relay creates directories with mode `0700` and files with mode `0600` on Unix-like systems. Message storage is append-oriented and recoverable through small pending-turn and pending-handoff journals. Reads stream and bound the retained window rather than loading an unlimited transcript into memory.
 
 Set `RELAY_DATA_DIR` to use another location.
 
 ## Failure behavior
 
 - A task-wide run lease prevents a second Relay TUI, headless turn, or native control from using the same task concurrently. Short state locks still protect metadata transitions inside the owning TUI.
+- Before changing a vendor session, Relay journals the handoff and clears that journal in the same metadata update that advances the cursor. If Relay stops in between, the next launch retires the uncertain binding and performs one clean bounded handoff into a fresh session. The abandoned vendor session may remain in that harness's history, but Relay will not append the batch to it again.
 - A definitively deleted vendor session is replaced once with a cold session and the bounded canonical handoff. Transient, authentication, and generic protocol failures do not discard bindings.
 - A task cannot run from a different working directory without explicit selection or creation there.
 - Binding and synchronization cursors advance only after confirmed operations.

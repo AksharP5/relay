@@ -33,6 +33,7 @@ const makeController = () => {
       const after = thread.bindings[harness]?.lastSyncedSeq ?? 0;
       return {
         thread,
+        ...(thread.bindings[harness] ? { binding: thread.bindings[harness] } : {}),
         messages: messages.filter((message) => message.seq > after),
         omittedMessages: 0,
       };
@@ -51,6 +52,34 @@ const makeController = () => {
         ...thread,
         activeHarness: input.harness,
         bindings: { ...thread.bindings, [input.harness]: binding },
+        pendingHandoffs: { ...thread.pendingHandoffs, [input.harness]: undefined },
+      };
+      return thread;
+    },
+    beginHandoff: async (input) => {
+      thread = {
+        ...thread,
+        pendingHandoffs: {
+          ...thread.pendingHandoffs,
+          [input.harness]: {
+            id: `pending-${input.harness}`,
+            harness: input.harness,
+            ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+            fromSeq: input.fromSeq,
+            throughSeq: input.throughSeq,
+            createdAt: now,
+          },
+        },
+      };
+      return thread;
+    },
+    abandonHandoff: async (_threadId, harness) => {
+      const bindings = { ...thread.bindings };
+      delete bindings[harness];
+      thread = {
+        ...thread,
+        bindings,
+        pendingHandoffs: { ...thread.pendingHandoffs, [harness]: undefined },
       };
       return thread;
     },
@@ -126,14 +155,14 @@ describe("native Relay host", () => {
     expect(events).toEqual(["lease acquired", "backend started", "lease released"]);
   });
 
-  it("closes a detached backend when termination arrives before the native TUI", async () => {
+  it("closes a detached backend when an external interrupt arrives before the native TUI", async () => {
     const { controller } = makeController();
     const signals = new EventEmitter();
     let closed = false;
     let launched = false;
     const backend: NativeBackend = {
       prepareSession: async () => {
-        signals.emit("SIGTERM");
+        signals.emit("SIGINT");
         return { handoffInjected: false };
       },
       inject: async () => {},
@@ -154,13 +183,13 @@ describe("native Relay host", () => {
           return { reason: "exit", exitCode: 0 };
         },
       });
-      expect(process.exitCode).toBe(143);
+      expect(process.exitCode).toBe(130);
     } finally {
       process.exitCode = previousExitCode ?? 0;
     }
     expect(launched).toBe(false);
     expect(closed).toBe(true);
-    expect(signals.listenerCount("SIGTERM")).toBe(0);
+    expect(signals.listenerCount("SIGINT")).toBe(0);
   });
 
   it("imports a native turn, hands it to the other harness, and keeps one backend alive", async () => {
@@ -491,6 +520,142 @@ describe("native Relay host", () => {
       "out-of-band answer",
     ]);
   });
+
+  it("abandons an uncertain native handoff before retrying on a fresh session", async () => {
+    const { controller: base, thread } = makeController();
+    await base.importTurns({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "codex-session",
+      turns: [{ id: "codex-turn", prompt: "preserve", response: "preserved" }],
+    });
+    await base.bind({
+      threadId: "relay-thread",
+      harness: "opencode",
+      sessionId: "old-opencode-session",
+      lastSyncedSeq: 0,
+    });
+
+    let failCursorCommit = true;
+    const controller: NativeRelayController = {
+      ...base,
+      bind: async (input) => {
+        if (failCursorCommit && input.harness === "opencode" && input.lastSyncedSeq === 2) {
+          throw new Error("simulated crash after vendor injection");
+        }
+        return base.bind(input);
+      },
+    };
+    const injections: Array<{ sessionId: string; contents: Array<string> }> = [];
+    const startBackend = async (): Promise<NativeBackend> => ({
+      prepareSession: async (input) => ({
+        sessionId: input.sessionId ?? "fresh-opencode-session",
+        handoffInjected: false,
+      }),
+      inject: async (sessionId, messages) =>
+        void injections.push({
+          sessionId,
+          contents: messages.map((message) => message.content),
+        }),
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      isIdle: async () => true,
+      resolveSession: async (fallback) => fallback,
+      command: () => ({ executable: "opencode", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    });
+
+    await expect(
+      launchNativeRelay(controller, {
+        startBackend,
+        runTui: async () => ({ reason: "exit", exitCode: 0 }),
+      }),
+    ).rejects.toThrow("simulated crash after vendor injection");
+    expect(thread().pendingHandoffs?.opencode?.sessionId).toBe("old-opencode-session");
+
+    failCursorCommit = false;
+    await launchNativeRelay(controller, {
+      startBackend,
+      runTui: async () => ({ reason: "exit", exitCode: 0 }),
+    });
+
+    expect(injections).toEqual([
+      {
+        sessionId: "old-opencode-session",
+        contents: ["preserve", "preserved"],
+      },
+      {
+        sessionId: "fresh-opencode-session",
+        contents: ["preserve", "preserved"],
+      },
+    ]);
+    expect(thread().bindings.opencode?.sessionId).toBe("fresh-opencode-session");
+    expect(thread().pendingHandoffs?.opencode).toBeUndefined();
+  });
+
+  it("journals a cold Codex handoff before the backend creates its session", async () => {
+    const { controller: base, thread } = makeController();
+    await base.importTurns({
+      threadId: "relay-thread",
+      harness: "opencode",
+      sessionId: "opencode-session",
+      turns: [{ id: "opencode-turn", prompt: "carry", response: "carried" }],
+    });
+    await base.switchHarness("relay-thread", "codex");
+
+    let failCursorCommit = true;
+    const controller: NativeRelayController = {
+      ...base,
+      bind: async (input) => {
+        if (failCursorCommit && input.harness === "codex" && input.lastSyncedSeq === 2) {
+          throw new Error("simulated cold handoff crash");
+        }
+        return base.bind(input);
+      },
+    };
+    const prepared: Array<{ sessionId: string; contents: Array<string> }> = [];
+    let sessionNumber = 0;
+    const startBackend = async (): Promise<NativeBackend> => ({
+      preparesColdHandoff: true,
+      prepareSession: async (input) => {
+        const sessionId = `cold-codex-${++sessionNumber}`;
+        prepared.push({
+          sessionId,
+          contents: input.handoff.map((message) => message.content),
+        });
+        return { sessionId, handoffInjected: true };
+      },
+      inject: async () => {
+        throw new Error("cold Codex handoff must use prepareSession");
+      },
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      isMaterialized: async () => true,
+      isIdle: async () => true,
+      resolveSession: async (fallback) => fallback,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    });
+
+    await expect(
+      launchNativeRelay(controller, {
+        startBackend,
+        runTui: async () => ({ reason: "exit", exitCode: 0 }),
+      }),
+    ).rejects.toThrow("simulated cold handoff crash");
+    expect(thread().pendingHandoffs?.codex?.sessionId).toBeUndefined();
+
+    failCursorCommit = false;
+    await launchNativeRelay(controller, {
+      startBackend,
+      runTui: async () => ({ reason: "exit", exitCode: 0 }),
+    });
+
+    expect(prepared).toEqual([
+      { sessionId: "cold-codex-1", contents: ["carry", "carried"] },
+      { sessionId: "cold-codex-2", contents: ["carry", "carried"] },
+    ]);
+    expect(thread().bindings.codex?.sessionId).toBe("cold-codex-2");
+    expect(thread().pendingHandoffs?.codex).toBeUndefined();
+  });
 });
 
 describe("native harness selector", () => {
@@ -540,11 +705,11 @@ describe("native harness selector", () => {
       output: { write: (value) => void output.push(String(value)) },
       signalSource: signals,
     });
-    signals.emit("SIGTERM");
+    signals.emit("SIGINT");
 
     expect(await selection).toBeUndefined();
     expect(input.isRaw).toBe(false);
-    expect(signals.listenerCount("SIGTERM")).toBe(0);
+    expect(signals.listenerCount("SIGINT")).toBe(0);
     expect(output.join("")).toContain("\u001b[?1049l");
   });
 });

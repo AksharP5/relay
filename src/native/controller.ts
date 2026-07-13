@@ -1,7 +1,13 @@
 import { Effect, ManagedRuntime } from "effect";
 import { resolve } from "node:path";
 
-import type { Harness, NativeTranscriptTurn, RelayMessage, RelayThread } from "../domain.ts";
+import type {
+  Harness,
+  HarnessBinding,
+  NativeTranscriptTurn,
+  RelayMessage,
+  RelayThread,
+} from "../domain.ts";
 import { RelayService } from "../services/relay-service.ts";
 
 export interface NativeRelayController {
@@ -13,6 +19,7 @@ export interface NativeRelayController {
     harness: Harness,
   ) => Promise<{
     readonly thread: RelayThread;
+    readonly binding?: HarnessBinding;
     readonly messages: ReadonlyArray<RelayMessage>;
     readonly omittedMessages: number;
   }>;
@@ -24,6 +31,14 @@ export interface NativeRelayController {
     readonly nativeCursor?: string;
     readonly model?: string;
   }) => Promise<RelayThread>;
+  readonly beginHandoff: (input: {
+    readonly threadId: string;
+    readonly harness: Harness;
+    readonly sessionId?: string;
+    readonly fromSeq: number;
+    readonly throughSeq: number;
+  }) => Promise<RelayThread>;
+  readonly abandonHandoff: (threadId: string, harness: Harness) => Promise<RelayThread>;
   readonly importTurns: (input: {
     readonly threadId: string;
     readonly harness: Harness;
@@ -86,6 +101,20 @@ export const makeNativeRelayController = (
         Effect.gen(function* () {
           const relay = yield* RelayService;
           return yield* relay.bindNativeSession(input);
+        }),
+      ),
+    beginHandoff: (input) =>
+      run(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          return yield* relay.beginNativeHandoff(input);
+        }),
+      ),
+    abandonHandoff: (threadId, harness) =>
+      run(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          return yield* relay.abandonNativeHandoff(threadId, harness);
         }),
       ),
     importTurns: (input) =>

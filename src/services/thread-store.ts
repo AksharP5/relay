@@ -1,5 +1,15 @@
 import { Context, Effect, Layer, Schema } from "effect";
-import { appendFile, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname } from "node:path";
 import { NoCurrentThread, StoreError, ThreadBusy, ThreadNotFound } from "../errors.ts";
 import {
@@ -272,18 +282,34 @@ const readUndoState = async (id: string): Promise<UndoState> => {
   return { entries };
 };
 
+const claimState = async (path: string): Promise<"live" | "starting" | "stale"> => {
+  try {
+    const owner = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown };
+    return typeof owner.pid === "number" && processIsAlive(owner.pid) ? "live" : "stale";
+  } catch {
+    try {
+      return Date.now() - (await stat(path)).mtimeMs < 5 * 60 * 1000 ? "starting" : "stale";
+    } catch {
+      return "stale";
+    }
+  }
+};
+
 async function liveLockExists(id: string) {
   const path = lockPath(id);
   try {
-    const owner = JSON.parse(await readFile(`${path}/owner.json`, "utf8")) as { pid?: unknown };
-    return typeof owner.pid === "number" && processIsAlive(owner.pid);
-  } catch {
-    try {
-      return Date.now() - (await stat(path)).mtimeMs < 5 * 60 * 1000;
-    } catch {
-      return false;
+    for (const entry of await readdir(path)) {
+      if (!entry.endsWith(".json")) continue;
+      const claim = `${path}/${entry}`;
+      const state = await claimState(claim);
+      if (state !== "stale") return true;
+      await rm(claim, { force: true });
     }
+  } catch (cause) {
+    const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+    if (code !== "ENOENT") throw cause;
   }
+  return false;
 }
 
 const recoverThread = async (thread: RelayThread): Promise<RelayThread> => {
@@ -347,51 +373,32 @@ async function acquireLockAt(
   startingMessage: string,
 ) {
   await ensureBase();
+  const token = crypto.randomUUID();
+  await secureDirectory(path);
+  const claim = `${path}/${token}.json`;
+  await atomicJsonWrite(claim, {
+    pid: process.pid,
+    token,
+    createdAt: new Date().toISOString(),
+  });
 
-  const acquire = async (allowStaleRemoval: boolean): Promise<void> => {
-    try {
-      await mkdir(path, { mode: 0o700 });
-      await writeFile(
-        `${path}/owner.json`,
-        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
-        {
-          encoding: "utf8",
-          mode: 0o600,
-        },
-      );
-    } catch (cause) {
-      const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
-      if (code !== "EEXIST" || !allowStaleRemoval) throw cause;
+  let conflict: "live" | "starting" | undefined;
+  for (const entry of await readdir(path)) {
+    if (!entry.endsWith(".json") || entry === `${token}.json`) continue;
+    const otherClaim = `${path}/${entry}`;
+    const state = await claimState(otherClaim);
+    if (state === "stale") await rm(otherClaim, { force: true });
+    else conflict ??= state;
+  }
+  if (conflict) {
+    await rm(claim, { force: true });
+    throw new ThreadBusy({
+      threadId: id,
+      message: conflict === "live" ? busyMessage : startingMessage,
+    });
+  }
 
-      let ownerPid: number | undefined;
-      try {
-        const owner = JSON.parse(await readFile(`${path}/owner.json`, "utf8")) as { pid?: unknown };
-        if (typeof owner.pid === "number") ownerPid = owner.pid;
-      } catch {
-        // A process can crash between creating the directory and writing its owner file.
-      }
-      if (ownerPid !== undefined && processIsAlive(ownerPid)) {
-        throw new ThreadBusy({
-          threadId: id,
-          message: busyMessage,
-        });
-      }
-      if (ownerPid === undefined) {
-        const ageMs = Date.now() - (await stat(path)).mtimeMs;
-        if (ageMs < 5 * 60 * 1000) {
-          throw new ThreadBusy({
-            threadId: id,
-            message: startingMessage,
-          });
-        }
-      }
-      await rm(path, { recursive: true, force: true });
-      await acquire(false);
-    }
-  };
-
-  await acquire(true);
-  return { release: () => rm(path, { recursive: true, force: true }) };
+  return { release: () => rm(claim, { force: true }) };
 }
 
 const acquireThreadLock = (id: string) =>
@@ -441,6 +448,13 @@ export interface ImportNativeTurnsInput {
   readonly model?: string;
 }
 
+export interface BeginNativeHandoffInput {
+  readonly harness: Harness;
+  readonly sessionId?: string;
+  readonly fromSeq: number;
+  readonly throughSeq: number;
+}
+
 export class ThreadStore extends Context.Service<
   ThreadStore,
   {
@@ -487,6 +501,14 @@ export class ThreadStore extends Context.Service<
     readonly bindNativeSession: (
       thread: RelayThread,
       input: BindNativeSessionInput,
+    ) => Effect.Effect<RelayThread, StoreError>;
+    readonly beginNativeHandoff: (
+      thread: RelayThread,
+      input: BeginNativeHandoffInput,
+    ) => Effect.Effect<RelayThread, StoreError>;
+    readonly abandonNativeHandoff: (
+      thread: RelayThread,
+      harness: Harness,
     ) => Effect.Effect<RelayThread, StoreError>;
     readonly importNativeTurns: (
       thread: RelayThread,
@@ -784,6 +806,10 @@ export class ThreadStore extends Context.Service<
                 ...thread.preferredModels,
                 ...(binding.model ? { [input.harness]: binding.model } : {}),
               },
+              pendingHandoffs: {
+                ...thread.pendingHandoffs,
+                [input.harness]: undefined,
+              },
               updatedAt: now,
             };
             await atomicJsonWrite(metadataPath(thread.id), updated);
@@ -792,6 +818,71 @@ export class ThreadStore extends Context.Service<
           catch: (cause) =>
             new StoreError({
               operation: "bind native session",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    beginNativeHandoff: Effect.fn("ThreadStore.beginNativeHandoff")(
+      (thread: RelayThread, input: BeginNativeHandoffInput) =>
+        Effect.tryPromise({
+          try: async () => {
+            const now = new Date().toISOString();
+            const updated: RelayThread = {
+              ...thread,
+              pendingHandoffs: {
+                ...thread.pendingHandoffs,
+                [input.harness]: {
+                  id: crypto.randomUUID(),
+                  harness: input.harness,
+                  ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+                  fromSeq: input.fromSeq,
+                  throughSeq: input.throughSeq,
+                  createdAt: now,
+                },
+              },
+              updatedAt: now,
+            };
+            await atomicJsonWrite(metadataPath(thread.id), updated);
+            return updated;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "journal native handoff",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    abandonNativeHandoff: Effect.fn("ThreadStore.abandonNativeHandoff")(
+      (thread: RelayThread, harness: Harness) =>
+        Effect.tryPromise({
+          try: async () => {
+            const bindings = { ...thread.bindings };
+            delete bindings[harness];
+            const updated: RelayThread = {
+              ...thread,
+              bindings,
+              preferredModels: {
+                ...thread.preferredModels,
+                ...(thread.bindings[harness]?.model
+                  ? { [harness]: thread.bindings[harness].model }
+                  : {}),
+              },
+              pendingHandoffs: {
+                ...thread.pendingHandoffs,
+                [harness]: undefined,
+              },
+              updatedAt: new Date().toISOString(),
+            };
+            await atomicJsonWrite(metadataPath(thread.id), updated);
+            return updated;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "recover uncertain native handoff",
               message: errorMessage(cause),
               cause,
             }),
@@ -916,9 +1007,11 @@ export class ThreadStore extends Context.Service<
               if (hiddenIds.has(nativeId)) hidden.add(key);
               else hidden.delete(key);
             }
-            const newlyHidden = [...hidden].some((key) => !hiddenBefore.has(key));
+            const visibilityChanged =
+              hidden.size !== hiddenBefore.size ||
+              [...hidden].some((key) => !hiddenBefore.has(key));
             const bindings = { ...thread.bindings, [input.harness]: binding };
-            if (newlyHidden) {
+            if (visibilityChanged) {
               const other = input.harness === "codex" ? "opencode" : "codex";
               delete bindings[other];
             }
@@ -1036,6 +1129,10 @@ export class ThreadStore extends Context.Service<
               ...(thread.bindings[harness]?.model
                 ? { [harness]: thread.bindings[harness].model }
                 : {}),
+            },
+            pendingHandoffs: {
+              ...thread.pendingHandoffs,
+              [harness]: undefined,
             },
             updatedAt: new Date().toISOString(),
           };
