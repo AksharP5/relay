@@ -24,6 +24,7 @@ interface HostInput extends EventEmitter {
   readonly isTTY?: boolean;
   readonly isRaw?: boolean;
   setRawMode?: (enabled: boolean) => unknown;
+  isPaused?: () => boolean;
   resume: () => unknown;
   pause?: () => unknown;
 }
@@ -78,6 +79,7 @@ export const runNativeTui = async (
 
   const router = new NativeInputRouter();
   const initialRawMode = io.input.isRaw === true;
+  const inputNeedsReadRearm = io.input.isPaused?.() === true;
   let switchRequested = false;
   let switchCheckPending = false;
   let parentSignal: NativeParentSignal | undefined;
@@ -242,6 +244,13 @@ export const runNativeTui = async (
     io.resizeSource.on("SIGTERM", onTerminate);
     io.resizeSource.on("SIGQUIT", onQuit);
     io.input.resume();
+    if (inputNeedsReadRearm) {
+      // Bun can miss the TTY readiness edge when terminal capability replies
+      // arrive while stdin is paused between native harnesses. Re-arm the read
+      // watcher once after every paused-to-flowing transition.
+      io.input.pause?.();
+      io.input.resume();
+    }
 
     const exitCode = await child.exited;
     if (stopping) await stopping;

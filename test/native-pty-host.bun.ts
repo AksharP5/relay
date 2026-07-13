@@ -7,6 +7,7 @@ import { runNativeTui } from "../src/native/pty-host.ts";
 class TestInput extends EventEmitter {
   isTTY = true;
   isRaw = false;
+  paused = false;
   readonly rawModes: Array<boolean> = [];
   pauseCalls = 0;
 
@@ -15,18 +16,43 @@ class TestInput extends EventEmitter {
     this.rawModes.push(enabled);
   }
 
-  resume() {}
+  isPaused() {
+    return this.paused;
+  }
+  resume() {
+    this.paused = false;
+  }
   pause() {
+    this.paused = true;
     this.pauseCalls += 1;
   }
 }
 
 class QueuedResumeInput extends TestInput {
-  resumeInput: Uint8Array | undefined;
+  #resumeInput: Uint8Array | undefined;
+  #firstResumeAttempted = false;
+  #readRearmed = false;
+
+  queueForPausedReadRearm(input: Uint8Array) {
+    this.#resumeInput = input;
+    this.#firstResumeAttempted = false;
+    this.#readRearmed = false;
+  }
+
+  override pause() {
+    super.pause();
+    if (this.#firstResumeAttempted) this.#readRearmed = true;
+  }
 
   override resume() {
-    const input = this.resumeInput;
-    this.resumeInput = undefined;
+    super.resume();
+    if (this.#resumeInput && !this.#firstResumeAttempted) {
+      this.#firstResumeAttempted = true;
+      return;
+    }
+    if (!this.#readRearmed) return;
+    const input = this.#resumeInput;
+    this.#resumeInput = undefined;
     if (input) this.emit("data", input);
   }
 }
@@ -232,7 +258,7 @@ describe("native PTY host", () => {
     expect(await first).toEqual({ reason: "switch" });
 
     const secondResize = new EventEmitter();
-    input.resumeInput = Buffer.from("\u001b[17~");
+    input.queueForPausedReadRearm(Buffer.from("\u001b[17~"));
     const second = runNativeTui(command, {
       input,
       output: new TestOutput(),
