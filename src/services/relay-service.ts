@@ -3,7 +3,9 @@ import { resolve } from "node:path";
 import type {
   Harness,
   HarnessCapabilities,
+  HarnessBinding,
   HarnessTurnProgress,
+  NativeTranscriptTurn,
   RelayPreferences,
   RelayMessage,
   RelayThread,
@@ -29,6 +31,13 @@ export interface AskResult {
   readonly response: RelayMessage;
   readonly createdBinding: boolean;
   readonly handedOffMessages: number;
+}
+
+export interface NativeDelta {
+  readonly thread: RelayThread;
+  readonly binding?: HarnessBinding;
+  readonly messages: ReadonlyArray<RelayMessage>;
+  readonly omittedMessages: number;
 }
 
 export const titleFromPrompt = (prompt: string) => {
@@ -76,6 +85,25 @@ export class RelayService extends Context.Service<
       readonly harness?: Harness;
       readonly threadId?: string;
     }) => Effect.Effect<{ readonly thread: RelayThread; readonly message: string }, unknown>;
+    readonly nativeDelta: (
+      threadId: string,
+      harness: Harness,
+    ) => Effect.Effect<NativeDelta, unknown>;
+    readonly bindNativeSession: (input: {
+      readonly threadId: string;
+      readonly harness: Harness;
+      readonly sessionId: string;
+      readonly lastSyncedSeq: number;
+      readonly nativeCursor?: string;
+      readonly model?: string;
+    }) => Effect.Effect<RelayThread, unknown>;
+    readonly importNativeTurns: (input: {
+      readonly threadId: string;
+      readonly harness: Harness;
+      readonly sessionId: string;
+      readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+      readonly model?: string;
+    }) => Effect.Effect<RelayThread, unknown>;
     readonly dataRoot: string;
   }
 >()("@relay/RelayService") {
@@ -279,6 +307,63 @@ export class RelayService extends Context.Service<
           }),
       );
 
+      const validateNativeCwd = (thread: RelayThread) =>
+        resolve(process.cwd()) === resolve(thread.cwd)
+          ? Effect.void
+          : Effect.fail(
+              new CliError({
+                message: `This task belongs to ${thread.cwd}. Run Relay there, or select/create a task for ${process.cwd()}.`,
+              }),
+            );
+
+      const nativeDelta = Effect.fn("RelayService.nativeDelta")(
+        (threadId: string, harness: Harness) =>
+          Effect.gen(function* () {
+            const thread = yield* store.get(threadId);
+            yield* validateNativeCwd(thread);
+            const binding = thread.bindings[harness];
+            const delta = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
+            return { thread, ...(binding ? { binding } : {}), ...delta };
+          }),
+      );
+
+      const bindNativeSession = Effect.fn("RelayService.bindNativeSession")(
+        (input: {
+          readonly threadId: string;
+          readonly harness: Harness;
+          readonly sessionId: string;
+          readonly lastSyncedSeq: number;
+          readonly nativeCursor?: string;
+          readonly model?: string;
+        }) =>
+          Effect.gen(function* () {
+            const lock = yield* store.acquireLock(input.threadId);
+            return yield* Effect.gen(function* () {
+              const thread = yield* store.get(input.threadId);
+              yield* validateNativeCwd(thread);
+              return yield* store.bindNativeSession(thread, input);
+            }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+          }),
+      );
+
+      const importNativeTurns = Effect.fn("RelayService.importNativeTurns")(
+        (input: {
+          readonly threadId: string;
+          readonly harness: Harness;
+          readonly sessionId: string;
+          readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+          readonly model?: string;
+        }) =>
+          Effect.gen(function* () {
+            const lock = yield* store.acquireLock(input.threadId);
+            return yield* Effect.gen(function* () {
+              const thread = yield* store.get(input.threadId);
+              yield* validateNativeCwd(thread);
+              return yield* store.importNativeTurns(thread, input);
+            }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+          }),
+      );
+
       return {
         newThread,
         ask,
@@ -296,6 +381,9 @@ export class RelayService extends Context.Service<
         setSwitchSkinWithHarness: preferences.setSwitchSkinWithHarness,
         setCommandImplementation: preferences.setCommandImplementation,
         control,
+        nativeDelta,
+        bindNativeSession,
+        importNativeTurns,
         dataRoot: store.root,
       };
     }),

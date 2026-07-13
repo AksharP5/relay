@@ -78,6 +78,9 @@ describe("TUI task routing", () => {
         Effect.succeed({ ...preferences, switchSkinWithHarness }),
       setCommandImplementation: () => Effect.succeed(preferences),
       control: () => Effect.die("not expected"),
+      nativeDelta: () => Effect.die("not expected"),
+      bindNativeSession: () => Effect.die("not expected"),
+      importNativeTurns: () => Effect.die("not expected"),
       dataRoot: "/tmp/relay-test",
     };
     const runtime = ManagedRuntime.make(Layer.succeed(RelayService, service));
@@ -128,6 +131,9 @@ describe("TUI task routing", () => {
         Effect.succeed({ ...preferences, switchSkinWithHarness }),
       setCommandImplementation: () => Effect.succeed(preferences),
       control: () => Effect.die("not expected"),
+      nativeDelta: () => Effect.die("not expected"),
+      bindNativeSession: () => Effect.die("not expected"),
+      importNativeTurns: () => Effect.die("not expected"),
       dataRoot: "/tmp/relay-test",
     };
     const runtime = ManagedRuntime.make(Layer.succeed(RelayService, service));

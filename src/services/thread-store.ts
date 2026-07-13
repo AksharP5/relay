@@ -686,7 +686,11 @@ export class ThreadStore extends Context.Service<
                   ? { model: existing.model }
                   : {}),
               lastSyncedSeq: input.lastSyncedSeq,
-              ...(input.nativeCursor ? { nativeCursor: input.nativeCursor } : {}),
+              ...(input.nativeCursor
+                ? { nativeCursor: input.nativeCursor }
+                : existing?.nativeCursor
+                  ? { nativeCursor: existing.nativeCursor }
+                  : {}),
               createdAt: existing?.createdAt ?? now,
               updatedAt: now,
             };

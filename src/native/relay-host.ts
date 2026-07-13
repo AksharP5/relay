@@ -1,0 +1,248 @@
+import type { Harness, NativeTranscriptTurn, RelayMessage, RelayThread } from "../domain.ts";
+import { CodexNativeBackend } from "./codex-backend.ts";
+import type { NativeRelayController } from "./controller.ts";
+import { OpenCodeNativeBackend } from "./opencode-backend.ts";
+import { runNativeTui, type NativeTuiCommand, type NativeTuiExit } from "./pty-host.ts";
+import { selectHarness } from "./selector.ts";
+
+export interface NativeBackend {
+  readonly prepareSession: (input: {
+    readonly sessionId?: string;
+    readonly model?: string;
+    readonly title: string;
+    readonly handoff: ReadonlyArray<RelayMessage>;
+  }) => Promise<{ readonly sessionId?: string; readonly handoffInjected: boolean }>;
+  readonly inject: (sessionId: string, messages: ReadonlyArray<RelayMessage>) => Promise<void>;
+  readonly read: (sessionId: string) => Promise<ReadonlyArray<NativeTranscriptTurn>>;
+  readonly isIdle: (sessionId: string) => Promise<boolean>;
+  readonly resolveSession: (fallbackSessionId?: string) => Promise<string | undefined>;
+  readonly command: (sessionId?: string, model?: string) => NativeTuiCommand;
+  readonly close: () => Promise<void>;
+}
+
+const executableFor = (harness: Harness) => {
+  const executable = Bun.which(harness);
+  if (!executable)
+    throw new Error(
+      `${harness} was not found in PATH. Install its latest release, then run relay doctor.`,
+    );
+  return executable;
+};
+
+const startBackend = async (harness: Harness, cwd: string): Promise<NativeBackend> => {
+  const executable = executableFor(harness);
+  if (harness === "codex") {
+    const backend = await CodexNativeBackend.start(executable, cwd);
+    return {
+      prepareSession: ({ sessionId, model, handoff }) =>
+        backend.prepareSession({
+          ...(sessionId ? { sessionId } : {}),
+          ...(model ? { model } : {}),
+          handoff,
+        }),
+      inject: (sessionId, messages) => backend.inject(sessionId, messages),
+      read: (sessionId) => backend.read(sessionId),
+      isIdle: (sessionId) => backend.isIdle(sessionId),
+      resolveSession: (sessionId) => backend.resolveSession(sessionId),
+      command: (sessionId, model) => backend.command(sessionId, model),
+      close: () => backend.close(),
+    };
+  }
+
+  const backend = await OpenCodeNativeBackend.start(executable, cwd);
+  return {
+    prepareSession: async ({ sessionId, title }) => ({
+      sessionId: await backend.ensureSession({ ...(sessionId ? { sessionId } : {}), title }),
+      handoffInjected: false,
+    }),
+    inject: (sessionId, messages) => backend.inject(sessionId, messages),
+    read: (sessionId) => backend.read(sessionId),
+    isIdle: (sessionId) => backend.isIdle(sessionId),
+    resolveSession: (sessionId) =>
+      sessionId ? backend.resolveSession(sessionId) : Promise.resolve(undefined),
+    command: (sessionId) => {
+      if (!sessionId) throw new Error("OpenCode did not create a native session");
+      return backend.command(sessionId);
+    },
+    close: () => backend.close(),
+  };
+};
+
+export interface NativeRelayHostDependencies {
+  readonly startBackend: (harness: Harness, cwd: string) => Promise<NativeBackend>;
+  readonly runTui: (
+    command: NativeTuiCommand,
+    onSwitchRequest: () => Promise<boolean>,
+  ) => Promise<NativeTuiExit>;
+  readonly selectHarness: (current: Harness) => Promise<Harness | undefined>;
+}
+
+const defaultDependencies: NativeRelayHostDependencies = {
+  startBackend,
+  runTui: (command, onSwitchRequest) =>
+    runNativeTui(
+      command,
+      { input: process.stdin, output: process.stdout, resizeSource: process },
+      { onSwitchRequest },
+    ),
+  selectHarness,
+};
+
+const messagesOutsideTranscript = (
+  messages: ReadonlyArray<RelayMessage>,
+  turns: ReadonlyArray<NativeTranscriptTurn>,
+) => {
+  const nativeIds = new Set(turns.map((turn) => turn.id));
+  return messages.filter((message) => !message.nativeId || !nativeIds.has(message.nativeId));
+};
+
+const synchronize = async (input: {
+  readonly controller: NativeRelayController;
+  readonly backend: NativeBackend;
+  readonly thread: RelayThread;
+  readonly harness: Harness;
+  readonly sessionId: string;
+  readonly sessionChanged: boolean;
+}) => {
+  const { controller, backend, harness, sessionId } = input;
+  const model = input.thread.bindings[harness]?.model ?? input.thread.preferredModels?.[harness];
+  const turns = await backend.read(sessionId);
+
+  if (input.sessionChanged) {
+    await controller.bind({
+      threadId: input.thread.id,
+      harness,
+      sessionId,
+      lastSyncedSeq: 0,
+      ...(turns.at(-1)?.id ? { nativeCursor: turns.at(-1)!.id } : {}),
+      ...(model ? { model } : {}),
+    });
+  } else {
+    await controller.importTurns({
+      threadId: input.thread.id,
+      harness,
+      sessionId,
+      turns,
+      ...(model ? { model } : {}),
+    });
+  }
+
+  const delta = await controller.delta(input.thread.id, harness);
+  const messages = input.sessionChanged
+    ? messagesOutsideTranscript(delta.messages, turns)
+    : delta.messages;
+  if (messages.length > 0) await backend.inject(sessionId, messages);
+
+  let thread = await controller.bind({
+    threadId: input.thread.id,
+    harness,
+    sessionId,
+    lastSyncedSeq: delta.thread.lastSeq,
+    ...(turns.at(-1)?.id ? { nativeCursor: turns.at(-1)!.id } : {}),
+    ...(model ? { model } : {}),
+  });
+
+  if (input.sessionChanged) {
+    thread = await controller.importTurns({
+      threadId: input.thread.id,
+      harness,
+      sessionId,
+      turns,
+      ...(model ? { model } : {}),
+    });
+  }
+  return thread;
+};
+
+const runHarness = async (
+  controller: NativeRelayController,
+  initialThread: RelayThread,
+  harness: Harness,
+  dependencies: NativeRelayHostDependencies,
+): Promise<{ readonly thread: RelayThread; readonly exit: NativeTuiExit }> => {
+  let thread = await controller.switchHarness(initialThread.id, harness);
+  const backend = await dependencies.startBackend(harness, thread.cwd);
+  try {
+    const binding = thread.bindings[harness];
+    const model = binding?.model ?? thread.preferredModels?.[harness];
+    const initialDelta = await controller.delta(thread.id, harness);
+    const prepared = await backend.prepareSession({
+      ...(binding ? { sessionId: binding.sessionId } : {}),
+      ...(model ? { model } : {}),
+      title: thread.title,
+      handoff: initialDelta.messages,
+    });
+    let sessionId = prepared.sessionId;
+    if (sessionId) {
+      if (prepared.handoffInjected) {
+        thread = await controller.bind({
+          threadId: thread.id,
+          harness,
+          sessionId,
+          lastSyncedSeq: initialDelta.thread.lastSeq,
+          ...(model ? { model } : {}),
+        });
+      }
+      thread = await synchronize({
+        controller,
+        backend,
+        thread,
+        harness,
+        sessionId,
+        sessionChanged:
+          !prepared.handoffInjected && (!binding || binding.sessionId !== sessionId),
+      });
+    }
+    const boundSessionId = thread.bindings[harness]?.sessionId;
+
+    const exit = await dependencies.runTui(
+      backend.command(sessionId, model),
+      async () => {
+          sessionId = await backend.resolveSession(sessionId);
+          return sessionId ? backend.isIdle(sessionId) : true;
+      },
+    );
+
+    const resolvedSessionId = await backend.resolveSession(sessionId);
+    if (resolvedSessionId) {
+      const turns = await backend.read(resolvedSessionId);
+      if (boundSessionId || turns.length > 0) {
+        thread = await synchronize({
+          controller,
+          backend,
+          thread,
+          harness,
+          sessionId: resolvedSessionId,
+          sessionChanged: resolvedSessionId !== boundSessionId,
+        });
+      }
+    }
+    return { thread, exit };
+  } finally {
+    await backend.close();
+  }
+};
+
+/** Runs exactly one upstream TUI at a time; Relay owns only switching and context transfer. */
+export const launchNativeRelay = async (
+  controller: NativeRelayController,
+  overrides: Partial<NativeRelayHostDependencies> = {},
+) => {
+  const dependencies = { ...defaultDependencies, ...overrides };
+  let thread = await controller.loadLocalThread();
+  let harness = thread.activeHarness;
+
+  while (true) {
+    const result = await runHarness(controller, thread, harness, dependencies);
+    thread = result.thread;
+    if (result.exit.reason !== "switch") {
+      if (result.exit.reason === "exit" && result.exit.exitCode !== 0)
+        process.exitCode = result.exit.exitCode;
+      return;
+    }
+
+    const selected = await dependencies.selectHarness(harness);
+    if (!selected) return;
+    harness = selected;
+  }
+};

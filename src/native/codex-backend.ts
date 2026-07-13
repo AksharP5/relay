@@ -234,23 +234,65 @@ export class CodexNativeBackend {
   }
 
   async ensureSession(input: { sessionId?: string; model?: string }) {
+    if (!input.sessionId) {
+      throw new Error(
+        "An empty Codex thread cannot be resumed; use prepareSession so the native TUI creates it",
+      );
+    }
     const connection = await this.#connect();
     try {
-      const result = input.sessionId
-        ? await connection.request("thread/resume", {
-            threadId: input.sessionId,
-            cwd: this.#cwd,
-            ...(input.model ? { model: input.model } : {}),
-          })
-        : await connection.request("thread/start", {
-            cwd: this.#cwd,
-            ephemeral: false,
-            ...(input.model ? { model: input.model } : {}),
-          });
+      const result = await connection.request("thread/resume", {
+        threadId: input.sessionId,
+        cwd: this.#cwd,
+        ...(input.model ? { model: input.model } : {}),
+      });
       const sessionId = threadIdFrom(result);
       const loaded = await connection.request("thread/loaded/list", {});
       this.#baselineLoaded = new Set(stringDataFrom(loaded));
       return sessionId;
+    } finally {
+      await connection.close();
+    }
+  }
+
+  /**
+   * Codex does not persist a newly started empty thread. A cold handoff must be
+   * injected on the same connection; a truly empty task must be created by the
+   * native TUI itself.
+   */
+  async prepareSession(input: {
+    sessionId?: string;
+    model?: string;
+    handoff: ReadonlyArray<RelayMessage>;
+  }): Promise<{ sessionId?: string; handoffInjected: boolean }> {
+    if (input.sessionId) {
+      return {
+        sessionId: await this.ensureSession({
+          sessionId: input.sessionId,
+          ...(input.model ? { model: input.model } : {}),
+        }),
+        handoffInjected: false,
+      };
+    }
+
+    const connection = await this.#connect();
+    try {
+      const loaded = await connection.request("thread/loaded/list", {});
+      this.#baselineLoaded = new Set(stringDataFrom(loaded));
+      if (input.handoff.length === 0) return { handoffInjected: false };
+
+      const result = await connection.request("thread/start", {
+        cwd: this.#cwd,
+        ephemeral: false,
+        ...(input.model ? { model: input.model } : {}),
+      });
+      const sessionId = threadIdFrom(result);
+      await connection.request("thread/inject_items", {
+        threadId: sessionId,
+        items: handoffItems(input.handoff),
+      });
+      this.#baselineLoaded.add(sessionId);
+      return { sessionId, handoffInjected: true };
     } finally {
       await connection.close();
     }
@@ -293,10 +335,17 @@ export class CodexNativeBackend {
   async isIdle(sessionId: string) {
     const connection = await this.#connect();
     try {
-      const result = await connection.request("thread/read", {
-        threadId: sessionId,
-        includeTurns: false,
-      });
+      const result = await connection
+        .request("thread/read", {
+          threadId: sessionId,
+          includeTurns: false,
+        })
+        .catch((cause) => {
+          if (cause instanceof Error && cause.message.includes("is not materialized yet")) {
+            return { thread: { status: { type: "idle" } } };
+          }
+          throw cause;
+        });
       return threadStatusFrom(result) !== "active";
     } finally {
       await connection.close();
@@ -304,7 +353,7 @@ export class CodexNativeBackend {
   }
 
   /** Detects /new or /resume inside the native TUI without intercepting either command. */
-  async resolveSession(fallbackSessionId: string) {
+  async resolveSession(fallbackSessionId?: string) {
     const connection = await this.#connect();
     try {
       const loaded = stringDataFrom(await connection.request("thread/loaded/list", {}));
@@ -337,20 +386,30 @@ export class CodexNativeBackend {
     }
   }
 
-  command(sessionId: string, model?: string): NativeTuiCommand {
+  command(sessionId?: string, model?: string): NativeTuiCommand {
     return {
       executable: this.#executable,
-      args: [
-        "resume",
-        "--remote",
-        this.remoteUrl,
-        "--remote-auth-token-env",
-        "RELAY_CODEX_AUTH_TOKEN",
-        "-C",
-        this.#cwd,
-        ...(model ? ["--model", model] : []),
-        sessionId,
-      ],
+      args: sessionId
+        ? [
+            "resume",
+            "--remote",
+            this.remoteUrl,
+            "--remote-auth-token-env",
+            "RELAY_CODEX_AUTH_TOKEN",
+            "-C",
+            this.#cwd,
+            ...(model ? ["--model", model] : []),
+            sessionId,
+          ]
+        : [
+            "--remote",
+            this.remoteUrl,
+            "--remote-auth-token-env",
+            "RELAY_CODEX_AUTH_TOKEN",
+            "-C",
+            this.#cwd,
+            ...(model ? ["--model", model] : []),
+          ],
       cwd: this.#cwd,
       env: { RELAY_CODEX_AUTH_TOKEN: this.#token },
     };

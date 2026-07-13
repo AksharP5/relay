@@ -11,7 +11,8 @@ import { ProcessRunner } from "./services/process-runner.ts";
 import { RelayService } from "./services/relay-service.ts";
 import { PreferenceStore } from "./services/preference-store.ts";
 import { ThreadStore } from "./services/thread-store.ts";
-import { makeTuiController } from "./tui/controller.ts";
+import { makeNativeRelayController } from "./native/controller.ts";
+import { launchNativeRelay } from "./native/relay-host.ts";
 
 const help = `
 ${pc.bold("Relay")} — carry one coding task between Codex and OpenCode
@@ -187,12 +188,7 @@ if (import.meta.main) {
   const argv = process.argv.slice(2);
   if (argv.length === 0) {
     const runtime = ManagedRuntime.make(MainLayer);
-    const runTui = async () => {
-      await import("@opentui/solid/runtime-plugin-support");
-      const { launchTui } = await import("./tui/app.tsx");
-      await launchTui(makeTuiController(runtime));
-    };
-    void runTui()
+    void launchNativeRelay(makeNativeRelayController(runtime))
       .catch((error) => {
         process.stderr.write(`${pc.red(renderError(error))}\n`);
         process.exitCode = 1;

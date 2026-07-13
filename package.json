@@ -39,7 +39,7 @@
     "format": "oxfmt . --write",
     "format:check": "oxfmt . --check",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run && bun test ./test/tui.bun.tsx ./test/native-pty-host.bun.ts ./test/native-opencode-backend.bun.ts ./test/native-thread-store.bun.ts ./test/process-runner.bun.ts ./test/tui-controller.bun.ts ./test/codex-app-server.bun.ts ./test/opencode-server.bun.ts ./test/preference-store.bun.ts ./test/thread-undo.bun.ts ./test/relay-service-transitions.bun.ts",
+    "test": "vitest run && bun test ./test/tui.bun.tsx ./test/native-pty-host.bun.ts ./test/native-relay-host.bun.ts ./test/native-opencode-backend.bun.ts ./test/native-thread-store.bun.ts ./test/process-runner.bun.ts ./test/tui-controller.bun.ts ./test/codex-app-server.bun.ts ./test/opencode-server.bun.ts ./test/preference-store.bun.ts ./test/thread-undo.bun.ts ./test/relay-service-transitions.bun.ts",
     "test:watch": "vitest",
     "prepack": "bun run check && bun run build"
   },
