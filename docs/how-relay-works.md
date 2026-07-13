@@ -41,7 +41,7 @@ That mode necessarily uses two temporary harness runtimes during the overlap. Re
 
 A Relay task contains:
 
-- an append-only sequence of completed visible user and assistant messages;
+- an append-only sequence of completed visible user and assistant messages for the active conversation;
 - the working directory;
 - the active harness;
 - an optional native thread/session ID, model, synchronization sequence, and native cursor for Codex and OpenCode.
@@ -63,13 +63,13 @@ Before opening a bound destination, Relay:
 
 Computing the delta before importing out-of-band native turns is intentional. Importing first could advance the destination cursor past cross-harness messages that still need delivery.
 
-After the frontend exits, Relay resolves the session that was actually active and synchronizes it. Headless turns are linked to their native turn IDs on first attachment rather than duplicated. OpenCode turns hidden by native undo remain in the append-only log with a visibility tombstone, so redo can restore them without reusing or renumbering message sequences.
+After the frontend exits, Relay resolves the session that was actually active and synchronizes it. Headless turns are linked to their native turn IDs on first attachment rather than duplicated. Within the active conversation, OpenCode turns hidden by native undo remain in the log with a visibility tombstone, so redo can restore them without reusing or renumbering message sequences.
 
 If native `/new`, `/resume`, or session navigation moves to another materialized session, Relay treats that native action as an intentional context reset. It rebinds the current task and imports completed turns, but does not retroactively append the prior task log behind them. Future completed turns remain part of the canonical task and can cross to the other harness normally.
 
-Codex exposes its selected thread through the app-server connection. OpenCode's `/sessions` navigation is local to its TUI, so on graceful detach Relay also recognizes OpenCode's exact `Continue opencode -s ...` epilogue from a bounded in-memory output tail. This allows selection of a previously standalone OpenCode session without sending it a new prompt or persisting terminal output. On a cold launch, Relay waits two seconds after any `Enter` before allowing a switch because raw PTY input cannot distinguish a session selection from a newly submitted model request.
+Codex exposes its selected thread through the app-server connection. OpenCode's `/sessions` navigation is local to its TUI, so on graceful detach Relay also recognizes OpenCode's exact `Continue opencode -s ...` epilogue from a bounded in-memory output tail. This allows selection of a previously standalone OpenCode session without sending it a new prompt or persisting terminal output. Relay protects a recent `Enter`: on a warm session it requires a completed native cursor before an immediate detach, and on a cold launch it waits two seconds before checking. This closes the request-start race while leaving ordinary idle switches immediate.
 
-Adoption records a new active-context boundary in Relay's append-only log, drops the other harness binding, and imports the selected transcript after that boundary. Earlier messages remain available only as internal recovery history; they are excluded from user history, export, and future handoffs. Relay also requires the selected session to expose a matching native working directory. A missing or different workspace is not merged into the task.
+Adoption records a new active-context boundary, drops the other harness binding, compacts the superseded canonical prefix, and imports the selected vendor transcript after that boundary. The vendor session remains available through its own picker, but Relay no longer reloads irrelevant prior contexts on every switch. Relay also requires the selected session to expose a matching native working directory. A missing or different workspace is not merged into the task.
 
 ## What is injected
 

@@ -24,12 +24,12 @@ Start Relay from the workspace that owns the session, then use the selected harn
 
 1. In Codex, run `/resume`. In OpenCode, run `/sessions`.
 2. Select an existing session from the current workspace.
-3. Let any active turn finish. On a cold launch, also wait two seconds after the selection `Enter`; Relay cannot safely distinguish it from submitting a first prompt at the raw PTY boundary.
+3. Let any active turn finish. On a cold launch, also wait two seconds after the selection `Enter`. On a warm session, Relay must conservatively treat a recent `Enter` as a possible model request unless a completed native turn proves it has finished.
 4. Press `Ctrl+Q` or `F6` to cross into the other harness. If you press too early, Relay rings the bell and leaves the native TUI untouched; wait, then retry.
 
 Relay rebinds the current task to the selected native session and imports its completed visible turns. If the destination harness has no binding yet, Relay creates and seeds one at this first switch; merely opening the source session does not create both sessions in advance.
 
-Native selection resets the current Relay task to the selected conversation. Earlier task messages remain in Relay's append-only recovery log but are outside the active context, history display, export, and future handoffs. Relay drops the other harness binding so its old native prefix cannot contaminate the selected conversation. OpenCode's graceful exit identifies a newly selected session even when no new prompt was sent before switching. Relay refuses to adopt a session whose native working directory differs from the Relay task or is not exposed by the harness.
+Native selection resets the current Relay task to the selected conversation. Relay compacts the superseded canonical prefix, drops the other harness binding, and imports the selected vendor transcript as the only active context. This prevents the old native prefix from contaminating the selected conversation and keeps switch-time memory and storage proportional to the active task. The original conversation remains in its Codex or OpenCode session and can be selected again. OpenCode's graceful exit identifies a newly selected session even when no new prompt was sent before switching. Relay refuses to adopt a session whose native working directory differs from the Relay task or is not exposed by the harness.
 
 Relay can adopt sessions that appear in the native picker. It does not expose a separate picker for headless or other session types that a vendor excludes from its own history UI.
 
