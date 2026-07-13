@@ -60,40 +60,58 @@ describe("npm package assembly", () => {
     expect((await stat(join(output, "bin", "relay"))).mode & 0o111).not.toBe(0);
   });
 
-  it("assembles a launcher that resolves and executes only the local native package", async () => {
+  it.each(["nested", "hoisted"] as const)(
+    "executes a %s native dependency without leaving a launcher process",
+    async (layout) => {
+      const root = await temporaryDirectory();
+      const launcher = join(root, "launcher");
+      await createLauncherPackage(launcher, "1.2.3");
+
+      const manifest = JSON.parse(await readFile(join(launcher, "package.json"), "utf8"));
+      expect(manifest.optionalDependencies).toEqual(
+        Object.fromEntries(
+          Object.values(nativeTargets).map(({ packageName }) => [packageName, "1.2.3"]),
+        ),
+      );
+
+      const report = process.report?.getReport() as
+        | { readonly header?: { readonly glibcVersionRuntime?: string } }
+        | undefined;
+      const libc =
+        process.platform === "linux"
+          ? report?.header?.glibcVersionRuntime
+            ? "glibc"
+            : "other"
+          : undefined;
+      const nativePackage = nativePackageFor({
+        platform: process.platform,
+        arch: process.arch,
+        ...(libc ? { libc } : {}),
+      });
+      const packageBasename = nativePackage.split("/").at(-1)!;
+      const nativeRoot =
+        layout === "nested"
+          ? join(launcher, "node_modules", ...nativePackage.split("/"))
+          : join(launcher, "..", packageBasename);
+      await mkdir(join(nativeRoot, "bin"), { recursive: true });
+      await writeFile(join(nativeRoot, "package.json"), JSON.stringify({ name: nativePackage }));
+      const nativeExecutable = join(nativeRoot, "bin", "relay");
+      await writeFile(nativeExecutable, "#!/bin/sh\nprintf 'native:%s' \"$1\"\n", "utf8");
+      await chmod(nativeExecutable, 0o755);
+
+      const result = await execFileAsync(join(launcher, "bin", "relay"), ["ok"]);
+      expect(result.stdout).toBe("native:ok");
+    },
+  );
+
+  it("explains how to recover when npm did not install the native dependency", async () => {
     const root = await temporaryDirectory();
     const launcher = join(root, "launcher");
     await createLauncherPackage(launcher, "1.2.3");
 
-    const manifest = JSON.parse(await readFile(join(launcher, "package.json"), "utf8"));
-    expect(manifest.optionalDependencies).toEqual(
-      Object.fromEntries(
-        Object.values(nativeTargets).map(({ packageName }) => [packageName, "1.2.3"]),
-      ),
-    );
-
-    const report = process.report?.getReport() as
-      | { readonly header?: { readonly glibcVersionRuntime?: string } }
-      | undefined;
-    const libc =
-      process.platform === "linux"
-        ? report?.header?.glibcVersionRuntime
-          ? "glibc"
-          : "other"
-        : undefined;
-    const nativePackage = nativePackageFor({
-      platform: process.platform,
-      arch: process.arch,
-      ...(libc ? { libc } : {}),
+    await expect(execFileAsync(join(launcher, "bin", "relay"))).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("npm install --global @akshar5/relay@latest"),
     });
-    const nativeRoot = join(launcher, "node_modules", ...nativePackage.split("/"));
-    await mkdir(join(nativeRoot, "bin"), { recursive: true });
-    await writeFile(join(nativeRoot, "package.json"), JSON.stringify({ name: nativePackage }));
-    const nativeExecutable = join(nativeRoot, "bin", "relay");
-    await writeFile(nativeExecutable, "#!/bin/sh\nprintf 'native:%s' \"$1\"\n", "utf8");
-    await chmod(nativeExecutable, 0o755);
-
-    const result = await execFileAsync(join(launcher, "bin", "relay"), ["ok"]);
-    expect(result.stdout).toBe("native:ok");
   });
 });
