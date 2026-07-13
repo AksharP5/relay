@@ -34,6 +34,13 @@ export interface NativeRelayController {
     readonly nativeCursor?: string;
     readonly model?: string;
   }) => Promise<RelayThread>;
+  readonly resetContext: (input: {
+    readonly threadId: string;
+    readonly harness: Harness;
+    readonly sessionId: string;
+    readonly nativeCursor?: string;
+    readonly model?: string;
+  }) => Promise<RelayThread>;
   readonly beginHandoff: (input: {
     readonly threadId: string;
     readonly harness: Harness;
@@ -104,6 +111,13 @@ export const makeNativeRelayController = (
         Effect.gen(function* () {
           const relay = yield* RelayService;
           return yield* relay.bindNativeSession(input);
+        }),
+      ),
+    resetContext: (input) =>
+      run(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          return yield* relay.resetNativeContext(input);
         }),
       ),
     beginHandoff: (input) =>

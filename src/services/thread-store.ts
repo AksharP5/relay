@@ -612,6 +612,13 @@ export interface BindNativeSessionInput {
   readonly model?: string;
 }
 
+export interface ResetNativeContextInput {
+  readonly harness: Harness;
+  readonly sessionId: string;
+  readonly nativeCursor?: string;
+  readonly model?: string;
+}
+
 export interface ImportNativeTurnsInput {
   readonly harness: Harness;
   readonly sessionId: string;
@@ -684,6 +691,10 @@ export class ThreadStore extends Context.Service<
     readonly bindNativeSession: (
       thread: RelayThread,
       input: BindNativeSessionInput,
+    ) => Effect.Effect<RelayThread, StoreError>;
+    readonly resetNativeContext: (
+      thread: RelayThread,
+      input: ResetNativeContextInput,
     ) => Effect.Effect<RelayThread, StoreError>;
     readonly beginNativeHandoff: (
       thread: RelayThread,
@@ -893,7 +904,11 @@ export class ThreadStore extends Context.Service<
               const current = await readThreadFile(thread.id);
               if (!current) throw new Error(`Relay task ${thread.id} no longer exists`);
               const recovered = await recoverThreadLocked(current.value);
-              const messages = visibleMessages(recovered.messages, await readVisibility(thread.id));
+              const contextStartSeq = recovered.thread.contextStartSeq ?? 0;
+              const messages = visibleMessages(
+                recovered.messages,
+                await readVisibility(thread.id),
+              ).filter((message) => message.seq > contextStartSeq);
               return {
                 formatVersion: 1 as const,
                 exportedAt: new Date().toISOString(),
@@ -1006,7 +1021,9 @@ export class ThreadStore extends Context.Service<
       (thread: RelayThread, harness: Harness) =>
         Effect.tryPromise({
           try: async () => {
-            const messages = await readMessages(thread.id);
+            const messages = (await readMessages(thread.id)).filter(
+              (message) => message.seq > (thread.contextStartSeq ?? 0),
+            );
             const latest = messages.slice(-2);
             return (
               latest.length === 2 &&
@@ -1144,6 +1161,47 @@ export class ThreadStore extends Context.Service<
         }),
     ),
 
+    resetNativeContext: Effect.fn("ThreadStore.resetNativeContext")(
+      (thread: RelayThread, input: ResetNativeContextInput) =>
+        Effect.tryPromise({
+          try: async () => {
+            const now = new Date().toISOString();
+            const binding: HarnessBinding = {
+              harness: input.harness,
+              sessionId: input.sessionId,
+              ...(input.model ? { model: input.model } : {}),
+              lastSyncedSeq: thread.lastSeq,
+              ...(input.nativeCursor ? { nativeCursor: input.nativeCursor } : {}),
+              createdAt: now,
+              updatedAt: now,
+            };
+            const bindings: RelayThread["bindings"] =
+              input.harness === "codex" ? { codex: binding } : { opencode: binding };
+            const updated: RelayThread = {
+              ...thread,
+              activeHarness: input.harness,
+              bindings,
+              pendingHandoffs: {},
+              contextStartSeq: thread.lastSeq,
+              preferredModels: {
+                ...thread.preferredModels,
+                ...(binding.model ? { [input.harness]: binding.model } : {}),
+              },
+              updatedAt: now,
+            };
+            await writeThread(updated);
+            await rm(undoPath(thread.id), { force: true });
+            return updated;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "reset native context",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
     beginNativeHandoff: Effect.fn("ThreadStore.beginNativeHandoff")(
       (thread: RelayThread, input: BeginNativeHandoffInput) =>
         Effect.tryPromise({
@@ -1214,26 +1272,34 @@ export class ThreadStore extends Context.Service<
         Effect.tryPromise({
           try: async () => {
             const existingMessages = await readRawMessages(thread.id);
+            const contextMessages = existingMessages.filter(
+              (message) => message.seq > (thread.contextStartSeq ?? 0),
+            );
             const visibility = await readVisibility(thread.id);
             const links = new Map(
               (visibility.links ?? []).map((link) => [link.messageId, link.key]),
             );
             const sessionPrefix = `${input.harness}:${input.sessionId}:`;
+            const contextMessageIds = new Set(contextMessages.map((message) => message.id));
             const importedIds = new Set([
-              ...existingMessages.flatMap((message) =>
+              ...contextMessages.flatMap((message) =>
                 message.harness === input.harness &&
                 message.nativeSessionId === input.sessionId &&
                 message.nativeId
                   ? [message.nativeId]
                   : [],
               ),
-              ...[...links.values()].flatMap((key) =>
-                key.startsWith(sessionPrefix) ? [key.slice(sessionPrefix.length)] : [],
+              ...(visibility.links ?? []).flatMap((link) =>
+                contextMessageIds.has(link.messageId) && link.key.startsWith(sessionPrefix)
+                  ? [link.key.slice(sessionPrefix.length)]
+                  : [],
               ),
             ]);
-            const linkedMessageIds = new Set(links.keys());
-            const linkablePairs = existingMessages.flatMap((user, index) => {
-              const assistant = existingMessages[index + 1];
+            const linkedMessageIds = new Set(
+              [...links.keys()].filter((messageId) => contextMessageIds.has(messageId)),
+            );
+            const linkablePairs = contextMessages.flatMap((user, index) => {
+              const assistant = contextMessages[index + 1];
               return user.role === "user" &&
                 assistant?.role === "assistant" &&
                 user.harness === input.harness &&
@@ -1315,7 +1381,7 @@ export class ThreadStore extends Context.Service<
             const hidden = new Set(visibility.hidden);
             const hiddenIds = new Set(input.hiddenTurnIds ?? []);
             const currentIds = new Set([...input.turns.map((turn) => turn.id), ...hiddenIds]);
-            for (const message of existingMessages) {
+            for (const message of contextMessages) {
               if (message.harness !== input.harness) continue;
               const key =
                 message.nativeSessionId === input.sessionId && message.nativeId
@@ -1479,7 +1545,10 @@ export class ThreadStore extends Context.Service<
             readMessages(thread.id),
             readRawMessages(thread.id),
           ]);
-          const removed = messages.slice(-2);
+          const contextMessages = messages.filter(
+            (message) => message.seq > (thread.contextStartSeq ?? 0),
+          );
+          const removed = contextMessages.slice(-2);
           if (
             removed.length !== 2 ||
             removed[0]?.role !== "user" ||
@@ -1491,14 +1560,19 @@ export class ThreadStore extends Context.Service<
             });
           }
           const removedIds = new Set(removed.map((message) => message.id));
-          const remaining = messages.slice(0, -2);
+          const remaining = messages.filter((message) => !removedIds.has(message.id));
           const remainingRaw = rawMessages.filter((message) => !removedIds.has(message.id));
           const lastSeq = remainingRaw.at(-1)?.seq ?? 0;
           const lastVisibleSeq = remaining.at(-1)?.seq ?? 0;
           const lastHarnessSeq =
             remaining.findLast(
-              (message) => message.role === "assistant" && message.harness === harness,
-            )?.seq ?? 0;
+              (message) =>
+                message.seq > (thread.contextStartSeq ?? 0) &&
+                message.role === "assistant" &&
+                message.harness === harness,
+            )?.seq ??
+            thread.contextStartSeq ??
+            0;
           const binding = thread.bindings[harness];
           const bindings = { ...thread.bindings };
           if (binding) {

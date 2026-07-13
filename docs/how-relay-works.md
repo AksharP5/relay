@@ -67,7 +67,9 @@ After the frontend exits, Relay resolves the session that was actually active an
 
 If native `/new`, `/resume`, or session navigation moves to another materialized session, Relay treats that native action as an intentional context reset. It rebinds the current task and imports completed turns, but does not retroactively append the prior task log behind them. Future completed turns remain part of the canonical task and can cross to the other harness normally.
 
-Codex exposes its selected thread through the app-server connection. OpenCode's `/sessions` navigation is local to its TUI, so on graceful detach Relay also recognizes OpenCode's exact `Continue opencode -s ...` epilogue from a bounded in-memory output tail. This allows an immediate switch after selecting a previously standalone OpenCode session without persisting terminal output. Relay validates the selected session's native working directory before adoption; a session from another workspace is not merged into the task.
+Codex exposes its selected thread through the app-server connection. OpenCode's `/sessions` navigation is local to its TUI, so on graceful detach Relay also recognizes OpenCode's exact `Continue opencode -s ...` epilogue from a bounded in-memory output tail. This allows selection of a previously standalone OpenCode session without sending it a new prompt or persisting terminal output. On a cold launch, Relay waits two seconds after any `Enter` before allowing a switch because raw PTY input cannot distinguish a session selection from a newly submitted model request.
+
+Adoption records a new active-context boundary in Relay's append-only log, drops the other harness binding, and imports the selected transcript after that boundary. Earlier messages remain available only as internal recovery history; they are excluded from user history, export, and future handoffs. Relay also requires the selected session to expose a matching native working directory. A missing or different workspace is not merged into the task.
 
 ## What is injected
 

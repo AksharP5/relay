@@ -33,7 +33,10 @@ const makeController = () => {
       return thread;
     },
     delta: async (_threadId, harness) => {
-      const after = thread.bindings[harness]?.lastSyncedSeq ?? 0;
+      const after = Math.max(
+        thread.contextStartSeq ?? 0,
+        thread.bindings[harness]?.lastSyncedSeq ?? 0,
+      );
       return {
         thread,
         ...(thread.bindings[harness] ? { binding: thread.bindings[harness] } : {}),
@@ -59,6 +62,24 @@ const makeController = () => {
           ...thread.pendingHandoffs,
           [input.harness]: undefined,
         },
+      };
+      return thread;
+    },
+    resetContext: async (input) => {
+      const binding = {
+        harness: input.harness,
+        sessionId: input.sessionId,
+        lastSyncedSeq: thread.lastSeq,
+        ...(input.nativeCursor ? { nativeCursor: input.nativeCursor } : {}),
+        createdAt: now,
+        updatedAt: now,
+      };
+      thread = {
+        ...thread,
+        activeHarness: input.harness,
+        contextStartSeq: thread.lastSeq,
+        bindings: input.harness === "codex" ? { codex: binding } : { opencode: binding },
+        pendingHandoffs: {},
       };
       return thread;
     },
@@ -91,7 +112,9 @@ const makeController = () => {
     },
     importTurns: async (input) => {
       const imported = new Set(
-        messages.flatMap((message) => (message.nativeId ? [message.nativeId] : [])),
+        messages.flatMap((message) =>
+          message.seq > (thread.contextStartSeq ?? 0) && message.nativeId ? [message.nativeId] : [],
+        ),
       );
       for (const turn of input.turns) {
         if (imported.has(turn.id)) continue;
@@ -209,7 +232,7 @@ describe("native Relay host", () => {
         return { handoffInjected: false };
       },
       inject: async () => {},
-      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      read: async () => ({ turns: [], hiddenTurnIds: [], cwd: process.cwd() }),
       isIdle: async () => true,
       resolveSession: async () => undefined,
       command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
@@ -436,7 +459,7 @@ describe("native Relay host", () => {
     const backend: NativeBackend = {
       prepareSession: async () => ({ handoffInjected: false }),
       inject: async () => {},
-      read: async () => ({ turns, hiddenTurnIds: [] }),
+      read: async () => ({ turns, hiddenTurnIds: [], cwd: process.cwd() }),
       isIdle: async () => true,
       resolveSession: async () => "cold-codex-session",
       command: (sessionId) => {
@@ -588,6 +611,7 @@ describe("native Relay host", () => {
             ? [{ id: "warm-turn", prompt: "old prompt", response: "old answer" }]
             : [{ id: "new-turn", prompt: "new prompt", response: "new answer" }],
         hiddenTurnIds: [],
+        cwd: process.cwd(),
       }),
       isMaterialized: async () => true,
       isIdle: async () => true,
@@ -616,6 +640,11 @@ describe("native Relay host", () => {
       lastSyncedSeq: 4,
       nativeCursor: "new-turn",
     });
+    expect(thread().contextStartSeq).toBe(2);
+    expect(thread().bindings.opencode).toBeUndefined();
+    expect(
+      (await controller.delta("relay-thread", "opencode")).messages.map((item) => item.content),
+    ).toEqual(["new prompt", "new answer"]);
   });
 
   it("adopts a previously standalone OpenCode session from its exit hint", async () => {
@@ -630,6 +659,7 @@ describe("native Relay host", () => {
             ? [{ id: "existing-turn", prompt: "old prompt", response: "old answer" }]
             : [],
         hiddenTurnIds: [],
+        cwd: process.cwd(),
       }),
       isIdle: async () => true,
       resolveSession: async () => undefined,
@@ -676,6 +706,30 @@ describe("native Relay host", () => {
     expect(thread().bindings.opencode).toBeUndefined();
   });
 
+  it("rejects adoption when the native session omits its workspace", async () => {
+    const { controller } = makeController();
+    await controller.switchHarness("relay-thread", "opencode");
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({
+        turns: [{ id: "unknown-turn", prompt: "unknown prompt", response: "unknown answer" }],
+        hiddenTurnIds: [],
+      }),
+      isIdle: async () => true,
+      resolveSession: async () => undefined,
+      command: () => ({ executable: "opencode", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await expect(
+      launchNativeRelay(controller, {
+        startBackend: async () => backend,
+        runTui: async () => ({ reason: "exit", exitCode: 0, sessionIdHint: "ses_unknown" }),
+      }),
+    ).rejects.toThrow("did not expose its working directory");
+  });
+
   it("vetoes a switch after native navigation leaves the Relay workspace", async () => {
     const { controller } = makeController();
     await controller.bind({
@@ -688,7 +742,7 @@ describe("native Relay host", () => {
     const backend: NativeBackend = {
       prepareSession: async () => ({ sessionId: "warm-session", handoffInjected: false }),
       inject: async () => {},
-      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      read: async () => ({ turns: [], hiddenTurnIds: [], cwd: process.cwd() }),
       isMaterialized: async () => true,
       isIdle: async () => true,
       sessionCwd: async (sessionId) =>
@@ -735,7 +789,7 @@ describe("native Relay host", () => {
     const backend: NativeBackend = {
       prepareSession: async () => ({ handoffInjected: false }),
       inject: async () => {},
-      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      read: async () => ({ turns: [], hiddenTurnIds: [], cwd: process.cwd() }),
       isMaterialized: async () => true,
       isIdle: async () => true,
       resolveSession: async () => "interrupted-codex-thread",

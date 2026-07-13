@@ -150,7 +150,7 @@ Zellij's default keymap reserves `Ctrl+Q` for quitting. Use `F6` while inside Ze
 
 ### Bring an existing session into Relay
 
-Existing sessions remain in their native harness. To adopt one, run Relay from the same workspace, open Codex's `/resume` or OpenCode's `/sessions`, and select it normally. Once that session is idle, `Ctrl+Q` or `F6` imports its completed visible turns and opens the other harness with that context. OpenCode selection works even when you switch immediately after choosing the session; Relay reads the exact native continuation ID from OpenCode's graceful exit rather than guessing from screen content.
+Existing sessions remain in their native harness. To adopt one, run Relay from the same workspace, open Codex's `/resume` or OpenCode's `/sessions`, and select it normally. Once that session is idle, `Ctrl+Q` or `F6` imports its completed visible turns and opens the other harness with that context. On a cold launch, wait two seconds after the selection `Enter` before switching; Relay conservatively treats any immediate `Enter` as a possible first model request. OpenCode can then be adopted without sending it a new prompt because Relay reads the exact native continuation ID from its graceful exit rather than guessing from screen content.
 
 The other harness binding is lazy. If it does not exist yet, Relay creates and seeds it only when you first switch there. Returning later resumes the same two native bindings.
 
@@ -178,7 +178,7 @@ See the [command guide](docs/commands.md) for full examples.
 
 ## Storage and performance
 
-Relay stores canonical visible message text and task metadata under `~/.local/share/relay` by default. Metadata includes the task ID, directory, active harness, native session IDs, synchronization cursors, native undo visibility, and timestamps.
+Relay stores canonical visible message text and task metadata under `~/.local/share/relay` by default. Metadata includes the task ID, directory, active harness, active-context boundary, native session IDs, synchronization cursors, native undo visibility, and timestamps.
 
 It does not copy credential files, vendor session databases, raw terminal output, or tool traces. Canonical messages use append-only JSON Lines. Switch handoffs scan that log with a bounded message and character window; OpenCode recovery reads vendor history in cursor pages and immediately discards non-visible tool payloads. Task recovery and `relay history` may read the selected task's complete local canonical log. While a TUI is active, Relay otherwise keeps only small routing queues, the handoff delta needed for a switch, and—for OpenCode only—an in-memory exit tail capped at 8 KiB so it can recognize the selected continuation ID. That tail is discarded when the native process exits and is never written to Relay storage.
 

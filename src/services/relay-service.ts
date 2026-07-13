@@ -42,6 +42,14 @@ export const titleFromPrompt = (prompt: string) => {
   return singleLine.length <= 64 ? singleLine : `${singleLine.slice(0, 61)}...`;
 };
 
+const contextStartSeq = (thread: RelayThread) => thread.contextStartSeq ?? 0;
+
+const messagesInActiveContext = (thread: RelayThread, messages: ReadonlyArray<RelayMessage>) =>
+  messages.filter((message) => message.seq > contextStartSeq(thread));
+
+const handoffStartSeq = (thread: RelayThread, binding?: HarnessBinding) =>
+  Math.max(contextStartSeq(thread), binding?.lastSyncedSeq ?? 0);
+
 export class RelayService extends Context.Service<
   RelayService,
   {
@@ -84,6 +92,13 @@ export class RelayService extends Context.Service<
       readonly harness: Harness;
       readonly sessionId: string;
       readonly lastSyncedSeq: number;
+      readonly nativeCursor?: string;
+      readonly model?: string;
+    }) => Effect.Effect<RelayThread, unknown>;
+    readonly resetNativeContext: (input: {
+      readonly threadId: string;
+      readonly harness: Harness;
+      readonly sessionId: string;
       readonly nativeCursor?: string;
       readonly model?: string;
     }) => Effect.Effect<RelayThread, unknown>;
@@ -170,7 +185,10 @@ export class RelayService extends Context.Service<
               const binding = thread.bindings[harness];
               const model =
                 input.model ?? (binding ? undefined : thread.preferredModels?.[harness]);
-              const handoff = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
+              const handoff = yield* store.messagesSince(
+                thread.id,
+                handoffStartSeq(thread, binding),
+              );
 
               const nativeResult = yield* harnesses
                 .run(harness, {
@@ -270,16 +288,26 @@ export class RelayService extends Context.Service<
       const history = Effect.fn("RelayService.history")(() =>
         Effect.gen(function* () {
           const thread = yield* store.current();
-          return yield* store.messages(thread.id);
+          return messagesInActiveContext(thread, yield* store.messages(thread.id));
         }),
       );
 
       const historyFor = Effect.fn("RelayService.historyFor")((threadId: string) =>
-        store.messages(threadId),
+        Effect.gen(function* () {
+          const thread = yield* store.get(threadId);
+          return messagesInActiveContext(thread, yield* store.messages(threadId));
+        }),
       );
 
       const historyForDisplay = Effect.fn("RelayService.historyForDisplay")((threadId: string) =>
-        store.recentMessages(threadId, { maxMessages: 200, maxChars: 1_000_000 }),
+        Effect.gen(function* () {
+          const thread = yield* store.get(threadId);
+          const messages = yield* store.recentMessages(threadId, {
+            maxMessages: 200,
+            maxChars: 1_000_000,
+          });
+          return messagesInActiveContext(thread, messages);
+        }),
       );
 
       const exportTask = Effect.fn("RelayService.exportTask")((threadId?: string) =>
@@ -382,7 +410,7 @@ export class RelayService extends Context.Service<
             const thread = yield* store.get(threadId);
             yield* validateNativeCwd(thread);
             const binding = thread.bindings[harness];
-            const delta = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
+            const delta = yield* store.messagesSince(thread.id, handoffStartSeq(thread, binding));
             return { thread, ...(binding ? { binding } : {}), ...delta };
           }),
       );
@@ -402,6 +430,24 @@ export class RelayService extends Context.Service<
               const thread = yield* store.get(input.threadId);
               yield* validateNativeCwd(thread);
               return yield* store.bindNativeSession(thread, input);
+            }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+          }),
+      );
+
+      const resetNativeContext = Effect.fn("RelayService.resetNativeContext")(
+        (input: {
+          readonly threadId: string;
+          readonly harness: Harness;
+          readonly sessionId: string;
+          readonly nativeCursor?: string;
+          readonly model?: string;
+        }) =>
+          Effect.gen(function* () {
+            const lock = yield* store.acquireLock(input.threadId);
+            return yield* Effect.gen(function* () {
+              const thread = yield* store.get(input.threadId);
+              yield* validateNativeCwd(thread);
+              return yield* store.resetNativeContext(thread, input);
             }).pipe(Effect.ensuring(Effect.promise(lock.release)));
           }),
       );
@@ -485,6 +531,7 @@ export class RelayService extends Context.Service<
         control,
         nativeDelta,
         bindNativeSession,
+        resetNativeContext,
         beginNativeHandoff,
         abandonNativeHandoff,
         importNativeTurns,

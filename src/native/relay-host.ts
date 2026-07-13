@@ -191,7 +191,13 @@ const assertNativeCwd = async (
   sessionId: string,
   relayCwd: string,
   nativeCwd?: string,
+  required = false,
 ) => {
+  if (required && nativeCwd === undefined) {
+    throw new Error(
+      `Cannot adopt ${harness} session ${sessionId} because the harness did not expose its working directory.`,
+    );
+  }
   if (await nativeCwdMatches(relayCwd, nativeCwd)) return;
   throw new Error(
     `Cannot adopt ${harness} session ${sessionId} from ${nativeCwd}; this Relay task belongs to ${relayCwd}. Select a session from the current workspace.`,
@@ -269,15 +275,12 @@ const adoptNativeSession = async (input: {
 }) => {
   const { controller, harness, sessionId, transcript } = input;
   const model = input.thread.bindings[harness]?.model ?? input.thread.preferredModels?.[harness];
-  await assertNativeCwd(harness, sessionId, input.thread.cwd, transcript.cwd);
+  await assertNativeCwd(harness, sessionId, input.thread.cwd, transcript.cwd, true);
   const turns = transcript.turns;
-  let thread = await controller.bind({
+  let thread = await controller.resetContext({
     threadId: input.thread.id,
     harness,
     sessionId,
-    // Native navigation is an intentional context reset. Do not append the
-    // prior canonical log behind turns already completed in the selected session.
-    lastSyncedSeq: input.thread.lastSeq,
     ...(turns.at(-1)?.id ? { nativeCursor: turns.at(-1)!.id } : {}),
     ...(model ? { model } : {}),
   });
@@ -435,12 +438,10 @@ const runHarness = async (
               !(await backend.isMaterialized(sessionId))
             )
               return false;
-            if (
-              sessionId &&
-              backend.sessionCwd &&
-              !(await nativeCwdMatches(thread.cwd, await backend.sessionCwd(sessionId)))
-            )
-              return false;
+            if (sessionId && backend.sessionCwd) {
+              const nativeCwd = await backend.sessionCwd(sessionId);
+              if (!nativeCwd || !(await nativeCwdMatches(thread.cwd, nativeCwd))) return false;
+            }
             if (!(await backend.isIdle(sessionId))) return false;
           }
         } catch {

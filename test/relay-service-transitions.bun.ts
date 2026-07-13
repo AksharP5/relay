@@ -434,6 +434,84 @@ describe("Relay session transitions", () => {
     );
   });
 
+  it("starts a clean cross-harness context when adopting an existing native session", async () => {
+    directory = await mkdtemp(join(tmpdir(), "relay-adopt-context-"));
+    process.env.RELAY_DATA_DIR = directory;
+    const runs: Array<{ harness: Harness; input: HarnessTurnInput }> = [];
+    const harnesses: typeof HarnessService.Service = {
+      run: (harness, input) => {
+        runs.push({ harness, input });
+        return Effect.succeed({ sessionId: `${harness}-session`, text: `${harness} response` });
+      },
+      control: () => Effect.succeed({ message: "ok" }),
+      status: (harness) => Effect.succeed({ harness, installed: true, healthy: true }),
+      capabilities: (harness) => Effect.succeed({ harness, models: [], commands: [] }),
+    };
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const relay = yield* RelayService;
+        const thread = yield* relay.newThread({
+          title: "Adoption boundary",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        yield* relay.ask({ threadId: thread.id, prompt: "Old Codex request" });
+        const old = yield* relay.ask({
+          threadId: thread.id,
+          harness: "opencode",
+          prompt: "Old OpenCode request",
+        });
+        expect(old.thread.bindings.codex).toBeDefined();
+        expect(old.thread.bindings.opencode).toBeDefined();
+
+        const reset = yield* relay.resetNativeContext({
+          threadId: thread.id,
+          harness: "opencode",
+          sessionId: "standalone-session",
+          nativeCursor: "standalone-turn",
+        });
+        expect(reset.contextStartSeq).toBe(4);
+        expect(reset.bindings.codex).toBeUndefined();
+
+        yield* relay.importNativeTurns({
+          threadId: thread.id,
+          harness: "opencode",
+          sessionId: "standalone-session",
+          turns: [
+            {
+              id: "standalone-turn",
+              prompt: "Existing native request",
+              response: "Existing native response",
+            },
+          ],
+        });
+
+        expect((yield* relay.historyFor(thread.id)).map((message) => message.content)).toEqual([
+          "Existing native request",
+          "Existing native response",
+        ]);
+        expect(
+          (yield* relay.nativeDelta(thread.id, "codex")).messages.map((message) => message.content),
+        ).toEqual(["Existing native request", "Existing native response"]);
+        expect(
+          (yield* relay.exportTask(thread.id)).messages.map((message) => message.content),
+        ).toEqual(["Existing native request", "Existing native response"]);
+
+        yield* relay.ask({
+          threadId: thread.id,
+          harness: "codex",
+          prompt: "Continue in Codex",
+        });
+      }).pipe(Effect.provide(makeLayer(harnesses))),
+    );
+
+    expect(runs.at(-1)?.input.handoff.map((message) => message.content)).toEqual([
+      "Existing native request",
+      "Existing native response",
+    ]);
+  });
+
   it("rejects native controls from a different working directory", async () => {
     directory = await mkdtemp(join(tmpdir(), "relay-foreign-control-"));
     process.env.RELAY_DATA_DIR = directory;

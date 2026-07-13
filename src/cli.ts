@@ -50,6 +50,8 @@ const bindingLabel = (thread: RelayThread, harness: Harness) =>
   thread.bindings[harness]
     ? `${pc.green("ready")} ${pc.dim(shortId(thread.bindings[harness]!.sessionId))}`
     : pc.dim("not created");
+const activeMessageCount = (thread: RelayThread) =>
+  Math.max(0, thread.lastSeq - (thread.contextStartSeq ?? 0));
 
 const renderStatus = (thread: RelayThread, dataRoot: string) =>
   [
@@ -58,7 +60,7 @@ const renderStatus = (thread: RelayThread, dataRoot: string) =>
     `Directory  ${thread.cwd}`,
     `Codex      ${bindingLabel(thread, "codex")}`,
     `OpenCode   ${bindingLabel(thread, "opencode")}`,
-    `Messages   ${thread.lastSeq}`,
+    `Messages   ${activeMessageCount(thread)}`,
     `Data       ${pc.dim(dataRoot)}`,
   ].join("\n");
 
@@ -211,7 +213,7 @@ export const program = (argv: ReadonlyArray<string>) =>
         }
         for (const thread of threads) {
           yield* Console.log(
-            `${pc.dim(shortId(thread.id))}  ${thread.title}  ${pc.cyan(thread.activeHarness)}  ${pc.dim(`${thread.lastSeq} messages · ${thread.cwd}`)}`,
+            `${pc.dim(shortId(thread.id))}  ${thread.title}  ${pc.cyan(thread.activeHarness)}  ${pc.dim(`${activeMessageCount(thread)} messages · ${thread.cwd}`)}`,
           );
         }
       }
