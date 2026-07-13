@@ -22,6 +22,11 @@ const makeThread = (harness: Harness): RelayThread => ({
 const initial: TuiSnapshot = {
   thread: null,
   messages: [],
+  preferences: {
+    skin: "codex",
+    switchSkinWithHarness: true,
+    commandImplementations: {},
+  },
   harnesses: [
     { harness: "codex", installed: true, healthy: true, version: "codex 1" },
     { harness: "opencode", installed: true, healthy: true, version: "opencode 1" },
@@ -47,6 +52,15 @@ const initial: TuiSnapshot = {
       ],
     },
   ],
+};
+
+const preferenceControls = {
+  setSkin: async (skin: Harness) => ({ ...initial.preferences, skin }),
+  setSwitchSkinWithHarness: async (switchSkinWithHarness: boolean) => ({
+    ...initial.preferences,
+    switchSkinWithHarness,
+  }),
+  setCommandImplementation: async () => initial.preferences,
 };
 
 afterEach(() => {
@@ -77,6 +91,7 @@ describe("Relay TUI", () => {
       },
     ];
     const controller: TuiController = {
+      ...preferenceControls,
       load: async () => initial,
       switchHarness: async (harness) => {
         switches.push(harness);
@@ -124,6 +139,7 @@ describe("Relay TUI", () => {
 
   it("keeps the draft when a turn fails", async () => {
     const controller: TuiController = {
+      ...preferenceControls,
       load: async () => initial,
       switchHarness: async () => null,
       refreshCapabilities: async (harness) =>
@@ -148,6 +164,7 @@ describe("Relay TUI", () => {
   it("renders ephemeral native output while a turn is running", async () => {
     const turn = Promise.withResolvers<Pick<TuiSnapshot, "thread" | "messages">>();
     const controller: TuiController = {
+      ...preferenceControls,
       load: async () => initial,
       switchHarness: async () => null,
       refreshCapabilities: async (harness) =>
@@ -173,6 +190,7 @@ describe("Relay TUI", () => {
   it("changes the active harness model without restarting the TUI", async () => {
     const asks: Array<{ model?: string }> = [];
     const controller: TuiController = {
+      ...preferenceControls,
       load: async () => initial,
       switchHarness: async () => null,
       refreshCapabilities: async (harness) =>
@@ -202,6 +220,7 @@ describe("Relay TUI", () => {
     const asks: Array<{ prompt: string; command?: string }> = [];
     const opencodeInitial = { ...initial, thread: makeThread("opencode") };
     const controller: TuiController = {
+      ...preferenceControls,
       load: async () => opencodeInitial,
       switchHarness: async () => null,
       refreshCapabilities: async (harness) =>

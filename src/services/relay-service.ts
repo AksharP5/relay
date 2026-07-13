@@ -4,12 +4,16 @@ import type {
   Harness,
   HarnessCapabilities,
   HarnessTurnProgress,
+  RelayPreferences,
   RelayMessage,
   RelayThread,
+  Skin,
+  CommandImplementation,
 } from "../domain.ts";
 import { CliError, ThreadNotFound } from "../errors.ts";
 import { HarnessService, type HarnessStatus } from "../harnesses/harness-service.ts";
 import { ThreadStore } from "./thread-store.ts";
+import { PreferenceStore } from "./preference-store.ts";
 
 export interface AskInput {
   readonly prompt: string;
@@ -58,6 +62,15 @@ export class RelayService extends Context.Service<
       harness: Harness,
       cwd?: string,
     ) => Effect.Effect<HarnessCapabilities, unknown>;
+    readonly preferences: () => Effect.Effect<RelayPreferences, unknown>;
+    readonly setSkin: (skin: Skin) => Effect.Effect<RelayPreferences, unknown>;
+    readonly setSwitchSkinWithHarness: (
+      enabled: boolean,
+    ) => Effect.Effect<RelayPreferences, unknown>;
+    readonly setCommandImplementation: (
+      action: string,
+      implementation?: CommandImplementation,
+    ) => Effect.Effect<RelayPreferences, unknown>;
     readonly dataRoot: string;
   }
 >()("@relay/RelayService") {
@@ -66,6 +79,7 @@ export class RelayService extends Context.Service<
     Effect.gen(function* () {
       const store = yield* ThreadStore;
       const harnesses = yield* HarnessService;
+      const preferences = yield* PreferenceStore;
 
       const newThread = Effect.fn("RelayService.newThread")(
         (input: { readonly title: string; readonly cwd: string; readonly harness: Harness }) =>
@@ -102,6 +116,12 @@ export class RelayService extends Context.Service<
             const binding = thread.bindings[harness];
             const model = input.model ?? binding?.model;
             const handoff = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
+
+            if (input.command && handoff.length > 0) {
+              return yield* new CliError({
+                message: `Before running /${input.command}, send one normal ${harness} message so Relay can synchronize the conversation safely.`,
+              });
+            }
 
             const nativeResult = yield* harnesses.run(harness, {
               cwd: thread.cwd,
@@ -202,6 +222,10 @@ export class RelayService extends Context.Service<
         historyForDisplay,
         doctor,
         capabilities,
+        preferences: preferences.load,
+        setSkin: preferences.setSkin,
+        setSwitchSkinWithHarness: preferences.setSwitchSkinWithHarness,
+        setCommandImplementation: preferences.setCommandImplementation,
         dataRoot: store.root,
       };
     }),

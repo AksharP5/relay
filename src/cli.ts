@@ -9,6 +9,7 @@ import type { Harness, RelayThread } from "./domain.ts";
 import { HarnessService } from "./harnesses/harness-service.ts";
 import { ProcessRunner } from "./services/process-runner.ts";
 import { RelayService } from "./services/relay-service.ts";
+import { PreferenceStore } from "./services/preference-store.ts";
 import { ThreadStore } from "./services/thread-store.ts";
 import { makeTuiController } from "./tui/controller.ts";
 
@@ -179,7 +180,7 @@ export const program = (argv: ReadonlyArray<string>) =>
 
 const HarnessLayer = HarnessService.layer.pipe(Layer.provide(ProcessRunner.layer));
 export const MainLayer = RelayService.layer.pipe(
-  Layer.provide(Layer.merge(ThreadStore.layer, HarnessLayer)),
+  Layer.provide(Layer.mergeAll(ThreadStore.layer, HarnessLayer, PreferenceStore.layer)),
 );
 
 if (import.meta.main) {

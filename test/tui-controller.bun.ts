@@ -6,6 +6,11 @@ import { makeTuiController } from "../src/tui/controller.ts";
 
 const runtimes: Array<ManagedRuntime.ManagedRuntime<RelayService, never>> = [];
 const now = "2026-07-12T00:00:00.000Z";
+const preferences = {
+  skin: "codex" as const,
+  switchSkinWithHarness: true,
+  commandImplementations: {},
+};
 
 const thread = (id: string, cwd: string, harness: Harness = "codex"): RelayThread => ({
   id,
@@ -67,6 +72,11 @@ describe("TUI task routing", () => {
       historyForDisplay: (id) => Effect.succeed(histories.get(id) ?? []),
       doctor: () => Effect.succeed([]),
       capabilities: (harness) => Effect.succeed({ harness, models: [], commands: [] }),
+      preferences: () => Effect.succeed(preferences),
+      setSkin: (skin) => Effect.succeed({ ...preferences, skin }),
+      setSwitchSkinWithHarness: (switchSkinWithHarness) =>
+        Effect.succeed({ ...preferences, switchSkinWithHarness }),
+      setCommandImplementation: () => Effect.succeed(preferences),
       dataRoot: "/tmp/relay-test",
     };
     const runtime = ManagedRuntime.make(Layer.succeed(RelayService, service));
@@ -111,6 +121,11 @@ describe("TUI task routing", () => {
       historyForDisplay: () => Effect.succeed([response]),
       doctor: () => Effect.succeed([]),
       capabilities: (harness) => Effect.succeed({ harness, models: [], commands: [] }),
+      preferences: () => Effect.succeed(preferences),
+      setSkin: (skin) => Effect.succeed({ ...preferences, skin }),
+      setSwitchSkinWithHarness: (switchSkinWithHarness) =>
+        Effect.succeed({ ...preferences, switchSkinWithHarness }),
+      setCommandImplementation: () => Effect.succeed(preferences),
       dataRoot: "/tmp/relay-test",
     };
     const runtime = ManagedRuntime.make(Layer.succeed(RelayService, service));

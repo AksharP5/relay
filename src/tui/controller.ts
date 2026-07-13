@@ -4,8 +4,11 @@ import type {
   Harness,
   HarnessCapabilities,
   HarnessTurnProgress,
+  CommandImplementation,
   RelayMessage,
+  RelayPreferences,
   RelayThread,
+  Skin,
 } from "../domain.ts";
 import { NoCurrentThread } from "../errors.ts";
 import { RelayService, titleFromPrompt } from "../services/relay-service.ts";
@@ -20,6 +23,7 @@ export interface TuiSnapshot {
     readonly version?: string;
   }>;
   readonly capabilities: ReadonlyArray<HarnessCapabilities>;
+  readonly preferences: RelayPreferences;
 }
 
 export interface TuiController {
@@ -31,8 +35,16 @@ export interface TuiController {
     readonly command?: string;
     readonly onProgress?: (progress: HarnessTurnProgress) => void;
   }) => Promise<Pick<TuiSnapshot, "thread" | "messages">>;
-  readonly switchHarness: (harness: Harness) => Promise<RelayThread | null>;
+  readonly switchHarness: (
+    harness: Harness,
+  ) => Promise<{ readonly thread: RelayThread; readonly preferences: RelayPreferences } | null>;
   readonly refreshCapabilities: (harness: Harness) => Promise<HarnessCapabilities>;
+  readonly setSkin: (skin: Skin) => Promise<RelayPreferences>;
+  readonly setSwitchSkinWithHarness: (enabled: boolean) => Promise<RelayPreferences>;
+  readonly setCommandImplementation: (
+    action: string,
+    implementation?: CommandImplementation,
+  ) => Promise<RelayPreferences>;
 }
 
 const isNoCurrentThread = (error: unknown): error is NoCurrentThread =>
@@ -65,22 +77,32 @@ export const makeTuiController = (
           const relay = yield* RelayService;
           const thread = yield* selectDirectoryTask(relay);
           const activeHarness = thread?.activeHarness ?? "codex";
-          const [harnesses, activeCapabilities] = yield* Effect.all(
+          const preferences = yield* relay.preferences();
+          const skin = preferences.switchSkinWithHarness ? activeHarness : preferences.skin;
+          const capabilityHarnesses = [...new Set([activeHarness, skin])];
+          const [harnesses, capabilities] = yield* Effect.all(
             [
               relay.doctor(),
-              relay.capabilities(activeHarness).pipe(
-                Effect.orElseSucceed(() => ({
-                  harness: activeHarness,
-                  models: [],
-                  commands: [],
-                })),
+              Effect.all(
+                capabilityHarnesses.map((harness) =>
+                  relay
+                    .capabilities(harness)
+                    .pipe(Effect.orElseSucceed(() => ({ harness, models: [], commands: [] }))),
+                ),
+                { concurrency: 2 },
               ),
             ],
             { concurrency: 2 },
           );
           activeThreadId = thread?.id;
           const messages = thread ? yield* relay.historyForDisplay(thread.id) : [];
-          return { thread, messages, harnesses, capabilities: [activeCapabilities] };
+          return {
+            thread,
+            messages,
+            harnesses,
+            capabilities,
+            preferences: { ...preferences, skin },
+          };
         }),
       ),
     ask: (input) =>
@@ -110,7 +132,20 @@ export const makeTuiController = (
           if (!activeThreadId) activeThreadId = (yield* selectDirectoryTask(relay))?.id;
           if (!activeThreadId) return null;
           return yield* relay.switchHarness(harness, activeThreadId).pipe(
-            Effect.map((thread) => thread as RelayThread | null),
+            Effect.flatMap((thread) =>
+              relay.preferences().pipe(
+                Effect.flatMap((preferences) =>
+                  preferences.switchSkinWithHarness
+                    ? relay.setSkin(harness).pipe(
+                        Effect.map((next) => ({
+                          thread: thread as RelayThread,
+                          preferences: next,
+                        })),
+                      )
+                    : Effect.succeed({ thread: thread as RelayThread, preferences }),
+                ),
+              ),
+            ),
             Effect.catchIf(isNoCurrentThread, () => Effect.succeed(null)),
           );
         }),
@@ -120,6 +155,33 @@ export const makeTuiController = (
         Effect.gen(function* () {
           const relay = yield* RelayService;
           return yield* relay.capabilities(harness);
+        }),
+      ),
+    setSkin: (skin) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          const preferences = yield* relay.setSkin(skin);
+          return yield* relay
+            .setSwitchSkinWithHarness(false)
+            .pipe(Effect.map((next) => ({ ...next, skin: preferences.skin })));
+        }),
+      ),
+    setSwitchSkinWithHarness: (enabled) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          const preferences = yield* relay.setSwitchSkinWithHarness(enabled);
+          if (!enabled) return preferences;
+          const thread = activeThreadId ? yield* relay.current() : null;
+          return thread ? yield* relay.setSkin(thread.activeHarness) : preferences;
+        }),
+      ),
+    setCommandImplementation: (action, implementation) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          return yield* relay.setCommandImplementation(action, implementation);
         }),
       ),
   };

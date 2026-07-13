@@ -121,7 +121,12 @@ export const RelayApp = (props: RelayAppProps) => {
     setError(null);
     try {
       const thread = await props.controller.switchHarness(harness);
-      if (thread) setSnapshot((current) => ({ ...current, thread }));
+      if (thread)
+        setSnapshot((current) => ({
+          ...current,
+          thread: thread.thread,
+          preferences: thread.preferences,
+        }));
       if (!capabilities().some((item) => item.harness === harness)) {
         setCapabilitiesLoading(true);
         const discovered = await props.controller.refreshCapabilities(harness);
