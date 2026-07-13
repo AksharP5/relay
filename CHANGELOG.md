@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.2](https://github.com/AksharP5/relay/compare/v0.1.1...v0.1.2) (2026-07-13)
+
+
+### Bug Fixes
+
+* **release:** align recovery provenance with tags ([3c31605](https://github.com/AksharP5/relay/commit/3c31605f1db6f3e1dc59164b7ba92b12fc9ad701))
+* **release:** isolate trusted publishing ([706abc4](https://github.com/AksharP5/relay/commit/706abc4da130379da2e38e3626bf72a047a89a18))
+* **store:** serialize local index writers ([2f77f53](https://github.com/AksharP5/relay/commit/2f77f536bdf8378da89e29d6bac1b402a013eb8e))
+
 ## [0.1.1](https://github.com/AksharP5/relay/compare/v0.1.0...v0.1.1) (2026-07-13)
 
 
