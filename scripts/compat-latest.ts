@@ -227,6 +227,7 @@ try {
 
   const sessionId = await openCodeBackend.ensureSession({ title: "Relay native event probe" });
   openCodeProbeSessionId = sessionId;
+  await openCodeBackend.completedCursor(sessionId);
   let observedSessionId: string | undefined;
   for (let attempt = 0; attempt < 40; attempt += 1) {
     observedSessionId = await openCodeBackend.resolveSession();
