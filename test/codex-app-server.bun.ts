@@ -27,6 +27,7 @@ describe("Codex app-server commands", () => {
       cwd: process.cwd(),
       sessionId: "codex-thread",
       arguments: "focus on correctness",
+      handoffText: "prior Relay conversation",
       onProgress: (event) => {
         if (event.type === "text") progress.push(event.text);
       },

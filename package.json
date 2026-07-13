@@ -40,7 +40,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run && bun test ./test/tui.bun.tsx ./test/process-runner.bun.ts ./test/tui-controller.bun.ts ./test/codex-app-server.bun.ts ./test/opencode-server.bun.ts ./test/preference-store.bun.ts ./test/thread-undo.bun.ts",
     "test:watch": "vitest",
-    "prepack": "bun run build"
+    "prepack": "bun run check && bun run build"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-beta.59",

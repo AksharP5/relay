@@ -3,6 +3,7 @@
 import { createInterface } from "node:readline";
 
 const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
+let handoffSeeded = false;
 
 const lines = createInterface({ input: process.stdin });
 for await (const line of lines) {
@@ -21,6 +22,7 @@ for await (const line of lines) {
     continue;
   }
   if (message.method === "thread/inject_items") {
+    handoffSeeded = JSON.stringify(message.params).includes("prior Relay conversation");
     send({ id: message.id, result: {} });
     continue;
   }
@@ -34,6 +36,10 @@ for await (const line of lines) {
     continue;
   }
   if (message.method === "review/start") {
+    if (!handoffSeeded) {
+      send({ id: message.id, error: { code: -32000, message: "review ran before its handoff" } });
+      continue;
+    }
     send({ id: message.id, result: { turn: { id: "t2" }, reviewThreadId: "codex-thread" } });
     send({
       method: "item/agentMessage/delta",

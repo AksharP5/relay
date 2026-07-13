@@ -28,6 +28,7 @@ const stopChild = async (child: ReturnType<typeof Bun.spawn>) => {
     } else {
       child.kill("SIGKILL");
     }
+    await child.exited.catch(() => undefined);
   }
 };
 

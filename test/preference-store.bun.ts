@@ -48,4 +48,36 @@ describe("Relay preferences", () => {
     });
     expect((await Bun.file(`${directory}/preferences.json`).stat()).mode & 0o777).toBe(0o600);
   });
+
+  it("serializes overlapping updates instead of losing a preference", async () => {
+    directory = await mkdtemp(join(tmpdir(), "relay-preferences-"));
+    Bun.env.RELAY_DATA_DIR = directory;
+
+    await run(
+      Effect.gen(function* () {
+        const store = yield* PreferenceStore;
+        yield* Effect.all(
+          [
+            store.setSkin("opencode"),
+            store.setCommandImplementation("context.compact", "codex"),
+            store.setSwitchSkinWithHarness(true),
+          ],
+          { concurrency: "unbounded" },
+        );
+      }),
+    );
+
+    expect(
+      await run(
+        Effect.gen(function* () {
+          const store = yield* PreferenceStore;
+          return yield* store.load();
+        }),
+      ),
+    ).toEqual({
+      skin: "opencode",
+      switchSkinWithHarness: true,
+      commandImplementations: { "context.compact": "codex" },
+    });
+  });
 });

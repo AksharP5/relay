@@ -1,5 +1,5 @@
 import { Context, Effect, Layer } from "effect";
-import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { CommandImplementation, RelayPreferences, Skin } from "../domain.ts";
 import { StoreError } from "../errors.ts";
@@ -18,6 +18,7 @@ const root = () => {
 
 const path = () => `${root()}/preferences.json`;
 const errorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+const updateQueues = new Map<string, Promise<void>>();
 
 const normalize = (value: unknown): RelayPreferences => {
   if (!value || typeof value !== "object") return defaults;
@@ -53,12 +54,31 @@ const write = async (preferences: RelayPreferences) => {
   const temporary = `${target}.${crypto.randomUUID()}.tmp`;
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
   await chmod(dirname(target), 0o700);
-  await writeFile(temporary, `${JSON.stringify(preferences, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
+  try {
+    await writeFile(temporary, `${JSON.stringify(preferences, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await rename(temporary, target);
+    await chmod(target, 0o600);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+};
+
+const update = <A>(operation: () => Promise<A>): Promise<A> => {
+  const target = path();
+  const previous = updateQueues.get(target) ?? Promise.resolve();
+  const result = previous.then(operation, operation);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  updateQueues.set(target, settled);
+  void settled.finally(() => {
+    if (updateQueues.get(target) === settled) updateQueues.delete(target);
   });
-  await rename(temporary, target);
-  await chmod(target, 0o600);
+  return result;
 };
 
 export class PreferenceStore extends Context.Service<
@@ -85,11 +105,12 @@ export class PreferenceStore extends Context.Service<
     ),
     setSkin: Effect.fn("PreferenceStore.setSkin")((skin: Skin) =>
       Effect.tryPromise({
-        try: async () => {
-          const next = { ...(await read()), skin, switchSkinWithHarness: false };
-          await write(next);
-          return next;
-        },
+        try: () =>
+          update(async () => {
+            const next = { ...(await read()), skin, switchSkinWithHarness: false };
+            await write(next);
+            return next;
+          }),
         catch: (cause) =>
           new StoreError({ operation: "write preferences", message: errorMessage(cause), cause }),
       }),
@@ -97,11 +118,12 @@ export class PreferenceStore extends Context.Service<
     setSwitchSkinWithHarness: Effect.fn("PreferenceStore.setSwitchSkinWithHarness")(
       (switchSkinWithHarness: boolean) =>
         Effect.tryPromise({
-          try: async () => {
-            const next = { ...(await read()), switchSkinWithHarness };
-            await write(next);
-            return next;
-          },
+          try: () =>
+            update(async () => {
+              const next = { ...(await read()), switchSkinWithHarness };
+              await write(next);
+              return next;
+            }),
           catch: (cause) =>
             new StoreError({ operation: "write preferences", message: errorMessage(cause), cause }),
         }),
@@ -109,15 +131,16 @@ export class PreferenceStore extends Context.Service<
     setCommandImplementation: Effect.fn("PreferenceStore.setCommandImplementation")(
       (action: string, implementation?: CommandImplementation) =>
         Effect.tryPromise({
-          try: async () => {
-            const current = await read();
-            const commandImplementations = { ...current.commandImplementations };
-            if (implementation) commandImplementations[action] = implementation;
-            else delete commandImplementations[action];
-            const next = { ...current, commandImplementations };
-            await write(next);
-            return next;
-          },
+          try: () =>
+            update(async () => {
+              const current = await read();
+              const commandImplementations = { ...current.commandImplementations };
+              if (implementation) commandImplementations[action] = implementation;
+              else delete commandImplementations[action];
+              const next = { ...current, commandImplementations };
+              await write(next);
+              return next;
+            }),
           catch: (cause) =>
             new StoreError({ operation: "write preferences", message: errorMessage(cause), cause }),
         }),

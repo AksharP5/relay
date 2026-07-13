@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 let revertMessageID: string | undefined = "msg_003";
+let handoffSeeded = false;
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -38,9 +39,25 @@ const server = Bun.serve({
         },
       ]);
     }
-    if (url.pathname.endsWith("/message") && request.method === "POST") return Response.json({});
-    if (url.pathname.endsWith("/command") && request.method === "POST")
+    if (url.pathname.endsWith("/message") && request.method === "POST") {
+      const body = (await request.json()) as {
+        noReply?: unknown;
+        parts?: Array<{ type?: unknown; text?: unknown }>;
+      };
+      handoffSeeded =
+        body.noReply === true &&
+        body.parts?.some(
+          (part) => part.type === "text" && part.text === "prior Relay conversation",
+        ) === true;
+      return handoffSeeded ? Response.json({}) : new Response("invalid handoff", { status: 422 });
+    }
+    if (url.pathname.endsWith("/command") && request.method === "POST") {
+      const body = (await request.json()) as { command?: unknown; arguments?: unknown };
+      if (!handoffSeeded || body.command !== "commit" || body.arguments !== "release-ready") {
+        return new Response("command ran before its handoff", { status: 409 });
+      }
       return Response.json({ parts: [{ type: "text", text: "Command response" }] });
+    }
     if (url.pathname.endsWith("/summarize") && request.method === "POST")
       return Response.json(true);
     if (url.pathname.endsWith("/share") && request.method === "POST")

@@ -61,6 +61,7 @@ class AppServerConnection {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
+      detached: process.platform !== "win32",
     });
     const connection = new AppServerConnection(child);
     await connection.#requestRaw("initialize", {
@@ -150,12 +151,21 @@ class AppServerConnection {
     if (this.#closed) return;
     this.#closed = true;
     try {
-      this.#child.kill("SIGTERM");
+      if (process.platform !== "win32") process.kill(-this.#child.pid, "SIGTERM");
+      else this.#child.kill("SIGTERM");
     } catch {
-      // The app server may already have exited after completing the command.
+      this.#child.kill("SIGTERM");
     }
     await Promise.race([this.#child.exited, Bun.sleep(1_000)]);
-    if (this.#child.exitCode === null) this.#child.kill("SIGKILL");
+    if (this.#child.exitCode === null) {
+      try {
+        if (process.platform !== "win32") process.kill(-this.#child.pid, "SIGKILL");
+        else this.#child.kill("SIGKILL");
+      } catch {
+        this.#child.kill("SIGKILL");
+      }
+      await this.#child.exited.catch(() => undefined);
+    }
   }
 }
 

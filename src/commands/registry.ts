@@ -98,13 +98,6 @@ const codex: ReadonlyArray<CommandSpec> = [
     action: "review.start",
     name: "review",
     description: "Review the working tree",
-    implementation: "opencode",
-    acceptsArguments: true,
-  },
-  {
-    action: "review.start",
-    name: "review",
-    description: "Review the working tree",
     implementation: "codex",
     acceptsArguments: true,
   },
@@ -230,13 +223,17 @@ const resolve = (
   spec: CommandSpec,
   harness: Harness,
   preferences: RelayPreferences,
+  dynamicNames: ReadonlySet<string>,
 ): ResolvedCommand => {
   const allowedImplementations = allowedByAction[spec.action];
   const override = preferences.commandImplementations[spec.action];
   const implementation =
     override && allowedImplementations.includes(override) ? override : spec.implementation;
   const required = requiredHarness(implementation);
-  const available = required === undefined || required === harness;
+  const harnessAvailable = required === undefined || required === harness;
+  const nativeCommandAvailable =
+    implementation !== "opencode" || spec.action !== "review.start" || dynamicNames.has("review");
+  const available = harnessAvailable && nativeCommandAvailable;
   return {
     ...spec,
     defaultImplementation: spec.implementation,
@@ -244,11 +241,16 @@ const resolve = (
     implementation,
     source: implementation === "relay" ? "relay" : "native",
     available,
-    ...(!available
+    ...(!harnessAvailable
       ? {
           disabledReason: `${spec.name} uses ${required === "codex" ? "Codex" : "OpenCode"} native behavior. Switch the underlying harness to use it.`,
         }
-      : {}),
+      : !nativeCommandAvailable
+        ? {
+            disabledReason:
+              "This behavior needs an OpenCode /review command from your project or configuration.",
+          }
+        : {}),
   };
 };
 
@@ -259,7 +261,10 @@ export const commandsFor = (input: {
   readonly dynamic?: ReadonlyArray<HarnessCommand>;
 }): ReadonlyArray<ResolvedCommand> => {
   const specs = [...shared, ...(input.skin === "codex" ? codex : opencode)];
-  const resolved = specs.map((spec) => resolve(spec, input.harness, input.preferences));
+  const dynamicNames = new Set((input.dynamic ?? []).map((command) => command.name));
+  const resolved = specs.map((spec) =>
+    resolve(spec, input.harness, input.preferences, dynamicNames),
+  );
   const names = new Set(resolved.flatMap((command) => [command.name, ...(command.aliases ?? [])]));
   const dynamic = (input.dynamic ?? [])
     .filter((command) => !names.has(command.name))

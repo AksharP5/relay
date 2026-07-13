@@ -9,6 +9,17 @@ const preferences: RelayPreferences = {
 };
 
 describe("semantic command registry", () => {
+  it.each([
+    ["codex", "codex", "resume", true],
+    ["codex", "opencode", "compact", false],
+    ["opencode", "codex", "sessions", true],
+    ["opencode", "opencode", "share", true],
+  ] as const)("%s skin over %s resolves /%s availability", (skin, harness, command, available) => {
+    expect(findCommand(commandsFor({ skin, harness, preferences }), command)?.available).toBe(
+      available,
+    );
+  });
+
   it("keeps OpenCode-native commands visible but disabled over Codex", () => {
     const commands = commandsFor({ skin: "opencode", harness: "codex", preferences });
     expect(findCommand(commands, "sessions")?.available).toBe(true);
@@ -34,6 +45,49 @@ describe("semantic command registry", () => {
       available: true,
       implementation: "codex",
     });
+  });
+
+  it("ignores an unsupported persisted override", () => {
+    const commands = commandsFor({
+      skin: "opencode",
+      harness: "codex",
+      preferences: {
+        ...preferences,
+        commandImplementations: { "session.share": "codex" },
+      },
+    });
+    expect(findCommand(commands, "share")).toMatchObject({
+      available: false,
+      implementation: "opencode",
+      allowedImplementations: ["opencode"],
+    });
+  });
+
+  it("offers OpenCode review behavior only when /review was discovered", () => {
+    const configured: RelayPreferences = {
+      ...preferences,
+      commandImplementations: { "review.start": "opencode" },
+    };
+    const unavailable = findCommand(
+      commandsFor({ skin: "codex", harness: "opencode", preferences: configured }),
+      "review",
+    );
+    expect(unavailable).toMatchObject({
+      available: false,
+      disabledReason:
+        "This behavior needs an OpenCode /review command from your project or configuration.",
+    });
+
+    const available = findCommand(
+      commandsFor({
+        skin: "codex",
+        harness: "opencode",
+        preferences: configured,
+        dynamic: [{ name: "review", description: "Project review", source: "native" }],
+      }),
+      "review",
+    );
+    expect(available).toMatchObject({ available: true, implementation: "opencode" });
   });
 
   it("does not pretend an OpenCode prompt command is portable", () => {
