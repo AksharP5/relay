@@ -1,9 +1,6 @@
-import solidPlugin from "@opentui/solid/bun-plugin";
-
 const result = await Bun.build({
   entrypoints: ["src/cli.ts"],
   target: "bun",
-  plugins: [solidPlugin],
   compile: {
     outfile: "dist/relay",
   },

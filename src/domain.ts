@@ -3,17 +3,6 @@ import { Schema } from "effect";
 export const Harness = Schema.Literals(["codex", "opencode"]);
 export type Harness = typeof Harness.Type;
 
-export const Skin = Schema.Literals(["codex", "opencode"]);
-export type Skin = typeof Skin.Type;
-
-export type CommandImplementation = "relay" | Harness;
-
-export interface RelayPreferences {
-  readonly skin: Skin;
-  readonly switchSkinWithHarness: boolean;
-  readonly commandImplementations: Readonly<Record<string, CommandImplementation>>;
-}
-
 export const MessageRole = Schema.Literals(["user", "assistant"]);
 export type MessageRole = typeof MessageRole.Type;
 

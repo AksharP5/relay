@@ -4,8 +4,6 @@
     "module": "Preserve",
     "moduleResolution": "Bundler",
     "moduleDetection": "force",
-    "jsx": "preserve",
-    "jsxImportSource": "@opentui/solid",
     "allowImportingTsExtensions": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,

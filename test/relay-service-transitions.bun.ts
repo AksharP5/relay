@@ -7,7 +7,6 @@ import type { Harness, HarnessControlInput, HarnessTurnInput } from "../src/doma
 import { HarnessError } from "../src/errors.ts";
 import { buildHandoff } from "../src/handoff.ts";
 import { HarnessService } from "../src/harnesses/harness-service.ts";
-import { PreferenceStore } from "../src/services/preference-store.ts";
 import { RelayService } from "../src/services/relay-service.ts";
 import { ThreadStore } from "../src/services/thread-store.ts";
 
@@ -16,11 +15,7 @@ let directory: string | undefined;
 const makeLayer = (harnesses: typeof HarnessService.Service) =>
   RelayService.layer.pipe(
     Layer.provide(
-      Layer.mergeAll(
-        ThreadStore.layer,
-        PreferenceStore.layer,
-        Layer.succeed(HarnessService, harnesses),
-      ),
+      Layer.mergeAll(ThreadStore.layer, Layer.succeed(HarnessService, harnesses)),
     ),
   );
 

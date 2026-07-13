@@ -6,16 +6,12 @@ import type {
   HarnessBinding,
   HarnessTurnProgress,
   NativeTranscriptTurn,
-  RelayPreferences,
   RelayMessage,
   RelayThread,
-  Skin,
-  CommandImplementation,
 } from "../domain.ts";
 import { CliError, ThreadNotFound } from "../errors.ts";
 import { HarnessService, type HarnessStatus } from "../harnesses/harness-service.ts";
 import { ThreadStore } from "./thread-store.ts";
-import { PreferenceStore } from "./preference-store.ts";
 
 export interface AskInput {
   readonly prompt: string;
@@ -71,15 +67,6 @@ export class RelayService extends Context.Service<
       harness: Harness,
       cwd?: string,
     ) => Effect.Effect<HarnessCapabilities, unknown>;
-    readonly preferences: () => Effect.Effect<RelayPreferences, unknown>;
-    readonly setSkin: (skin: Skin) => Effect.Effect<RelayPreferences, unknown>;
-    readonly setSwitchSkinWithHarness: (
-      enabled: boolean,
-    ) => Effect.Effect<RelayPreferences, unknown>;
-    readonly setCommandImplementation: (
-      action: string,
-      implementation?: CommandImplementation,
-    ) => Effect.Effect<RelayPreferences, unknown>;
     readonly control: (input: {
       readonly action: "compact" | "share" | "unshare" | "undo" | "redo";
       readonly harness?: Harness;
@@ -112,7 +99,6 @@ export class RelayService extends Context.Service<
     Effect.gen(function* () {
       const store = yield* ThreadStore;
       const harnesses = yield* HarnessService;
-      const preferences = yield* PreferenceStore;
 
       const newThread = Effect.fn("RelayService.newThread")(
         (input: { readonly title: string; readonly cwd: string; readonly harness: Harness }) =>
@@ -376,10 +362,6 @@ export class RelayService extends Context.Service<
         historyForDisplay,
         doctor,
         capabilities,
-        preferences: preferences.load,
-        setSkin: preferences.setSkin,
-        setSwitchSkinWithHarness: preferences.setSwitchSkinWithHarness,
-        setCommandImplementation: preferences.setCommandImplementation,
         control,
         nativeDelta,
         bindNativeSession,
