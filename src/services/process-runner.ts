@@ -135,9 +135,14 @@ export class ProcessRunner extends Context.Service<
             timeout = setTimeout(() => void terminate?.(), input.timeoutMs ?? 30 * 60 * 1000);
 
             const stdin = child.stdin;
-            if (input.stdin !== undefined && stdin && typeof stdin !== "number") {
-              stdin.write(input.stdin);
-              stdin.end();
+            try {
+              if (input.stdin !== undefined && stdin && typeof stdin !== "number") {
+                stdin.write(input.stdin);
+                stdin.end();
+              }
+            } catch (cause) {
+              await terminate();
+              throw cause;
             }
 
             let result: [string, string, number];
