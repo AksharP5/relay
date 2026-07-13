@@ -313,7 +313,10 @@ describe("native Relay host", () => {
     });
 
     await launchNativeRelay(controller, {
-      startBackend: async (harness) => backend(harness),
+      startBackend: async (harness) => {
+        if (harness === "opencode") clock = 5_000;
+        return backend(harness);
+      },
       now: () => clock,
       wait: async () => {},
       selectHarness: async () => {
@@ -326,11 +329,11 @@ describe("native Relay host", () => {
           return { reason: "switch", intent: "toggle" };
         }
 
-        clock = 100;
+        clock = 5_001;
         expect(await onSwitchRequest("toggle")).toBe(false);
-        clock = 900;
+        clock = 5_900;
         expect(await onSwitchRequest("toggle")).toBe(false);
-        clock = 1_901;
+        clock = 6_901;
         expect(await onSwitchRequest("toggle")).toBe(true);
         return { reason: "exit", exitCode: 0 };
       },

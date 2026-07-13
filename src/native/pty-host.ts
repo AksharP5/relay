@@ -149,7 +149,10 @@ export const runNativeTui = async (
     writeInput(routed.forward);
     if (!routed.switchRequested) {
       if (router.hasPendingPrefix)
-        prefixTimer = setTimeout(flushPrefix, options.prefixTimeoutMs ?? 500);
+        prefixTimer = setTimeout(
+          flushPrefix,
+          router.pendingTimeoutMs(options.prefixTimeoutMs ?? 500),
+        );
       return;
     }
     pendingSwitchInput.push(routed.afterSwitch);

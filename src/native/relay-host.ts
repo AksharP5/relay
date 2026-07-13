@@ -202,6 +202,7 @@ const runHarness = async (
   dependencies: NativeRelayHostDependencies,
   getSignal: () => NativeParentSignal | undefined,
   allowSwitchAttempt: (intent: "toggle" | "selector") => boolean,
+  armToggleLatch: boolean,
 ): Promise<{ readonly thread: RelayThread; readonly exit: NativeTuiExit }> => {
   let thread = await controller.switchHarness(initialThread.id, harness);
   if (thread.pendingHandoffs?.[harness]) {
@@ -273,6 +274,7 @@ const runHarness = async (
     const preparedSignal = getSignal();
     if (preparedSignal) return { thread, exit: { reason: "signal", signal: preparedSignal } };
     const boundSessionId = thread.bindings[harness]?.sessionId;
+    if (armToggleLatch) allowSwitchAttempt("toggle");
 
     const exit = await dependencies.runTui(
       backend.command(sessionId, launchModel),
@@ -361,6 +363,7 @@ export const launchNativeRelay = async (
     }
     lease = await controller.acquireLease(thread.id);
     let harness = thread.activeHarness;
+    let armToggleLatch = false;
     while (true) {
       if (pendingSignal) {
         process.exitCode = signalExitCode(pendingSignal);
@@ -373,6 +376,7 @@ export const launchNativeRelay = async (
         dependencies,
         () => pendingSignal,
         allowSwitchAttempt,
+        armToggleLatch,
       );
       thread = result.thread;
       if (result.exit.reason !== "switch") {
@@ -392,6 +396,7 @@ export const launchNativeRelay = async (
         if (pendingSignal) process.exitCode = signalExitCode(pendingSignal);
         return;
       }
+      armToggleLatch = result.exit.intent === "toggle";
       harness = selected;
     }
   } finally {

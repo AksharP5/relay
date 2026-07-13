@@ -89,6 +89,9 @@ describe("native input routing", () => {
 
   it("recognizes fragmented direct toggles and forwards fragmented native CSI input", () => {
     for (const [first, second] of [
+      ["\u001b", "[17~"],
+      ["\u001b", "[104;6u"],
+      ["\u001b", "[57369;1:1u"],
       ["\u001b[17", "~"],
       ["\u001b[104;", "6u"],
       ["\u001b[57369;1:", "1u"],
@@ -106,11 +109,12 @@ describe("native input routing", () => {
     expect(Buffer.from(arrow.route(Buffer.from("2A")).forward).toString()).toBe("\u001b[1;2A");
   });
 
-  it("forwards Escape immediately and preserves bytes after a switch chord", () => {
+  it("preserves Escape and bytes after a switch chord", () => {
     const router = new NativeInputRouter();
     const escape = router.route(Buffer.from("\u001b"));
-    expect(Buffer.from(escape.forward)).toEqual(Buffer.from("\u001b"));
-    expect(router.hasPendingPrefix).toBe(false);
+    expect(escape.forward).toHaveLength(0);
+    expect(router.hasPendingPrefix).toBe(true);
+    expect(Buffer.from(router.flushPending())).toEqual(Buffer.from("\u001b"));
 
     const chord = router.route(Buffer.from([0x1d, ...Buffer.from("r/resume")]));
     expect(chord.switchRequested).toBe(true);
@@ -224,6 +228,29 @@ describe("native PTY host", () => {
     resize.emit("SIGINT");
     expect(await result).toEqual({ reason: "signal", signal: "SIGINT" });
     expect(input.rawModes).toEqual([true, false]);
+  });
+
+  it("forwards a lone Escape after low-latency sequence disambiguation", async () => {
+    const input = new TestInput();
+    const output = new TestOutput();
+    const resize = new EventEmitter();
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output, resizeSource: resize },
+    );
+    running.push(result);
+
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from("\u001b"));
+    await Bun.sleep(60);
+    expect(output.text()).toContain("INPUT:1b");
+
+    resize.emit("SIGTERM");
+    expect(await result).toEqual({ reason: "signal", signal: "SIGTERM" });
   });
 
   it("keeps the native frontend alive when an active turn vetoes switching", async () => {

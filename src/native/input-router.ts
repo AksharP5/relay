@@ -80,23 +80,36 @@ export class NativeInputRouter {
   #insideBracketedPaste = false;
   #pendingRelayPrefix: Uint8Array | undefined;
   #pendingCsi: Uint8Array | undefined;
+  #pendingEscape: Uint8Array | undefined;
 
   get hasPendingPrefix() {
-    return this.#pendingRelayPrefix !== undefined || this.#pendingCsi !== undefined;
+    return (
+      this.#pendingRelayPrefix !== undefined ||
+      this.#pendingCsi !== undefined ||
+      this.#pendingEscape !== undefined
+    );
+  }
+
+  pendingTimeoutMs(fallback: number) {
+    return this.#pendingEscape ? 25 : fallback;
   }
 
   flushPending(): Uint8Array {
-    const bytes = this.#pendingRelayPrefix ?? this.#pendingCsi ?? new Uint8Array();
+    const bytes =
+      this.#pendingRelayPrefix ?? this.#pendingCsi ?? this.#pendingEscape ?? new Uint8Array();
     this.#pendingRelayPrefix = undefined;
     this.#pendingCsi = undefined;
+    this.#pendingEscape = undefined;
     return bytes.slice();
   }
 
   route(chunk: Uint8Array): RoutedInput {
-    const input = this.#pendingCsi
-      ? Buffer.concat([Buffer.from(this.#pendingCsi), Buffer.from(chunk)])
+    const pendingSequence = this.#pendingCsi ?? this.#pendingEscape;
+    const input = pendingSequence
+      ? Buffer.concat([Buffer.from(pendingSequence), Buffer.from(chunk)])
       : chunk;
     this.#pendingCsi = undefined;
+    this.#pendingEscape = undefined;
     const forward: Array<number> = [];
 
     for (let index = 0; index < input.length; index += 1) {
@@ -139,16 +152,18 @@ export class NativeInputRouter {
       }
 
       // Terminal key reports can be fragmented at arbitrary byte boundaries.
-      // Buffer only an Escape that is already known to begin CSI; a lone
-      // Escape remains immediate so native dialogs still dismiss naturally.
+      // A lone Escape waits only 25 ms—short enough for native dialogs to feel
+      // immediate, but long enough to join a CSI report split after ESC.
+      if (byte === 0x1b && index + 1 === input.length) {
+        this.#pendingEscape = input.slice(index);
+        break;
+      }
       if (isIncompleteCsiAt(input, index)) {
         this.#pendingCsi = input.slice(index);
         break;
       }
 
-      // A plain Escape must reach the native TUI immediately. The enhanced
-      // Ctrl+] encoding is therefore reserved only when its complete sequence
-      // is present in this input chunk.
+      // The enhanced Ctrl+] encoding is reserved only when complete.
       if (byte === enhancedRelayPrefix[0] && matchesAt(input, index, enhancedRelayPrefix)) {
         this.#pendingRelayPrefix = enhancedRelayPrefix;
         index += enhancedRelayPrefix.length - 1;
