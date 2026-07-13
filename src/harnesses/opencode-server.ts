@@ -30,17 +30,29 @@ export const startOpenCodeServer = async (
   executable: string,
   cwd: string,
   signal?: AbortSignal,
+  options: { readonly pure?: boolean } = {},
 ): Promise<RunningOpenCodeServer> => {
   signal?.throwIfAborted();
   const password = `${crypto.randomUUID()}${crypto.randomUUID()}`;
-  const child = Bun.spawn([executable, "serve", "--hostname", "127.0.0.1", "--port", "0"], {
-    cwd,
-    env: { ...Bun.env, OPENCODE_SERVER_PASSWORD: password },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    detached: process.platform !== "win32",
-  });
+  const child = Bun.spawn(
+    [
+      executable,
+      "serve",
+      "--hostname",
+      "127.0.0.1",
+      "--port",
+      "0",
+      ...(options.pure ? ["--pure"] : []),
+    ],
+    {
+      cwd,
+      env: { ...Bun.env, OPENCODE_SERVER_PASSWORD: password },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      detached: process.platform !== "win32",
+    },
+  );
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
     await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");

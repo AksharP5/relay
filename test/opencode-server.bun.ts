@@ -36,7 +36,14 @@ describe("OpenCode command discovery", () => {
       expect(pid).toBeNumber();
       controller.abort();
       await expect(starting).rejects.toHaveProperty("name", "AbortError");
-      await Bun.sleep(25);
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          process.kill(pid!, 0);
+          await Bun.sleep(5);
+        } catch {
+          break;
+        }
+      }
       expect(() => process.kill(pid!, 0)).toThrow();
     } finally {
       if (previousPidPath === undefined) delete Bun.env.RELAY_TEST_PID_FILE;

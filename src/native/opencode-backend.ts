@@ -1,7 +1,6 @@
 import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { buildHandoff } from "../handoff.ts";
 import { startOpenCodeServer, type RunningOpenCodeServer } from "../harnesses/opencode-server.ts";
-import { readStream, stopProcessTree } from "../services/process-runner.ts";
 import { NativeSessionUnavailable } from "./errors.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
@@ -38,72 +37,72 @@ const visibleText = (parts: unknown) =>
         .trim()
     : "";
 
-export const parseOpenCodeNativeTurns = (
-  value: unknown,
+interface OpenCodeVisibleMessage {
+  readonly id: string;
+  readonly role: "user" | "assistant";
+  readonly text: string;
+  readonly complete: boolean;
+  readonly failed: boolean;
+}
+
+const compactOpenCodeMessages = (value: unknown): ReadonlyArray<OpenCodeVisibleMessage> =>
+  Array.isArray(value)
+    ? value.flatMap((candidate) => {
+        const message = asObject(candidate);
+        const info = asObject(message?.info);
+        if (typeof info?.id !== "string" || (info.role !== "user" && info.role !== "assistant"))
+          return [];
+        const time = asObject(info.time);
+        return [
+          {
+            id: info.id,
+            role: info.role,
+            text: visibleText(message?.parts),
+            complete: time === undefined || time.completed !== undefined,
+            failed: info.error !== undefined,
+          },
+        ];
+      })
+    : [];
+
+const parseCompactTurns = (
+  messages: ReadonlyArray<OpenCodeVisibleMessage>,
   revertedMessageId?: string,
-): ReadonlyArray<NativeTranscriptTurn> => {
-  if (!Array.isArray(value)) return [];
+) => {
   const turns: Array<NativeTranscriptTurn> = [];
   let pending: { id: string; prompt: string } | undefined;
-
-  for (const candidate of value) {
-    const message = asObject(candidate);
-    const info = asObject(message?.info);
-    if (!info || typeof info.id !== "string") continue;
-    if (info.id === revertedMessageId) break;
-    if (info.role === "user") {
-      const prompt = visibleText(message?.parts);
-      pending = prompt ? { id: info.id, prompt } : undefined;
+  for (const message of messages) {
+    if (message.id === revertedMessageId) break;
+    if (message.role === "user") {
+      pending = message.text ? { id: message.id, prompt: message.text } : undefined;
       continue;
     }
-    if (
-      info.role !== "assistant" ||
-      !pending ||
-      info.error !== undefined ||
-      (asObject(info.time)?.completed === undefined && asObject(info.time) !== undefined)
-    ) {
-      continue;
-    }
-    const response = visibleText(message?.parts);
-    if (!response) continue;
-    turns.push({ id: pending.id, prompt: pending.prompt, response });
+    if (!pending || message.failed || !message.complete || !message.text) continue;
+    turns.push({ id: pending.id, prompt: pending.prompt, response: message.text });
     pending = undefined;
   }
   return turns;
 };
 
-const transcriptFrom = (session: unknown, messages: unknown) => {
+export const parseOpenCodeNativeTurns = (
+  value: unknown,
+  revertedMessageId?: string,
+): ReadonlyArray<NativeTranscriptTurn> =>
+  parseCompactTurns(compactOpenCodeMessages(value), revertedMessageId);
+
+const transcriptFrom = (session: unknown, messages: ReadonlyArray<OpenCodeVisibleMessage>) => {
   const revertedMessageId = asObject(asObject(session)?.revert)?.messageID;
-  const turns = parseOpenCodeNativeTurns(
+  const turns = parseCompactTurns(
     messages,
     typeof revertedMessageId === "string" ? revertedMessageId : undefined,
   );
   const visible = new Set(turns.map((turn) => turn.id));
   return {
     turns,
-    hiddenTurnIds: parseOpenCodeNativeTurns(messages)
+    hiddenTurnIds: parseCompactTurns(messages)
       .map((turn) => turn.id)
       .filter((id) => !visible.has(id)),
   };
-};
-
-const readBoundedStream = async (stream: ReadableStream<Uint8Array>, limitBytes: number) => {
-  const reader = stream.getReader();
-  const chunks: Array<Uint8Array> = [];
-  let totalBytes = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      totalBytes += value.byteLength;
-      if (totalBytes > limitBytes)
-        throw new Error(`OpenCode history export exceeded ${limitBytes} bytes`);
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return new TextDecoder().decode(Buffer.concat(chunks, totalBytes));
 };
 
 export class OpenCodeNativeBackend {
@@ -113,40 +112,23 @@ export class OpenCodeNativeBackend {
   readonly #eventAbort = new AbortController();
   readonly #requestAbort = new AbortController();
   readonly #sessionParents = new Map<string, string>();
-  readonly #exportTimeoutMs: number;
-  readonly #exportLimitBytes: number;
   #eventLoop: Promise<void> | undefined;
   #observeTui = false;
   #observerHealthy = false;
   #observerGap = false;
   #observedRoot: string | undefined;
 
-  private constructor(
-    server: RunningOpenCodeServer,
-    executable: string,
-    cwd: string,
-    exportTimeoutMs: number,
-    exportLimitBytes: number,
-  ) {
+  private constructor(server: RunningOpenCodeServer, executable: string, cwd: string) {
     this.#server = server;
     this.#executable = executable;
     this.#cwd = cwd;
-    this.#exportTimeoutMs = exportTimeoutMs;
-    this.#exportLimitBytes = exportLimitBytes;
   }
 
-  static async start(
-    executable: string,
-    cwd: string,
-    signal?: AbortSignal,
-    options: { readonly exportTimeoutMs?: number; readonly exportLimitBytes?: number } = {},
-  ) {
+  static async start(executable: string, cwd: string, signal?: AbortSignal) {
     const backend = new OpenCodeNativeBackend(
       await startOpenCodeServer(executable, cwd, signal),
       executable,
       cwd,
-      options.exportTimeoutMs ?? 30_000,
-      options.exportLimitBytes ?? 32 * 1024 * 1024,
     );
     const onAbort = () => backend.#eventAbort.abort(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -366,22 +348,43 @@ export class OpenCodeNativeBackend {
     await response.body?.cancel();
   }
 
+  async #readMessagesFrom(server: RunningOpenCodeServer, sessionId: string) {
+    const pages: Array<ReadonlyArray<OpenCodeVisibleMessage>> = [];
+    const seenCursors = new Set<string>();
+    let before: string | undefined;
+    while (true) {
+      const query = new URLSearchParams({ limit: "20" });
+      if (before) query.set("before", before);
+      const response = await this.#get(
+        `/session/${encodeURIComponent(sessionId)}/message?${query}`,
+        30_000,
+        server,
+      );
+      if (response.status === 404 || response.status === 410) {
+        await response.body?.cancel();
+        throw new NativeSessionUnavailable("opencode", sessionId);
+      }
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new OpenCodeReadError(
+          `OpenCode history failed with HTTP ${response.status}`,
+          response.status,
+        );
+      }
+      const cursor = response.headers.get("x-next-cursor") ?? undefined;
+      pages.unshift(compactOpenCodeMessages(await response.json()));
+      if (!cursor) return pages.flat();
+      if (seenCursors.has(cursor)) throw new Error("OpenCode history pagination repeated a cursor");
+      seenCursors.add(cursor);
+      before = cursor;
+    }
+  }
+
   async #readFrom(server: RunningOpenCodeServer, sessionId: string) {
-    const [messagesResponse, sessionResponse] = await Promise.all([
-      this.#get(`/session/${encodeURIComponent(sessionId)}/message`, 30_000, server),
+    const [messages, sessionResponse] = await Promise.all([
+      this.#readMessagesFrom(server, sessionId),
       this.#get(`/session/${encodeURIComponent(sessionId)}`, 30_000, server),
     ]);
-    if (messagesResponse.status === 404 || messagesResponse.status === 410) {
-      await messagesResponse.body?.cancel();
-      throw new NativeSessionUnavailable("opencode", sessionId);
-    }
-    if (!messagesResponse.ok) {
-      await messagesResponse.body?.cancel();
-      throw new OpenCodeReadError(
-        `OpenCode history failed with HTTP ${messagesResponse.status}`,
-        messagesResponse.status,
-      );
-    }
     if (sessionResponse.status === 404 || sessionResponse.status === 410) {
       await sessionResponse.body?.cancel();
       throw new NativeSessionUnavailable("opencode", sessionId);
@@ -394,80 +397,7 @@ export class OpenCodeNativeBackend {
       );
     }
     const session: unknown = await sessionResponse.json();
-    const messages: unknown = await messagesResponse.json();
     return transcriptFrom(session, messages);
-  }
-
-  async #readExport(sessionId: string) {
-    this.#requestAbort.signal.throwIfAborted();
-    const child = Bun.spawn([this.#executable, "export", "--pure", sessionId], {
-      cwd: this.#cwd,
-      env: Bun.env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      detached: process.platform !== "win32",
-    });
-    let stopping: Promise<void> | undefined;
-    const stop = () => (stopping ??= stopProcessTree(child));
-    let rejectAbort: (reason: unknown) => void = () => undefined;
-    const aborted = new Promise<never>((_, reject) => {
-      rejectAbort = reject;
-    });
-    const onAbort = () => {
-      void stop();
-      rejectAbort(
-        this.#requestAbort.signal.reason instanceof Error
-          ? this.#requestAbort.signal.reason
-          : new DOMException("The operation was aborted", "AbortError"),
-      );
-    };
-    this.#requestAbort.signal.addEventListener("abort", onAbort, { once: true });
-    const timeout = setTimeout(
-      () => {
-        void stop();
-        rejectAbort(
-          new Error(`OpenCode history export timed out after ${this.#exportTimeoutMs}ms`),
-        );
-      },
-      this.#exportTimeoutMs,
-    );
-    try {
-      if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream))
-        throw new Error("OpenCode export pipes are unavailable");
-      if (this.#requestAbort.signal.aborted) onAbort();
-      const [stdout, stderr, exitCode] = await Promise.race([
-        Promise.all([
-          readBoundedStream(child.stdout, this.#exportLimitBytes),
-          readStream(child.stderr, { limit: 128_000 }),
-          child.exited,
-        ]),
-        aborted,
-      ]);
-      if (exitCode !== 0) {
-        if (/session not found/i.test(stderr))
-          throw new NativeSessionUnavailable("opencode", sessionId, stderr.trim());
-        throw new Error(
-          `OpenCode history export failed with exit code ${exitCode}${stderr ? `\n${stderr}` : ""}`,
-        );
-      }
-      let exported: unknown;
-      try {
-        exported = JSON.parse(stdout);
-      } catch (cause) {
-        throw new Error("OpenCode history export returned invalid JSON", { cause });
-      }
-      const value = asObject(exported);
-      if (!Array.isArray(value?.messages))
-        throw new Error("OpenCode history export did not include messages");
-      return transcriptFrom(value?.info, value.messages);
-    } catch (cause) {
-      await stop();
-      throw cause;
-    } finally {
-      clearTimeout(timeout);
-      this.#requestAbort.signal.removeEventListener("abort", onAbort);
-    }
   }
 
   async read(sessionId: string) {
@@ -477,9 +407,19 @@ export class OpenCodeNativeBackend {
       if (!(cause instanceof OpenCodeReadError) || cause.status < 500 || cause.status > 504)
         throw cause;
       // OpenCode can leave the server that hosted an attached TUI unable to
-      // read history just after detach. Its read-only export command accesses
-      // the same persisted session without mutating or rerunning it.
-      return this.#readExport(sessionId);
+      // read history just after detach. A short-lived pure server reads the
+      // persisted session without external plugins, mutation, or model work.
+      const recovery = await startOpenCodeServer(
+        this.#executable,
+        this.#cwd,
+        this.#requestAbort.signal,
+        { pure: true },
+      );
+      try {
+        return await this.#readFrom(recovery, sessionId);
+      } finally {
+        await recovery.close();
+      }
     }
   }
 

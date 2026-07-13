@@ -18,32 +18,18 @@ const fakeMessages = [
     parts: [],
   },
 ];
-if (Bun.argv[2] === "export") {
-  if (!Bun.argv.includes("--pure")) {
-    process.stderr.write("expected --pure\n");
-    process.exit(2);
+const recoveryFile = Bun.env.RELAY_TEST_RECOVERY_FILE;
+const recoveryAttempts = () => {
+  if (!recoveryFile) return 0;
+  try {
+    return Number(readFileSync(recoveryFile, "utf8"));
+  } catch {
+    return 0;
   }
-  const sessionId = Bun.argv.find((argument) => argument.startsWith("ses_"));
-  if (sessionId === "ses_missing") {
-    process.stderr.write("Error: Session not found: ses_missing\n");
-    process.exit(1);
-  }
-  if (sessionId === "ses_hang") {
-    if (Bun.env.RELAY_TEST_EXPORT_PID_FILE)
-      writeFileSync(Bun.env.RELAY_TEST_EXPORT_PID_FILE, String(process.pid));
-    await new Promise(() => undefined);
-  }
-  if (sessionId === "ses_large") {
-    process.stdout.write("{" + "x".repeat(1_024));
-    await new Promise(() => undefined);
-  }
-  process.stdout.write(
-    JSON.stringify({
-      info: { ...(revertMessageID ? { revert: { messageID: revertMessageID } } : {}) },
-      messages: fakeMessages,
-    }),
-  );
-  process.exit(0);
+};
+if (Bun.argv[2] === "serve" && recoveryAttempts() >= 4 && !Bun.argv.includes("--pure")) {
+  process.stderr.write("expected pure recovery server\n");
+  process.exit(2);
 }
 const eventControllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const encoder = new TextEncoder();
@@ -97,10 +83,17 @@ const server = Bun.serve({
           info: {
             id: "msg_not_a_session",
             sessionID: latestSessionId,
-            parentID: "msg_parent_not_a_session",
+            parentID: "ses_wrong_message_parent",
             role: "assistant",
           },
         },
+      });
+      return Response.json(true);
+    }
+    if (url.pathname === "/test/message-id-event" && request.method === "POST") {
+      emitEvent({
+        type: "message.updated",
+        properties: { info: { id: "msg_not_a_session", role: "assistant" } },
       });
       return Response.json(true);
     }
@@ -130,6 +123,13 @@ const server = Bun.serve({
     if (url.pathname === "/session/status" && request.method === "GET") {
       return Response.json({});
     }
+    if (url.pathname.endsWith("/ses_paged") && request.method === "GET") return Response.json({});
+    if (
+      url.pathname.includes("/ses_missing") &&
+      request.method === "GET" &&
+      recoveryAttempts() >= 4
+    )
+      return new Response("missing", { status: 404 });
     if (/\/session\/[^/]+$/.test(url.pathname) && request.method === "GET") {
       return Response.json({
         ...(revertMessageID ? { revert: { messageID: revertMessageID } } : {}),
@@ -154,25 +154,44 @@ const server = Bun.serve({
       return Response.json({ info: { id: "hidden", role: "user" }, parts: body.parts });
     }
     if (url.pathname.endsWith("/message") && request.method === "GET") {
+      if (url.pathname.includes("/ses_paged/")) {
+        if (url.searchParams.get("limit") !== "20")
+          return new Response("expected bounded page", { status: 400 });
+        const older = [
+          {
+            info: { id: "page-user-1", role: "user" },
+            parts: [{ type: "text", text: "older prompt" }],
+          },
+          {
+            info: { id: "page-assistant-1", role: "assistant", time: { completed: 2 } },
+            parts: [{ type: "text", text: "older response" }],
+          },
+        ];
+        if (url.searchParams.get("before") === "older-page") return Response.json(older);
+        return Response.json(
+          [
+            {
+              info: { id: "page-user-2", role: "user" },
+              parts: [{ type: "text", text: "newer prompt" }],
+            },
+            {
+              info: { id: "page-assistant-2", role: "assistant", time: { completed: 4 } },
+              parts: [
+                { type: "tool", text: "ignored tool payload" },
+                { type: "text", text: "newer response" },
+              ],
+            },
+          ],
+          { headers: { "x-next-cursor": "older-page" } },
+        );
+      }
       if (url.pathname.includes("/ses_retry/") && retryHistoryAttempts++ === 0)
         return new Response("transient", { status: 503 });
-      const recoveryFile = Bun.env.RELAY_TEST_RECOVERY_FILE;
       if (
-        (url.pathname.includes("/ses_recover/") ||
-          url.pathname.includes("/ses_hang/") ||
-          url.pathname.includes("/ses_large/") ||
-          url.pathname.includes("/ses_missing/")) &&
+        (url.pathname.includes("/ses_recover/") || url.pathname.includes("/ses_missing/")) &&
         recoveryFile
       ) {
-        const attempts = Number(
-          (() => {
-            try {
-              return readFileSync(recoveryFile, "utf8");
-            } catch {
-              return "0";
-            }
-          })(),
-        );
+        const attempts = recoveryAttempts();
         writeFileSync(recoveryFile, String(attempts + 1));
         if (attempts < 4) return new Response("stuck attached server", { status: 503 });
       }
