@@ -59,9 +59,9 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      ref: ${{ steps.context.outputs.ref }}
-      release_created: ${{ steps.context.outputs.release_created }}
-      version: ${{ steps.context.outputs.version }}
+      ref: ${{ inputs.version != '' && github.ref || steps.context.outputs.ref }}
+      release_created: ${{ inputs.version != '' && 'true' || steps.context.outputs.release_created }}
+      version: ${{ inputs.version != '' && inputs.version || steps.context.outputs.version }}
     steps:
       - id: release
         if: inputs.version == ''
