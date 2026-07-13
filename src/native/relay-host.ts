@@ -11,8 +11,13 @@ export interface NativeBackend {
     readonly model?: string;
     readonly title: string;
     readonly handoff: ReadonlyArray<RelayMessage>;
+    readonly handoffOmittedMessages: number;
   }) => Promise<{ readonly sessionId?: string; readonly handoffInjected: boolean }>;
-  readonly inject: (sessionId: string, messages: ReadonlyArray<RelayMessage>) => Promise<void>;
+  readonly inject: (
+    sessionId: string,
+    messages: ReadonlyArray<RelayMessage>,
+    omittedMessages?: number,
+  ) => Promise<void>;
   readonly read: (sessionId: string) => Promise<ReadonlyArray<NativeTranscriptTurn>>;
   readonly isIdle: (sessionId: string) => Promise<boolean>;
   readonly resolveSession: (fallbackSessionId?: string) => Promise<string | undefined>;
@@ -34,13 +39,15 @@ const startBackend = async (harness: Harness, cwd: string): Promise<NativeBacken
   if (harness === "codex") {
     const backend = await CodexNativeBackend.start(executable, cwd);
     return {
-      prepareSession: ({ sessionId, model, handoff }) =>
+      prepareSession: ({ sessionId, model, handoff, handoffOmittedMessages }) =>
         backend.prepareSession({
           ...(sessionId ? { sessionId } : {}),
           ...(model ? { model } : {}),
           handoff,
+          handoffOmittedMessages,
         }),
-      inject: (sessionId, messages) => backend.inject(sessionId, messages),
+      inject: (sessionId, messages, omittedMessages) =>
+        backend.inject(sessionId, messages, omittedMessages),
       read: (sessionId) => backend.read(sessionId),
       isIdle: (sessionId) => backend.isIdle(sessionId),
       resolveSession: (sessionId) => backend.resolveSession(sessionId),
@@ -55,7 +62,8 @@ const startBackend = async (harness: Harness, cwd: string): Promise<NativeBacken
       sessionId: await backend.ensureSession({ ...(sessionId ? { sessionId } : {}), title }),
       handoffInjected: false,
     }),
-    inject: (sessionId, messages) => backend.inject(sessionId, messages),
+    inject: (sessionId, messages, omittedMessages) =>
+      backend.inject(sessionId, messages, omittedMessages),
     read: (sessionId) => backend.read(sessionId),
     isIdle: (sessionId) => backend.isIdle(sessionId),
     resolveSession: (sessionId) =>
@@ -131,7 +139,7 @@ const synchronize = async (input: {
   const messages = input.sessionChanged
     ? messagesOutsideTranscript(delta.messages, turns)
     : delta.messages;
-  if (messages.length > 0) await backend.inject(sessionId, messages);
+  if (messages.length > 0) await backend.inject(sessionId, messages, delta.omittedMessages);
 
   let thread = await controller.bind({
     threadId: input.thread.id,
@@ -171,6 +179,7 @@ const runHarness = async (
       ...(model ? { model } : {}),
       title: thread.title,
       handoff: initialDelta.messages,
+      handoffOmittedMessages: initialDelta.omittedMessages,
     });
     let sessionId = prepared.sessionId;
     if (sessionId) {

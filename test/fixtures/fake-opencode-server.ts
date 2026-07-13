@@ -41,7 +41,8 @@ const server = Bun.serve({
         part?.type !== "text" ||
         part.synthetic !== true ||
         typeof part.text !== "string" ||
-        !part.text.includes('<relay_handoff version="1">')
+        !part.text.includes('<relay_handoff version="1">') ||
+        !part.text.includes("7 older messages")
       ) {
         return new Response("invalid hidden handoff", { status: 400 });
       }

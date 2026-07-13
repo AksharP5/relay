@@ -24,7 +24,10 @@ const visibleText = (parts: unknown) =>
         .trim()
     : "";
 
-export const parseOpenCodeNativeTurns = (value: unknown): ReadonlyArray<NativeTranscriptTurn> => {
+export const parseOpenCodeNativeTurns = (
+  value: unknown,
+  revertedMessageId?: string,
+): ReadonlyArray<NativeTranscriptTurn> => {
   if (!Array.isArray(value)) return [];
   const turns: Array<NativeTranscriptTurn> = [];
   let pending: { id: string; prompt: string } | undefined;
@@ -33,6 +36,7 @@ export const parseOpenCodeNativeTurns = (value: unknown): ReadonlyArray<NativeTr
     const message = asObject(candidate);
     const info = asObject(message?.info);
     if (!info || typeof info.id !== "string") continue;
+    if (info.id === revertedMessageId) break;
     if (info.role === "user") {
       const prompt = visibleText(message?.parts);
       pending = prompt ? { id: info.id, prompt } : undefined;
@@ -132,14 +136,14 @@ export class OpenCodeNativeBackend {
     return session.id;
   }
 
-  async inject(sessionId: string, messages: ReadonlyArray<RelayMessage>) {
+  async inject(sessionId: string, messages: ReadonlyArray<RelayMessage>, omittedMessages = 0) {
     if (messages.length === 0) return;
     const response = await fetch(this.#url(`/session/${encodeURIComponent(sessionId)}/message`), {
       method: "POST",
       headers: this.#headers(true),
       body: JSON.stringify({
         noReply: true,
-        parts: [{ type: "text", text: buildHandoff(messages), synthetic: true }],
+        parts: [{ type: "text", text: buildHandoff(messages, omittedMessages), synthetic: true }],
       }),
       signal: AbortSignal.timeout(30_000),
     });
@@ -148,12 +152,26 @@ export class OpenCodeNativeBackend {
   }
 
   async read(sessionId: string) {
-    const response = await fetch(this.#url(`/session/${encodeURIComponent(sessionId)}/message`), {
-      headers: this.#headers(),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) throw new Error(`OpenCode history failed with HTTP ${response.status}`);
-    return parseOpenCodeNativeTurns(await response.json());
+    const [messagesResponse, sessionResponse] = await Promise.all([
+      fetch(this.#url(`/session/${encodeURIComponent(sessionId)}/message`), {
+        headers: this.#headers(),
+        signal: AbortSignal.timeout(30_000),
+      }),
+      fetch(this.#url(`/session/${encodeURIComponent(sessionId)}`), {
+        headers: this.#headers(),
+        signal: AbortSignal.timeout(30_000),
+      }),
+    ]);
+    if (!messagesResponse.ok)
+      throw new Error(`OpenCode history failed with HTTP ${messagesResponse.status}`);
+    if (!sessionResponse.ok)
+      throw new Error(`OpenCode session state failed with HTTP ${sessionResponse.status}`);
+    const session = asObject(await sessionResponse.json());
+    const revertedMessageId = asObject(session?.revert)?.messageID;
+    return parseOpenCodeNativeTurns(
+      await messagesResponse.json(),
+      typeof revertedMessageId === "string" ? revertedMessageId : undefined,
+    );
   }
 
   async isIdle(sessionId: string) {

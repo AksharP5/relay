@@ -133,8 +133,25 @@ export const parseCodexNativeTurns = (value: unknown): ReadonlyArray<NativeTrans
   });
 };
 
-const handoffItems = (messages: ReadonlyArray<RelayMessage>): ReadonlyArray<JsonObject> =>
-  messages.map((message) =>
+const handoffItems = (
+  messages: ReadonlyArray<RelayMessage>,
+  omittedMessages = 0,
+): ReadonlyArray<JsonObject> => [
+  ...(omittedMessages > 0
+    ? [
+        {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Relay omitted or truncated ${omittedMessages} older message${omittedMessages === 1 ? "" : "s"} to keep this handoff within its context budget. The complete canonical transcript is available through \`relay history\` if the retained context and current workspace are insufficient.`,
+            },
+          ],
+        },
+      ]
+    : []),
+  ...messages.map((message) =>
     message.role === "user"
       ? {
           type: "message",
@@ -146,7 +163,8 @@ const handoffItems = (messages: ReadonlyArray<RelayMessage>): ReadonlyArray<Json
           role: "assistant",
           content: [{ type: "output_text", text: message.content }],
         },
-  );
+  ),
+];
 
 export class CodexNativeBackend {
   readonly #child: ReturnType<typeof Bun.spawn>;
@@ -264,6 +282,7 @@ export class CodexNativeBackend {
     sessionId?: string;
     model?: string;
     handoff: ReadonlyArray<RelayMessage>;
+    handoffOmittedMessages?: number;
   }): Promise<{ sessionId?: string; handoffInjected: boolean }> {
     if (input.sessionId) {
       return {
@@ -289,7 +308,7 @@ export class CodexNativeBackend {
       const sessionId = threadIdFrom(result);
       await connection.request("thread/inject_items", {
         threadId: sessionId,
-        items: handoffItems(input.handoff),
+        items: handoffItems(input.handoff, input.handoffOmittedMessages),
       });
       this.#baselineLoaded.add(sessionId);
       return { sessionId, handoffInjected: true };
@@ -298,14 +317,14 @@ export class CodexNativeBackend {
     }
   }
 
-  async inject(sessionId: string, messages: ReadonlyArray<RelayMessage>) {
+  async inject(sessionId: string, messages: ReadonlyArray<RelayMessage>, omittedMessages = 0) {
     if (messages.length === 0) return;
     const connection = await this.#connect();
     try {
       await connection.request("thread/resume", { threadId: sessionId, cwd: this.#cwd });
       await connection.request("thread/inject_items", {
         threadId: sessionId,
-        items: handoffItems(messages),
+        items: handoffItems(messages, omittedMessages),
       });
     } finally {
       await connection.close();

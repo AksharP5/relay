@@ -39,6 +39,24 @@ describe("OpenCode native backend", () => {
     ).toEqual([{ id: "user-1", prompt: "Fix checkout", response: "Fixed checkout." }]);
   });
 
+  it("does not import turns hidden by native OpenCode undo", () => {
+    const messages = [
+      { info: { id: "user-1", role: "user" }, parts: [{ type: "text", text: "Keep" }] },
+      {
+        info: { id: "assistant-1", role: "assistant", time: { completed: 2 } },
+        parts: [{ type: "text", text: "Kept." }],
+      },
+      { info: { id: "user-2", role: "user" }, parts: [{ type: "text", text: "Undo" }] },
+      {
+        info: { id: "assistant-2", role: "assistant", time: { completed: 4 } },
+        parts: [{ type: "text", text: "Undone." }],
+      },
+    ];
+    expect(parseOpenCodeNativeTurns(messages, "user-2")).toEqual([
+      { id: "user-1", prompt: "Keep", response: "Kept." },
+    ]);
+  });
+
   it("creates authenticated sessions and returns the native attach command", async () => {
     const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
     try {
@@ -52,16 +70,20 @@ describe("OpenCode native backend", () => {
       expect(command.env?.OPENCODE_SERVER_PASSWORD).toBeTruthy();
       expect(await backend.isIdle(sessionId)).toBe(true);
       expect(await backend.resolveSession(sessionId)).toBe(sessionId);
-      await backend.inject(sessionId, [
-        {
-          id: "message-1",
-          seq: 1,
-          role: "user",
-          content: "Inspect checkout",
-          harness: "codex",
-          createdAt: "2026-07-13T00:00:00.000Z",
-        },
-      ]);
+      await backend.inject(
+        sessionId,
+        [
+          {
+            id: "message-1",
+            seq: 1,
+            role: "user",
+            content: "Inspect checkout",
+            harness: "codex",
+            createdAt: "2026-07-13T00:00:00.000Z",
+          },
+        ],
+        7,
+      );
     } finally {
       await backend.close();
     }
