@@ -184,7 +184,11 @@ describe("native Relay host", () => {
       startBackend: async () => backend,
       selectHarness: async () => undefined,
       runTui: async () => {
-        turns.push({ id: "cold-turn", prompt: "first turn", response: "first answer" });
+        turns.push({
+          id: "cold-turn",
+          prompt: "first turn",
+          response: "first answer",
+        });
         return { reason: "exit", exitCode: 0 };
       },
     });
@@ -212,6 +216,81 @@ describe("native Relay host", () => {
     });
 
     expect(thread().bindings.codex).toBeUndefined();
+  });
+
+  it("hands off pending cross-harness messages before importing out-of-band native turns", async () => {
+    const { controller, messages } = makeController();
+    await controller.bind({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "codex-session",
+      lastSyncedSeq: 0,
+    });
+    await controller.importTurns({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "codex-session",
+      turns: [
+        {
+          id: "codex-original",
+          prompt: "codex prompt",
+          response: "codex answer",
+        },
+      ],
+    });
+    await controller.bind({
+      threadId: "relay-thread",
+      harness: "opencode",
+      sessionId: "opencode-session",
+      lastSyncedSeq: 0,
+    });
+    await controller.importTurns({
+      threadId: "relay-thread",
+      harness: "opencode",
+      sessionId: "opencode-session",
+      turns: [{ id: "opencode-turn", prompt: "open prompt", response: "open answer" }],
+    });
+    await controller.switchHarness("relay-thread", "codex");
+
+    const injected: Array<RelayMessage> = [];
+    const backend: NativeBackend = {
+      prepareSession: async () => ({
+        sessionId: "codex-session",
+        handoffInjected: false,
+      }),
+      inject: async (_sessionId, delta) => void injected.push(...delta),
+      read: async () => [
+        {
+          id: "codex-original",
+          prompt: "codex prompt",
+          response: "codex answer",
+        },
+        {
+          id: "codex-out-of-band",
+          prompt: "out of band",
+          response: "out-of-band answer",
+        },
+      ],
+      isIdle: async () => true,
+      resolveSession: async (fallback) => fallback,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      runTui: async () => ({ reason: "exit", exitCode: 0 }),
+    });
+
+    expect(injected.map((message) => message.content)).toEqual(["open prompt", "open answer"]);
+    expect(messages.map((message) => message.content)).toEqual([
+      "codex prompt",
+      "codex answer",
+      "open prompt",
+      "open answer",
+      "out of band",
+      "out-of-band answer",
+    ]);
   });
 });
 

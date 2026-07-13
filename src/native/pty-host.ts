@@ -12,7 +12,10 @@ export interface NativeTuiCommand {
 export type NativeTuiExit =
   | { readonly reason: "switch" }
   | { readonly reason: "exit"; readonly exitCode: number }
-  | { readonly reason: "signal"; readonly signal: "SIGHUP" | "SIGTERM" | "SIGQUIT" };
+  | {
+      readonly reason: "signal";
+      readonly signal: "SIGHUP" | "SIGTERM" | "SIGQUIT";
+    };
 
 interface HostInput extends EventEmitter {
   readonly isTTY?: boolean;
@@ -93,6 +96,7 @@ export const runNativeTui = async (
   let hostFailure: Error | undefined;
   let stopping: Promise<void> | undefined;
   let prefixTimer: ReturnType<typeof setTimeout> | undefined;
+  const pendingSwitchInput: Array<Uint8Array> = [];
   let terminal: Bun.Terminal | undefined;
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let resolvePtyEof: () => void;
@@ -146,23 +150,44 @@ export const runNativeTui = async (
   };
 
   const onInput = (chunk: Buffer | Uint8Array | string) => {
-    if (prefixTimer) clearTimeout(prefixTimer);
+    if (prefixTimer) {
+      clearTimeout(prefixTimer);
+      prefixTimer = undefined;
+    }
     const bytes = typeof chunk === "string" ? Buffer.from(chunk) : new Uint8Array(chunk);
+    if (switchRequested || parentSignal) return;
+    if (switchCheckPending) {
+      pendingSwitchInput.push(bytes.slice());
+      return;
+    }
     const routed = router.route(bytes);
     writeInput(routed.forward);
-    if (!routed.switchRequested || switchRequested || switchCheckPending) return;
+    if (!routed.switchRequested) {
+      if (router.hasPendingPrefix)
+        prefixTimer = setTimeout(flushPrefix, options.prefixTimeoutMs ?? 500);
+      return;
+    }
+    pendingSwitchInput.push(routed.afterSwitch);
     switchCheckPending = true;
     void Promise.resolve(options.onSwitchRequest?.() ?? true)
       .then((allowed) => {
-        switchCheckPending = false;
         if (!allowed || switchRequested || parentSignal) {
-          if (!allowed) writeOutput(Uint8Array.of(0x07));
+          if (!allowed) {
+            for (const buffered of pendingSwitchInput.splice(0)) writeInput(buffered);
+            writeOutput(Uint8Array.of(0x07));
+          } else {
+            pendingSwitchInput.length = 0;
+          }
+          switchCheckPending = false;
           return;
         }
+        pendingSwitchInput.length = 0;
+        switchCheckPending = false;
         switchRequested = true;
         if (child) stopping = stopChild(child);
       })
       .catch((cause) => {
+        pendingSwitchInput.length = 0;
         switchCheckPending = false;
         hostFailure = cause instanceof Error ? cause : new Error(String(cause));
         if (child) stopping = stopChild(child);
@@ -214,14 +239,7 @@ export const runNativeTui = async (
     io.resizeSource.on("SIGTERM", onTerminate);
     io.resizeSource.on("SIGQUIT", onQuit);
 
-    const prefixPoll = setInterval(() => {
-      if (router.hasPendingPrefix && !prefixTimer)
-        prefixTimer = setTimeout(flushPrefix, options.prefixTimeoutMs ?? 500);
-    }, 25);
-    prefixPoll.unref?.();
-
     const exitCode = await child.exited;
-    clearInterval(prefixPoll);
     if (stopping) await stopping;
     await Promise.race([ptyEof, Bun.sleep(250)]);
     if (outputQueue.length > 0 || outputBlocked) {

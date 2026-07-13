@@ -53,7 +53,19 @@ describe("native input routing", () => {
     expect(prefix.switchRequested).toBe(false);
     const chord = router.route(Buffer.from("r"));
     expect(chord.forward).toHaveLength(0);
+    expect(chord.afterSwitch).toHaveLength(0);
     expect(chord.switchRequested).toBe(true);
+  });
+
+  it("forwards Escape immediately and preserves bytes after a switch chord", () => {
+    const router = new NativeInputRouter();
+    const escape = router.route(Buffer.from("\u001b"));
+    expect(Buffer.from(escape.forward)).toEqual(Buffer.from("\u001b"));
+    expect(router.hasPendingPrefix).toBe(false);
+
+    const chord = router.route(Buffer.from([0x1d, ...Buffer.from("r/resume")]));
+    expect(chord.switchRequested).toBe(true);
+    expect(Buffer.from(chord.afterSwitch).toString()).toBe("/resume");
   });
 
   it("does not treat a pasted Relay chord as a switch", () => {
@@ -79,9 +91,14 @@ describe("native input routing", () => {
 
   it("recognizes Codex CSI-u encoding and forwards an unused prefix", () => {
     const router = new NativeInputRouter();
-    expect(router.route(Buffer.from("\u001b[93;")).forward).toHaveLength(0);
-    expect(router.route(Buffer.from("5u")).forward).toHaveLength(0);
+    expect(router.route(Buffer.from("\u001b[93;5u")).forward).toHaveLength(0);
     expect(router.route(Buffer.from("r")).switchRequested).toBe(true);
+
+    const split = new NativeInputRouter();
+    expect(Buffer.from(split.route(Buffer.from("\u001b[93;")).forward).toString()).toBe(
+      "\u001b[93;",
+    );
+    expect(Buffer.from(split.route(Buffer.from("5u")).forward).toString()).toBe("5u");
 
     const unused = new NativeInputRouter();
     unused.route(Buffer.from([0x1d]));
@@ -175,10 +192,7 @@ describe("native PTY host", () => {
     running.push(result);
 
     await Bun.sleep(50);
-    input.emit("data", Buffer.from([0x1d]));
-    input.emit("data", Buffer.from("r"));
-    await Bun.sleep(25);
-    input.emit("data", Buffer.from("/resume"));
+    input.emit("data", Buffer.from([0x1d, ...Buffer.from("r/resume")]));
     await Bun.sleep(25);
     expect(output.text()).toContain(`INPUT:${Buffer.from("/resume").toString("hex")}`);
 
@@ -186,5 +200,46 @@ describe("native PTY host", () => {
     input.emit("data", Buffer.from([0x1d]));
     input.emit("data", Buffer.from("r"));
     expect(await result).toEqual({ reason: "switch" });
+  });
+
+  it("buffers post-chord input while checking and restores its order after a veto", async () => {
+    const input = new TestInput();
+    const output = new TestOutput();
+    const resize = new EventEmitter();
+    let resolveIdle: ((idle: boolean) => void) | undefined;
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output, resizeSource: resize },
+      {
+        onSwitchRequest: () =>
+          new Promise<boolean>((resolve) => {
+            resolveIdle = resolve;
+          }),
+      },
+    );
+    running.push(result);
+
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from([0x1d, ...Buffer.from("rabc")]));
+    input.emit("data", Buffer.from("def"));
+    await Bun.sleep(20);
+    expect(output.text()).not.toContain(`INPUT:${Buffer.from("def").toString("hex")}`);
+
+    resolveIdle?.(false);
+    await Bun.sleep(30);
+    const nativeInput = output
+      .text()
+      .split("INPUT:")
+      .slice(1)
+      .join("")
+      .replaceAll(/[^0-9a-f]/g, "");
+    expect(Buffer.from(nativeInput, "hex").toString()).toBe("abcdef");
+
+    resize.emit("SIGTERM");
+    expect(await result).toEqual({ reason: "signal", signal: "SIGTERM" });
   });
 });

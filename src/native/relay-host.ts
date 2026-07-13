@@ -12,7 +12,10 @@ export interface NativeBackend {
     readonly title: string;
     readonly handoff: ReadonlyArray<RelayMessage>;
     readonly handoffOmittedMessages: number;
-  }) => Promise<{ readonly sessionId?: string; readonly handoffInjected: boolean }>;
+  }) => Promise<{
+    readonly sessionId?: string;
+    readonly handoffInjected: boolean;
+  }>;
   readonly inject: (
     sessionId: string,
     messages: ReadonlyArray<RelayMessage>,
@@ -59,7 +62,10 @@ const startBackend = async (harness: Harness, cwd: string): Promise<NativeBacken
   const backend = await OpenCodeNativeBackend.start(executable, cwd);
   return {
     prepareSession: async ({ sessionId, title }) => ({
-      sessionId: await backend.ensureSession({ ...(sessionId ? { sessionId } : {}), title }),
+      sessionId: await backend.ensureSession({
+        ...(sessionId ? { sessionId } : {}),
+        title,
+      }),
       handoffInjected: false,
     }),
     inject: (sessionId, messages, omittedMessages) =>
@@ -128,14 +134,6 @@ const synchronize = async (input: {
       ...(turns.at(-1)?.id ? { nativeCursor: turns.at(-1)!.id } : {}),
       ...(model ? { model } : {}),
     });
-  } else {
-    await controller.importTurns({
-      threadId: input.thread.id,
-      harness,
-      sessionId,
-      turns,
-      ...(model ? { model } : {}),
-    });
   }
 
   const delta = await controller.delta(input.thread.id, harness);
@@ -153,15 +151,13 @@ const synchronize = async (input: {
     ...(model ? { model } : {}),
   });
 
-  if (input.sessionChanged) {
-    thread = await controller.importTurns({
-      threadId: input.thread.id,
-      harness,
-      sessionId,
-      turns,
-      ...(model ? { model } : {}),
-    });
-  }
+  thread = await controller.importTurns({
+    threadId: input.thread.id,
+    harness,
+    sessionId,
+    turns,
+    ...(model ? { model } : {}),
+  });
   return thread;
 };
 
