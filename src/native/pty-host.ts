@@ -383,12 +383,12 @@ export const runNativeTui = async (
           const inputProxy = spawn(inputProxyExecutable, ["/dev/tty"], {
             stdio: ["ignore", "pipe", "ignore"],
             env: {},
-            detached: process.platform !== "win32",
           });
           if (inputProxy.pid === undefined) throw new Error("Relay input reader did not start");
           await trackManagedProcess(
             inputProxy as typeof inputProxy & { readonly pid: number },
             "terminal-input-reader",
+            { processOnly: true },
           );
           let reading = true;
           let proxyFailed = false;

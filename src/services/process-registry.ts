@@ -12,6 +12,7 @@ const ProcessClaim = Schema.Struct({
   token: Schema.String,
   owner: Schema.Struct({ pid: Schema.Number, startedAt: Schema.String }),
   child: Schema.Struct({ pid: Schema.Number, pgid: Schema.Number, startedAt: Schema.String }),
+  scope: Schema.Literals(["group", "process"]),
   kind: Schema.String,
   createdAt: Schema.String,
 });
@@ -82,6 +83,14 @@ const signalGroup = (pgid: number, signal: NodeJS.Signals) => {
   }
 };
 
+const signalProcess = (pid: number, signal: NodeJS.Signals) => {
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // ESRCH means the process has already exited.
+  }
+};
+
 const groupIsAlive = (pgid: number) => {
   try {
     process.kill(-pgid, 0);
@@ -100,7 +109,20 @@ const waitForGroupExit = async (pgid: number, timeoutMs: number) => {
   return !groupIsAlive(pgid);
 };
 
-export const trackManagedProcess = async (child: ProcessLike, kind: string) => {
+const waitForProcessExit = async (pid: number, startedAt: string, timeoutMs: number) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await processSnapshot(pid))?.startedAt !== startedAt) return true;
+    await Bun.sleep(25);
+  }
+  return (await processSnapshot(pid))?.startedAt !== startedAt;
+};
+
+export const trackManagedProcess = async (
+  child: ProcessLike,
+  kind: string,
+  options: { readonly processOnly?: boolean } = {},
+) => {
   if (process.platform === "win32") return;
   const [owner, spawned] = await Promise.all([
     processSnapshot(process.pid),
@@ -108,7 +130,8 @@ export const trackManagedProcess = async (child: ProcessLike, kind: string) => {
   ]);
   if (!spawned) return;
   if (!owner) {
-    signalGroup(spawned.pgid, "SIGKILL");
+    if (options.processOnly) signalProcess(child.pid, "SIGKILL");
+    else signalGroup(spawned.pgid, "SIGKILL");
     throw new Error(`Relay could not identify the owner of its ${kind} process`);
   }
   await ensureRegistry();
@@ -120,12 +143,14 @@ export const trackManagedProcess = async (child: ProcessLike, kind: string) => {
       token,
       owner: { pid: process.pid, startedAt: owner.startedAt },
       child: { pid: child.pid, pgid: spawned.pgid, startedAt: spawned.startedAt },
+      scope: options.processOnly ? "process" : "group",
       kind,
       createdAt: new Date().toISOString(),
     });
     registrations.set(child as object, path);
   } catch (cause) {
-    signalGroup(spawned.pgid, "SIGKILL");
+    if (options.processOnly) signalProcess(child.pid, "SIGKILL");
+    else signalGroup(spawned.pgid, "SIGKILL");
     throw cause;
   }
 };
@@ -163,15 +188,24 @@ export const cleanupOrphanedProcesses = async () => {
     const owner = await processSnapshot(claim.owner.pid);
     if (owner?.startedAt === claim.owner.startedAt) continue;
     const child = await processSnapshot(claim.child.pid);
-    if (
-      child?.startedAt === claim.child.startedAt &&
-      child.pgid === claim.child.pgid &&
-      claim.child.pgid > 1
-    ) {
-      signalGroup(claim.child.pgid, "SIGTERM");
-      if (!(await waitForGroupExit(claim.child.pgid, 750))) {
-        signalGroup(claim.child.pgid, "SIGKILL");
-        if (!(await waitForGroupExit(claim.child.pgid, 750))) {
+    if (child?.startedAt === claim.child.startedAt && child.pgid === claim.child.pgid) {
+      if (claim.scope === "group" && claim.child.pgid <= 1) {
+        discarded += 1;
+        await rm(path, { force: true });
+        continue;
+      }
+      const signal = (value: NodeJS.Signals) =>
+        claim.scope === "group"
+          ? signalGroup(claim.child.pgid, value)
+          : signalProcess(claim.child.pid, value);
+      const waitForExit = (timeoutMs: number) =>
+        claim.scope === "group"
+          ? waitForGroupExit(claim.child.pgid, timeoutMs)
+          : waitForProcessExit(claim.child.pid, claim.child.startedAt, timeoutMs);
+      signal("SIGTERM");
+      if (!(await waitForExit(750))) {
+        signal("SIGKILL");
+        if (!(await waitForExit(750))) {
           failed += 1;
           continue;
         }

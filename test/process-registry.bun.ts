@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 const directory = await mkdtemp(join(tmpdir(), "relay-process-registry-"));
 Bun.env.RELAY_DATA_DIR = directory;
-const { cleanupOrphanedProcesses } = await import("../src/services/process-registry.ts");
+const { cleanupOrphanedProcesses, trackManagedProcess } =
+  await import("../src/services/process-registry.ts");
 
 const waitFor = async (predicate: () => Promise<boolean>, timeoutMs = 3_000) => {
   const deadline = Date.now() + timeoutMs;
@@ -80,6 +81,7 @@ describe("managed process recovery", () => {
         token: "reused",
         owner: { pid: 2_147_483_647, startedAt: "never" },
         child: { pid: child.pid, pgid: child.pid, startedAt: "different process" },
+        scope: "group",
         kind: "identity-test",
         createdAt: new Date().toISOString(),
       })}\n`,
@@ -91,5 +93,28 @@ describe("managed process recovery", () => {
     expect(processIsAlive(child.pid)).toBe(true);
     process.kill(-child.pid, "SIGKILL");
     await child.exited;
+  });
+
+  it("recovers a non-detached terminal reader without signaling its shared group", async () => {
+    const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    await trackManagedProcess(child, "process-only-test", { processOnly: true });
+    const processes = join(directory, "processes");
+    const [claimName] = (await readdir(processes)).filter((name) => name.endsWith(".json"));
+    const claimPath = join(processes, claimName!);
+    const claim = JSON.parse(await readFile(claimPath, "utf8")) as {
+      scope: string;
+      owner: { pid: number; startedAt: string };
+    };
+    expect(claim.scope).toBe("process");
+    claim.owner = { pid: 2_147_483_647, startedAt: "never" };
+    await writeFile(claimPath, `${JSON.stringify(claim)}\n`, { mode: 0o600 });
+
+    const result = await cleanupOrphanedProcesses();
+    expect(result.terminated).toBe(1);
+    expect(await child.exited).not.toBe(0);
   });
 });
