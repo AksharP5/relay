@@ -23,6 +23,7 @@ export const RelayMessage = Schema.Struct({
   role: MessageRole,
   content: Schema.String,
   harness: Harness,
+  nativeId: Schema.optional(Schema.String),
   createdAt: Schema.String,
 });
 export type RelayMessage = typeof RelayMessage.Type;
@@ -32,6 +33,7 @@ export const HarnessBinding = Schema.Struct({
   sessionId: Schema.String,
   model: Schema.optional(Schema.String),
   lastSyncedSeq: Schema.Number,
+  nativeCursor: Schema.optional(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });
@@ -114,6 +116,12 @@ export interface HarnessControlInput {
 
 export interface HarnessControlResult {
   readonly message: string;
+}
+
+export interface NativeTranscriptTurn {
+  readonly id: string;
+  readonly prompt: string;
+  readonly response: string;
 }
 
 export const isHarness = (value: string): value is Harness =>

@@ -3,18 +3,12 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { RelayMessage } from "../domain.ts";
+import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { WebSocketAppServerConnection } from "../harnesses/codex-app-server.ts";
 import { readStream } from "../services/process-runner.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
 type JsonObject = Record<string, unknown>;
-
-export interface NativeTranscriptTurn {
-  readonly id: string;
-  readonly prompt: string;
-  readonly response: string;
-}
 
 const asObject = (value: unknown): JsonObject | undefined =>
   value !== null && typeof value === "object" ? (value as JsonObject) : undefined;

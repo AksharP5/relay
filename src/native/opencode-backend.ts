@@ -1,7 +1,6 @@
-import type { RelayMessage } from "../domain.ts";
+import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { buildHandoff } from "../handoff.ts";
 import { startOpenCodeServer, type RunningOpenCodeServer } from "../harnesses/opencode-server.ts";
-import type { NativeTranscriptTurn } from "./codex-backend.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
 type JsonObject = Record<string, unknown>;

@@ -8,6 +8,7 @@ import {
   RelayThread,
   type Harness,
   type HarnessBinding,
+  type NativeTranscriptTurn,
 } from "../domain.ts";
 
 const defaultIndex: RelayIndex = { currentThreadId: null, threadIds: [] };
@@ -358,6 +359,21 @@ export interface CommitTurnInput {
   readonly model?: string;
 }
 
+export interface BindNativeSessionInput {
+  readonly harness: Harness;
+  readonly sessionId: string;
+  readonly lastSyncedSeq: number;
+  readonly nativeCursor?: string;
+  readonly model?: string;
+}
+
+export interface ImportNativeTurnsInput {
+  readonly harness: Harness;
+  readonly sessionId: string;
+  readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+  readonly model?: string;
+}
+
 export class ThreadStore extends Context.Service<
   ThreadStore,
   {
@@ -398,6 +414,14 @@ export class ThreadStore extends Context.Service<
       { readonly thread: RelayThread; readonly response: RelayMessage },
       StoreError
     >;
+    readonly bindNativeSession: (
+      thread: RelayThread,
+      input: BindNativeSessionInput,
+    ) => Effect.Effect<RelayThread, StoreError>;
+    readonly importNativeTurns: (
+      thread: RelayThread,
+      input: ImportNativeTurnsInput,
+    ) => Effect.Effect<RelayThread, StoreError>;
     readonly setCurrent: (id: string) => Effect.Effect<void, StoreError | ThreadNotFound>;
     readonly setHarness: (
       thread: RelayThread,
@@ -645,6 +669,146 @@ export class ThreadStore extends Context.Service<
         catch: (cause) =>
           new StoreError({ operation: "commit turn", message: errorMessage(cause), cause }),
       }),
+    ),
+
+    bindNativeSession: Effect.fn("ThreadStore.bindNativeSession")(
+      (thread: RelayThread, input: BindNativeSessionInput) =>
+        Effect.tryPromise({
+          try: async () => {
+            const now = new Date().toISOString();
+            const existing = thread.bindings[input.harness];
+            const binding: HarnessBinding = {
+              harness: input.harness,
+              sessionId: input.sessionId,
+              ...(input.model
+                ? { model: input.model }
+                : existing?.model
+                  ? { model: existing.model }
+                  : {}),
+              lastSyncedSeq: input.lastSyncedSeq,
+              ...(input.nativeCursor ? { nativeCursor: input.nativeCursor } : {}),
+              createdAt: existing?.createdAt ?? now,
+              updatedAt: now,
+            };
+            const updated: RelayThread = {
+              ...thread,
+              activeHarness: input.harness,
+              bindings: { ...thread.bindings, [input.harness]: binding },
+              preferredModels: {
+                ...thread.preferredModels,
+                ...(binding.model ? { [input.harness]: binding.model } : {}),
+              },
+              updatedAt: now,
+            };
+            await atomicJsonWrite(metadataPath(thread.id), updated);
+            return updated;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "bind native session",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    importNativeTurns: Effect.fn("ThreadStore.importNativeTurns")(
+      (thread: RelayThread, input: ImportNativeTurnsInput) =>
+        Effect.tryPromise({
+          try: async () => {
+            const existingMessages = await readMessages(thread.id);
+            const importedIds = new Set(
+              existingMessages.flatMap((message) =>
+                message.harness === input.harness && message.nativeId ? [message.nativeId] : [],
+              ),
+            );
+            const fresh = input.turns.filter((turn) => !importedIds.has(turn.id));
+            const now = new Date().toISOString();
+            let nextSeq = thread.lastSeq;
+            const messages = fresh.flatMap((turn): ReadonlyArray<RelayMessage> => {
+              const user: RelayMessage = {
+                id: crypto.randomUUID(),
+                seq: ++nextSeq,
+                role: "user",
+                content: turn.prompt,
+                harness: input.harness,
+                nativeId: turn.id,
+                createdAt: now,
+              };
+              const assistant: RelayMessage = {
+                id: crypto.randomUUID(),
+                seq: ++nextSeq,
+                role: "assistant",
+                content: turn.response,
+                harness: input.harness,
+                nativeId: turn.id,
+                createdAt: now,
+              };
+              return [user, assistant];
+            });
+            const existingBinding = thread.bindings[input.harness];
+            const binding: HarnessBinding = {
+              harness: input.harness,
+              sessionId: input.sessionId,
+              ...(input.model
+                ? { model: input.model }
+                : existingBinding?.model
+                  ? { model: existingBinding.model }
+                  : {}),
+              lastSyncedSeq: messages.length > 0 ? nextSeq : (existingBinding?.lastSyncedSeq ?? 0),
+              ...(input.turns.at(-1)?.id
+                ? { nativeCursor: input.turns.at(-1)!.id }
+                : existingBinding?.nativeCursor
+                  ? { nativeCursor: existingBinding.nativeCursor }
+                  : {}),
+              createdAt: existingBinding?.createdAt ?? now,
+              updatedAt: now,
+            };
+            const updateTitle =
+              fresh.length > 0 &&
+              (thread.title === "New Relay task" || thread.title === "Untitled task");
+            const updated: RelayThread = {
+              ...thread,
+              ...(updateTitle
+                ? {
+                    title:
+                      fresh[0]!.prompt.length <= 64
+                        ? fresh[0]!.prompt
+                        : `${fresh[0]!.prompt.slice(0, 61)}...`,
+                  }
+                : {}),
+              activeHarness: input.harness,
+              bindings: { ...thread.bindings, [input.harness]: binding },
+              preferredModels: {
+                ...thread.preferredModels,
+                ...(binding.model ? { [input.harness]: binding.model } : {}),
+              },
+              lastSeq: nextSeq,
+              updatedAt: now,
+            };
+
+            if (messages.length > 0) {
+              const pending: PendingTurn = { version: 1, messages: [...messages], thread: updated };
+              await atomicJsonWrite(pendingPath(thread.id), pending);
+              await appendFile(
+                eventsPath(thread.id),
+                `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
+                { encoding: "utf8", mode: 0o600 },
+              );
+              await chmod(eventsPath(thread.id), 0o600);
+            }
+            await atomicJsonWrite(metadataPath(thread.id), updated);
+            if (messages.length > 0) await rm(pendingPath(thread.id), { force: true });
+            await rm(undoPath(thread.id), { force: true });
+            return updated;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "import native turns",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
     ),
 
     setCurrent: Effect.fn("ThreadStore.setCurrent")((id: string) =>
