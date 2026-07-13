@@ -78,6 +78,25 @@ const threadIdFrom = (value: unknown) => {
   return thread.id;
 };
 
+const threadStatusFrom = (value: unknown) => {
+  const status = asObject(asObject(asObject(value)?.thread)?.status);
+  return typeof status?.type === "string" ? status.type : "notLoaded";
+};
+
+const stringDataFrom = (value: unknown) => {
+  const data = asObject(value)?.data;
+  return Array.isArray(data) ? data.filter((item): item is string => typeof item === "string") : [];
+};
+
+const listedThreadIdsFrom = (value: unknown) => {
+  const data = asObject(value)?.data;
+  if (!Array.isArray(data)) return [];
+  return data.flatMap((item) => {
+    const thread = asObject(item);
+    return typeof thread?.id === "string" ? [thread.id] : [];
+  });
+};
+
 const extractText = (content: unknown) =>
   Array.isArray(content)
     ? content
@@ -136,6 +155,7 @@ export class CodexNativeBackend {
   readonly #token: string;
   readonly #executable: string;
   readonly #cwd: string;
+  #baselineLoaded = new Set<string>();
   #closed = false;
 
   private constructor(input: {
@@ -227,7 +247,10 @@ export class CodexNativeBackend {
             ephemeral: false,
             ...(input.model ? { model: input.model } : {}),
           });
-      return threadIdFrom(result);
+      const sessionId = threadIdFrom(result);
+      const loaded = await connection.request("thread/loaded/list", {});
+      this.#baselineLoaded = new Set(stringDataFrom(loaded));
+      return sessionId;
     } finally {
       await connection.close();
     }
@@ -262,6 +285,44 @@ export class CodexNativeBackend {
           throw cause;
         });
       return parseCodexNativeTurns(result);
+    } finally {
+      await connection.close();
+    }
+  }
+
+  async isIdle(sessionId: string) {
+    const connection = await this.#connect();
+    try {
+      const result = await connection.request("thread/read", {
+        threadId: sessionId,
+        includeTurns: false,
+      });
+      return threadStatusFrom(result) !== "active";
+    } finally {
+      await connection.close();
+    }
+  }
+
+  /** Detects /new or /resume inside the native TUI without intercepting either command. */
+  async resolveSession(fallbackSessionId: string) {
+    const connection = await this.#connect();
+    try {
+      const loaded = stringDataFrom(await connection.request("thread/loaded/list", {}));
+      const candidates = loaded.filter((id) => !this.#baselineLoaded.has(id));
+      if (candidates.length === 0) return fallbackSessionId;
+      if (candidates.length === 1) return candidates[0]!;
+
+      const listed = await connection.request("thread/list", {
+        cwd: [this.#cwd],
+        limit: 100,
+        sortKey: "recency_at",
+        sortDirection: "desc",
+      });
+      return (
+        listedThreadIdsFrom(listed).find((id) => candidates.includes(id)) ??
+        candidates.at(-1) ??
+        fallbackSessionId
+      );
     } finally {
       await connection.close();
     }

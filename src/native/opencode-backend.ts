@@ -58,6 +58,7 @@ export class OpenCodeNativeBackend {
   readonly #server: RunningOpenCodeServer;
   readonly #executable: string;
   readonly #cwd: string;
+  #baselineSessions = new Map<string, number>();
 
   private constructor(server: RunningOpenCodeServer, executable: string, cwd: string) {
     this.#server = server;
@@ -82,6 +83,23 @@ export class OpenCodeNativeBackend {
     };
   }
 
+  async #sessions() {
+    const response = await fetch(this.#url("/session?limit=100"), {
+      headers: this.#headers(),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error(`OpenCode session list failed with HTTP ${response.status}`);
+    const value: unknown = await response.json();
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((candidate) => {
+      const session = asObject(candidate);
+      const time = asObject(session?.time);
+      return typeof session?.id === "string"
+        ? [{ id: session.id, updated: typeof time?.updated === "number" ? time.updated : 0 }]
+        : [];
+    });
+  }
+
   async ensureSession(input: { sessionId?: string; title: string }) {
     if (input.sessionId) {
       const response = await fetch(this.#url(`/session/${encodeURIComponent(input.sessionId)}`), {
@@ -92,6 +110,9 @@ export class OpenCodeNativeBackend {
         throw new Error(
           `OpenCode session ${input.sessionId} is unavailable (HTTP ${response.status})`,
         );
+      this.#baselineSessions = new Map(
+        (await this.#sessions()).map((session) => [session.id, session.updated]),
+      );
       return input.sessionId;
     }
 
@@ -105,6 +126,9 @@ export class OpenCodeNativeBackend {
       throw new Error(`OpenCode session creation failed with HTTP ${response.status}`);
     const session = asObject(await response.json());
     if (typeof session?.id !== "string") throw new Error("OpenCode did not return a session id");
+    this.#baselineSessions = new Map(
+      (await this.#sessions()).map((candidate) => [candidate.id, candidate.updated]),
+    );
     return session.id;
   }
 
@@ -130,6 +154,26 @@ export class OpenCodeNativeBackend {
     });
     if (!response.ok) throw new Error(`OpenCode history failed with HTTP ${response.status}`);
     return parseOpenCodeNativeTurns(await response.json());
+  }
+
+  async isIdle(sessionId: string) {
+    const response = await fetch(this.#url("/session/status"), {
+      headers: this.#headers(),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error(`OpenCode status failed with HTTP ${response.status}`);
+    const statuses = asObject(await response.json());
+    const type = asObject(statuses?.[sessionId])?.type;
+    return type !== "busy" && type !== "retry";
+  }
+
+  /** Detects sessions created or used through native /new and /sessions commands. */
+  async resolveSession(fallbackSessionId: string) {
+    const sessions = await this.#sessions();
+    const changed = sessions
+      .filter((session) => session.updated > (this.#baselineSessions.get(session.id) ?? -1))
+      .sort((left, right) => right.updated - left.updated);
+    return changed[0]?.id ?? fallbackSessionId;
   }
 
   command(sessionId: string): NativeTuiCommand {

@@ -19,6 +19,12 @@ const server = Bun.serve({
     if (url.pathname === "/session" && request.method === "POST") {
       return Response.json({ id: "ses_created" });
     }
+    if (url.pathname === "/session" && request.method === "GET") {
+      return Response.json([{ id: "ses_created", time: { created: 1, updated: 2 } }]);
+    }
+    if (url.pathname === "/session/status" && request.method === "GET") {
+      return Response.json({});
+    }
     if (/\/session\/[^/]+$/.test(url.pathname) && request.method === "GET") {
       return Response.json({
         ...(revertMessageID ? { revert: { messageID: revertMessageID } } : {}),
