@@ -235,13 +235,13 @@ export const runNativeTui = async (
     if (!terminal) throw new Error("Relay could not create a native pseudo-terminal");
 
     io.input.setRawMode?.(true);
-    io.input.resume();
     io.input.on("data", onInput);
     io.resizeSource.on("SIGWINCH", onResize);
     io.resizeSource.on("SIGHUP", onHangup);
     io.resizeSource.on("SIGINT", onInterrupt);
     io.resizeSource.on("SIGTERM", onTerminate);
     io.resizeSource.on("SIGQUIT", onQuit);
+    io.input.resume();
 
     const exitCode = await child.exited;
     if (stopping) await stopping;
