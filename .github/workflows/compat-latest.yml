@@ -37,7 +37,6 @@ jobs:
       OPENCODE_DISABLE_AUTOUPDATE: "true"
       OPENCODE_DISABLE_DEFAULT_PLUGINS: "true"
       OPENCODE_DISABLE_LSP_DOWNLOAD: "true"
-      RELAY_COMPAT_ARTIFACTS: ${{ runner.temp }}/relay-compat
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -52,6 +51,8 @@ jobs:
           echo "- Codex: $(codex --version)" >> "$GITHUB_STEP_SUMMARY"
           echo "- OpenCode: $(opencode --version)" >> "$GITHUB_STEP_SUMMARY"
       - run: bun run compat:latest
+        env:
+          RELAY_COMPAT_ARTIFACTS: ${{ runner.temp }}/relay-compat
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
