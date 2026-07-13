@@ -6,6 +6,9 @@ interface OpenCodeCommand {
   readonly description?: unknown;
 }
 
+const fetchOpenCode = (input: URL, init: RequestInit = {}) =>
+  fetch(input, { ...init, signal: init.signal ?? AbortSignal.timeout(30 * 60 * 1_000) });
+
 const stopChild = async (child: ReturnType<typeof Bun.spawn>) => {
   if (child.exitCode !== null) return;
   if (process.platform !== "win32") {
@@ -76,7 +79,7 @@ export const discoverOpenCodeCommands = async (
     const endpoint = new URL("/command", baseUrl);
     endpoint.searchParams.set("directory", cwd);
     const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
-    const response = await fetch(endpoint, { headers: { authorization } });
+    const response = await fetchOpenCode(endpoint, { headers: { authorization } });
     if (!response.ok)
       throw new Error(`OpenCode command discovery failed with HTTP ${response.status}`);
     const commands = (await response.json()) as Array<OpenCodeCommand>;
@@ -159,7 +162,7 @@ export const runOpenCodeControl = async (
           baseUrl,
         );
         messagesUrl.searchParams.set("directory", input.cwd);
-        const messagesResponse = await fetch(messagesUrl, { headers });
+        const messagesResponse = await fetchOpenCode(messagesUrl, { headers });
         if (messagesResponse.ok) {
           const messages = (await messagesResponse.json()) as Array<{
             info?: { role?: unknown; providerID?: unknown; modelID?: unknown };
@@ -186,8 +189,8 @@ export const runOpenCodeControl = async (
       );
       messagesUrl.searchParams.set("directory", input.cwd);
       const [sessionResponse, messagesResponse] = await Promise.all([
-        fetch(sessionUrl, { headers }),
-        fetch(messagesUrl, { headers }),
+        fetchOpenCode(sessionUrl, { headers }),
+        fetchOpenCode(messagesUrl, { headers }),
       ]);
       if (!sessionResponse.ok || !messagesResponse.ok)
         throw new Error("Could not read the OpenCode undo state");
@@ -217,7 +220,7 @@ export const runOpenCodeControl = async (
     }
     const endpoint = new URL(`/session/${encodeURIComponent(input.sessionId)}/${path}`, baseUrl);
     endpoint.searchParams.set("directory", input.cwd);
-    const response = await fetch(endpoint, {
+    const response = await fetchOpenCode(endpoint, {
       method: input.action === "unshare" ? "DELETE" : "POST",
       headers,
       ...(body ? { body } : {}),
@@ -296,7 +299,7 @@ export const runOpenCodeCommand = async (
     if (!sessionId) {
       const createUrl = new URL("/session", baseUrl);
       createUrl.searchParams.set("directory", input.cwd);
-      const createResponse = await fetch(createUrl, {
+      const createResponse = await fetchOpenCode(createUrl, {
         method: "POST",
         headers,
         body: JSON.stringify({ title: "Relay task" }),
@@ -307,28 +310,16 @@ export const runOpenCodeCommand = async (
       if (typeof session.id !== "string") throw new Error("OpenCode did not return a session id");
       sessionId = session.id;
     }
-    if (input.handoffText) {
-      const handoffUrl = new URL(`/session/${encodeURIComponent(sessionId)}/message`, baseUrl);
-      handoffUrl.searchParams.set("directory", input.cwd);
-      const handoffResponse = await fetch(handoffUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          noReply: true,
-          parts: [{ type: "text", text: input.handoffText }],
-        }),
-      });
-      if (!handoffResponse.ok)
-        throw new Error(`OpenCode handoff failed with HTTP ${handoffResponse.status}`);
-    }
     const commandUrl = new URL(`/session/${encodeURIComponent(sessionId)}/command`, baseUrl);
     commandUrl.searchParams.set("directory", input.cwd);
-    const commandResponse = await fetch(commandUrl, {
+    const commandResponse = await fetchOpenCode(commandUrl, {
       method: "POST",
       headers,
       body: JSON.stringify({
         command: input.command,
-        arguments: input.arguments,
+        arguments: input.handoffText
+          ? `${input.handoffText}\n\n<relay_current_request>\n${input.arguments}\n</relay_current_request>`
+          : input.arguments,
         ...(input.model ? { model: input.model } : {}),
       }),
     });

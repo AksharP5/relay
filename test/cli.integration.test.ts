@@ -96,6 +96,9 @@ describe("Relay CLI storage", () => {
     expect(history.stdout).toContain("C1");
     expect(history.stdout).toContain("O1");
     expect(history.stdout).toContain("C2");
+    const native = await runRelay(root, ["native", "codex"], projectRoot, env);
+    expect(native.exitCode).toBe(0);
+    expect(native.stdout).toContain("resume 'codex-native'");
   }, 30_000);
 
   it("creates, switches, lists, and reopens a task without launching a model", async () => {

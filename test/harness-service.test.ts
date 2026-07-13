@@ -72,4 +72,34 @@ describe("HarnessService", () => {
     expect(result.text).toBe("Codex response");
     expect(progress).toEqual(["Codex response"]);
   });
+
+  it.each([
+    [undefined, "could not accept this new session"],
+    ["codex-existing", "Run /compact and retry"],
+  ] as const)("explains a context-limit failure for session %s", async (sessionId, expected) => {
+    const fakeRunner = Layer.succeed(ProcessRunner, {
+      which: () => Effect.succeed("/usr/local/bin/codex"),
+      run: () =>
+        Effect.succeed({
+          exitCode: 1,
+          stdout: "",
+          stderr: "maximum context length exceeded",
+        }),
+    });
+
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* HarnessService;
+        return yield* service
+          .run("codex", {
+            cwd: "/tmp/project",
+            prompt: "Current request",
+            handoff: [],
+            ...(sessionId ? { sessionId } : {}),
+          })
+          .pipe(Effect.flip);
+      }).pipe(Effect.provide(HarnessService.layer), Effect.provide(fakeRunner)),
+    );
+    expect(outcome.message).toContain(expected);
+  });
 });

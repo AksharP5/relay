@@ -32,6 +32,8 @@ const executable = (harness: Harness) => harness;
 
 const cleanVersion = (value: string) => value.trim().split("\n")[0] ?? value.trim();
 const maxResponseChars = 2_000_000;
+const contextLimitPattern =
+  /(context (?:window|length|limit)|maximum context|too many (?:input )?tokens|prompt is too long|input is too long)/i;
 
 const relayCommands: ReadonlyArray<HarnessCommand> = [
   { name: "model", description: "Choose the model for this harness", source: "relay" },
@@ -220,7 +222,9 @@ export class HarnessService extends Context.Service<
             commandPrefix && input.prompt.startsWith(commandPrefix)
               ? input.prompt.slice(commandPrefix.length).trimStart()
               : input.prompt;
-          const prompt = input.command ? nativePrompt : composePrompt(input.handoff, nativePrompt);
+          const prompt = input.command
+            ? nativePrompt
+            : composePrompt(input.handoff, nativePrompt, input.handoffOmittedMessages);
           input.onProgress?.({ type: "activity", label: `Starting ${harness}` });
 
           if (harness === "codex" && (input.command === "compact" || input.command === "review")) {
@@ -230,7 +234,11 @@ export class HarnessService extends Context.Service<
                   command: input.command as "compact" | "review",
                   cwd: input.cwd,
                   arguments: nativePrompt,
-                  ...(input.handoff.length ? { handoffText: buildHandoff(input.handoff) } : {}),
+                  ...(input.handoff.length || input.handoffOmittedMessages
+                    ? {
+                        handoffText: buildHandoff(input.handoff, input.handoffOmittedMessages),
+                      }
+                    : {}),
                   ...(input.sessionId ? { sessionId: input.sessionId } : {}),
                   ...(input.model ? { model: input.model } : {}),
                   ...(input.onProgress ? { onProgress: input.onProgress } : {}),
@@ -251,7 +259,11 @@ export class HarnessService extends Context.Service<
                   cwd: input.cwd,
                   command: input.command!,
                   arguments: nativePrompt,
-                  ...(input.handoff.length ? { handoffText: buildHandoff(input.handoff) } : {}),
+                  ...(input.handoff.length || input.handoffOmittedMessages
+                    ? {
+                        handoffText: buildHandoff(input.handoff, input.handoffOmittedMessages),
+                      }
+                    : {}),
                   ...(input.sessionId ? { sessionId: input.sessionId } : {}),
                   ...(input.model ? { model: input.model } : {}),
                 }),
@@ -351,11 +363,17 @@ export class HarnessService extends Context.Service<
             );
 
           if (output.exitCode !== 0) {
+            const diagnostic = `${output.stderr}\n${output.stdout}`.trim().slice(-8_000);
+            const contextLimit = contextLimitPattern.test(diagnostic);
             return yield* new HarnessError({
               harness,
-              message: `${harness} exited before completing the turn`,
+              message: contextLimit
+                ? input.sessionId
+                  ? `${harness} reached its context limit. Run /compact and retry, or choose a model with a larger context window.`
+                  : `${harness} could not accept this new session because its initial context exceeds the model's limit. Choose a model with a larger context window, or start a new task with a concise summary.`
+                : `${harness} exited before completing the turn`,
               exitCode: output.exitCode,
-              stderr: `${output.stderr}\n${output.stdout}`.trim().slice(-8_000),
+              stderr: diagnostic,
             });
           }
 

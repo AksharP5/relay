@@ -201,10 +201,15 @@ export const makeTuiController = (
       runtime.runPromise(
         Effect.gen(function* () {
           const relay = yield* RelayService;
+          if (!activeThreadId) {
+            return yield* new NoCurrentThread({
+              message: "Run a turn in this directory before using a native session command.",
+            });
+          }
           const result = yield* relay.control({
             action,
             harness,
-            ...(activeThreadId ? { threadId: activeThreadId } : {}),
+            threadId: activeThreadId,
           });
           const messages = yield* relay.historyForDisplay(result.thread.id);
           return { message: result.message, thread: result.thread, messages };

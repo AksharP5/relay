@@ -137,7 +137,7 @@ export const RelayApp = (props: RelayAppProps) => {
       activeCapabilities().models.find((model) => model.isDefault)?.id,
   );
   const commandCapabilities = createMemo(() =>
-    capabilities().find((item) => item.harness === skin()),
+    capabilities().find((item) => item.harness === "opencode"),
   );
   const activeCommands = createMemo(() => {
     const dynamic = commandCapabilities()?.commands.filter(
@@ -147,7 +147,7 @@ export const RelayApp = (props: RelayAppProps) => {
       skin: skin(),
       harness: selectedHarness(),
       preferences: snapshot().preferences,
-      ...(skin() === "opencode" && dynamic ? { dynamic } : {}),
+      ...(dynamic ? { dynamic } : {}),
     });
   });
   const commandQuery = createMemo(() => {
@@ -231,9 +231,9 @@ export const RelayApp = (props: RelayAppProps) => {
   const toggleSkinSwitching = async () => {
     setError(null);
     try {
-      const preferences = await props.controller.setSwitchSkinWithHarness(
-        !snapshot().preferences.switchSkinWithHarness,
-      );
+      const preferences = snapshot().preferences.switchSkinWithHarness
+        ? await props.controller.setSkin(skin())
+        : await props.controller.setSwitchSkinWithHarness(true);
       setSnapshot((current) => ({ ...current, preferences }));
     } catch (cause) {
       setError(errorMessage(cause));
@@ -278,7 +278,31 @@ export const RelayApp = (props: RelayAppProps) => {
     try {
       const next = await props.controller.selectTask(threadId);
       setSnapshot((current) => ({ ...current, ...next }));
-      setSelectedHarness(next.thread?.activeHarness ?? selectedHarness());
+      const nextHarness = next.thread?.activeHarness ?? selectedHarness();
+      setSelectedHarness(nextHarness);
+      if (next.thread) {
+        setSelectedModels({
+          ...(next.thread?.bindings.codex?.model
+            ? { codex: next.thread.bindings.codex.model }
+            : {}),
+          ...(next.thread?.bindings.opencode?.model
+            ? { opencode: next.thread.bindings.opencode.model }
+            : {}),
+        });
+      }
+      const nextSkin = next.preferences.switchSkinWithHarness ? nextHarness : next.preferences.skin;
+      const missing = [...new Set([nextHarness, nextSkin])].filter(
+        (harness) => !capabilities().some((item) => item.harness === harness),
+      );
+      if (missing.length) {
+        const discovered = await Promise.all(
+          missing.map((harness) => props.controller.refreshCapabilities(harness)),
+        );
+        setCapabilities((current) => {
+          const harnesses = new Set(discovered.map((item) => item.harness));
+          return [...current.filter((item) => !harnesses.has(item.harness)), ...discovered];
+        });
+      }
       closeOverlay();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -290,6 +314,7 @@ export const RelayApp = (props: RelayAppProps) => {
     try {
       const thread = await props.controller.newTask(selectedHarness());
       setSnapshot((current) => ({ ...current, thread, messages: [] }));
+      setSelectedModels({});
       closeOverlay();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -689,7 +714,7 @@ export const RelayApp = (props: RelayAppProps) => {
           paddingLeft={1}
           paddingRight={1}
           marginBottom={1}
-          title={`${harnessName(selectedHarness())} commands`}
+          title={`${harnessName(skin())} commands`}
         >
           <select
             focused
@@ -779,14 +804,24 @@ export const RelayApp = (props: RelayAppProps) => {
                 description: "Use the behavior provided by the selected interface",
                 value: "default",
               },
-              ...(configuredCommand()?.allowedImplementations ?? []).map((implementation) => ({
-                name: `${harnessName(implementation === "relay" ? selectedHarness() : implementation)}${implementation === "relay" ? " translation" : " native"}`,
-                description:
-                  implementation === "relay"
-                    ? "Relay-owned portable behavior"
-                    : `Requires the ${harnessName(implementation)} harness`,
-                value: implementation,
-              })),
+              ...(configuredCommand()?.allowedImplementations ?? [])
+                .filter(
+                  (implementation) =>
+                    implementation !== "opencode" ||
+                    configuredCommand()?.action !== "review.start" ||
+                    commandCapabilities()?.commands.some((command) => command.name === "review"),
+                )
+                .map((implementation) => ({
+                  name:
+                    implementation === "relay"
+                      ? "Relay translation"
+                      : `${harnessName(implementation)} native`,
+                  description:
+                    implementation === "relay"
+                      ? "Relay-owned portable behavior"
+                      : `Requires the ${harnessName(implementation)} harness`,
+                  value: implementation,
+                })),
             ]}
             backgroundColor={palette().panelRaised}
             focusedBackgroundColor={palette().panelRaised}
@@ -889,7 +924,8 @@ export const RelayApp = (props: RelayAppProps) => {
           onContentChange={() => {
             const value = composer?.plainText ?? "";
             setDraft(value);
-            if (!value.startsWith("/") && overlay() === "commands") setOverlay(null);
+            if (value.length > 0 && !value.startsWith("/") && overlay() === "commands")
+              setOverlay(null);
           }}
           onKeyDown={(key) => {
             if (busy()) key.preventDefault();

@@ -127,12 +127,33 @@ const scanMessages = async (id: string, onMessage: (message: RelayMessage) => vo
   consume(pending, true);
 };
 
-const readMessagesSince = async (id: string, afterSeq: number) => {
+const readMessagesSince = async (
+  id: string,
+  afterSeq: number,
+  limits: { readonly maxMessages: number; readonly maxChars: number },
+) => {
   const messages: Array<RelayMessage> = [];
+  let chars = 0;
+  let omittedMessages = 0;
   await scanMessages(id, (message) => {
-    if (message.seq > afterSeq) messages.push(message);
+    if (message.seq <= afterSeq) return;
+    const truncation = "[Earlier content in this message was truncated by Relay.]\n";
+    const retained =
+      message.content.length > limits.maxChars
+        ? {
+            ...message,
+            content: `${truncation}${message.content.slice(-(limits.maxChars - truncation.length))}`,
+          }
+        : message;
+    if (retained !== message) omittedMessages += 1;
+    messages.push(retained);
+    chars += retained.content.length;
+    while (messages.length > limits.maxMessages || chars > limits.maxChars) {
+      chars -= messages.shift()?.content.length ?? 0;
+      omittedMessages += 1;
+    }
   });
-  return messages;
+  return { messages, omittedMessages };
 };
 
 const readRecentMessages = async (
@@ -351,7 +372,10 @@ export class ThreadStore extends Context.Service<
     readonly messagesSince: (
       id: string,
       afterSeq: number,
-    ) => Effect.Effect<ReadonlyArray<RelayMessage>, StoreError>;
+    ) => Effect.Effect<
+      { readonly messages: ReadonlyArray<RelayMessage>; readonly omittedMessages: number },
+      StoreError
+    >;
     readonly recentMessages: (
       id: string,
       options: { readonly maxMessages: number; readonly maxChars: number },
@@ -359,6 +383,14 @@ export class ThreadStore extends Context.Service<
     readonly acquireLock: (
       id: string,
     ) => Effect.Effect<{ readonly release: () => Promise<void> }, StoreError | ThreadBusy>;
+    readonly canUndoLastTurn: (
+      thread: RelayThread,
+      harness: Harness,
+    ) => Effect.Effect<boolean, StoreError>;
+    readonly canRedoLastTurn: (
+      thread: RelayThread,
+      harness: Harness,
+    ) => Effect.Effect<boolean, StoreError>;
     readonly commitTurn: (
       thread: RelayThread,
       input: CommitTurnInput,
@@ -491,7 +523,7 @@ export class ThreadStore extends Context.Service<
 
     messagesSince: Effect.fn("ThreadStore.messagesSince")((id: string, afterSeq: number) =>
       Effect.tryPromise({
-        try: () => readMessagesSince(id, afterSeq),
+        try: () => readMessagesSince(id, afterSeq, { maxMessages: 200, maxChars: 120_000 }),
         catch: (cause) =>
           new StoreError({ operation: "read message delta", message: errorMessage(cause), cause }),
       }),
@@ -518,6 +550,36 @@ export class ThreadStore extends Context.Service<
             ? cause
             : new StoreError({ operation: "lock thread", message: errorMessage(cause), cause }),
       }),
+    ),
+
+    canUndoLastTurn: Effect.fn("ThreadStore.canUndoLastTurn")(
+      (thread: RelayThread, harness: Harness) =>
+        Effect.tryPromise({
+          try: async () => {
+            const messages = await readMessages(thread.id);
+            const latest = messages.slice(-2);
+            return (
+              latest.length === 2 &&
+              latest[0]?.role === "user" &&
+              latest[1]?.role === "assistant" &&
+              latest[1].harness === harness
+            );
+          },
+          catch: (cause) =>
+            new StoreError({ operation: "check undo state", message: errorMessage(cause), cause }),
+        }),
+    ),
+
+    canRedoLastTurn: Effect.fn("ThreadStore.canRedoLastTurn")(
+      (thread: RelayThread, harness: Harness) =>
+        Effect.tryPromise({
+          try: async () => {
+            const entry = (await readUndoState(thread.id)).entries.at(-1);
+            return entry?.thread.activeHarness === harness;
+          },
+          catch: (cause) =>
+            new StoreError({ operation: "check redo state", message: errorMessage(cause), cause }),
+        }),
     ),
 
     commitTurn: Effect.fn("ThreadStore.commitTurn")((thread: RelayThread, input: CommitTurnInput) =>
@@ -637,12 +699,16 @@ export class ThreadStore extends Context.Service<
           }
           const remaining = messages.slice(0, -2);
           const lastSeq = remaining.at(-1)?.seq ?? 0;
+          const lastHarnessSeq =
+            remaining.findLast(
+              (message) => message.role === "assistant" && message.harness === harness,
+            )?.seq ?? 0;
           const binding = thread.bindings[harness];
           const bindings = { ...thread.bindings };
           if (binding) {
             bindings[harness] = {
               ...binding,
-              lastSyncedSeq: Math.min(binding.lastSyncedSeq, lastSeq),
+              lastSyncedSeq: Math.min(binding.lastSyncedSeq, lastHarnessSeq),
               updatedAt: new Date().toISOString(),
             };
           }

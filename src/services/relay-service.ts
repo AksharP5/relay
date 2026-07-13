@@ -125,7 +125,10 @@ export class RelayService extends Context.Service<
             const nativeResult = yield* harnesses.run(harness, {
               cwd: thread.cwd,
               prompt: input.prompt,
-              handoff,
+              handoff: handoff.messages,
+              ...(handoff.omittedMessages
+                ? { handoffOmittedMessages: handoff.omittedMessages }
+                : {}),
               ...(binding ? { sessionId: binding.sessionId } : {}),
               ...(model ? { model } : {}),
               ...(input.command ? { command: input.command } : {}),
@@ -145,7 +148,7 @@ export class RelayService extends Context.Service<
               thread: committed.thread,
               response: committed.response,
               createdBinding: binding === undefined,
-              handedOffMessages: handoff.length,
+              handedOffMessages: handoff.messages.length,
             };
           }).pipe(Effect.ensuring(Effect.promise(lock.release)));
         }),
@@ -222,11 +225,26 @@ export class RelayService extends Context.Service<
             const lock = yield* store.acquireLock(thread.id);
             return yield* Effect.gen(function* () {
               const current = yield* store.get(thread.id);
+              if (resolve(process.cwd()) !== resolve(current.cwd)) {
+                return yield* new CliError({
+                  message: `This task belongs to ${current.cwd}. Run Relay there before using native session controls.`,
+                });
+              }
               const harness = input.harness ?? current.activeHarness;
               const binding = current.bindings[harness];
               if (!binding) {
                 return yield* new CliError({
                   message: `Run a ${harness} turn before using /${input.action}.`,
+                });
+              }
+              if (input.action === "undo" && !(yield* store.canUndoLastTurn(current, harness))) {
+                return yield* new CliError({
+                  message: `/${input.action} is disabled because the latest Relay turn was not produced by ${harness}. Undoing the native session now could overwrite newer work from the other harness.`,
+                });
+              }
+              if (input.action === "redo" && !(yield* store.canRedoLastTurn(current, harness))) {
+                return yield* new CliError({
+                  message: `There is no safe ${harness} turn to redo.`,
                 });
               }
               const result = yield* harnesses.control(harness, {

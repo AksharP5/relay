@@ -266,7 +266,7 @@ export const commandsFor = (input: {
     resolve(spec, input.harness, input.preferences, dynamicNames),
   );
   const names = new Set(resolved.flatMap((command) => [command.name, ...(command.aliases ?? [])]));
-  const dynamic = (input.dynamic ?? [])
+  const dynamic = (input.skin === "opencode" ? (input.dynamic ?? []) : [])
     .filter((command) => !names.has(command.name))
     .map(
       (command): ResolvedCommand => ({

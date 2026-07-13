@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
 let revertMessageID: string | undefined = "msg_003";
-let handoffSeeded = false;
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -39,21 +38,14 @@ const server = Bun.serve({
         },
       ]);
     }
-    if (url.pathname.endsWith("/message") && request.method === "POST") {
-      const body = (await request.json()) as {
-        noReply?: unknown;
-        parts?: Array<{ type?: unknown; text?: unknown }>;
-      };
-      handoffSeeded =
-        body.noReply === true &&
-        body.parts?.some(
-          (part) => part.type === "text" && part.text === "prior Relay conversation",
-        ) === true;
-      return handoffSeeded ? Response.json({}) : new Response("invalid handoff", { status: 422 });
-    }
     if (url.pathname.endsWith("/command") && request.method === "POST") {
       const body = (await request.json()) as { command?: unknown; arguments?: unknown };
-      if (!handoffSeeded || body.command !== "commit" || body.arguments !== "release-ready") {
+      if (
+        body.command !== "commit" ||
+        typeof body.arguments !== "string" ||
+        !body.arguments.includes("prior Relay conversation") ||
+        !body.arguments.includes("<relay_current_request>\nrelease-ready")
+      ) {
         return new Response("command ran before its handoff", { status: 409 });
       }
       return Response.json({ parts: [{ type: "text", text: "Command response" }] });

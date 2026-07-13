@@ -325,4 +325,293 @@ describe("Relay TUI", () => {
     expect(asks).toBe(0);
     expect(renderer.captureCharFrame()).toContain("/share");
   });
+
+  it("pins the currently visible skin when automatic switching is unlinked", async () => {
+    const pinned: Array<Harness> = [];
+    const linkedOpenCode: TuiSnapshot = {
+      ...initial,
+      thread: makeThread("opencode"),
+    };
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => linkedOpenCode,
+      switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
+      setSkin: async (skin) => {
+        pinned.push(skin);
+        return { ...initial.preferences, skin, switchSkinWithHarness: false };
+      },
+      ask: async () => ({ thread: makeThread("opencode"), messages: [] }),
+    };
+
+    renderer = await testRender(
+      () => <RelayApp controller={controller} initial={linkedOpenCode} />,
+      { width: 96, height: 30 },
+    );
+    await renderer.waitForFrame((frame) => frame.includes("OpenCode engine · OpenCode skin"));
+    renderer.mockInput.pressKey("t", { ctrl: true });
+    await renderer.waitForFrame((frame) => frame.includes("Select interface"));
+    renderer.mockInput.pressKey("l", { ctrl: true });
+    await renderer.waitFor(() => pinned.length === 1);
+    expect(pinned).toEqual(["opencode"]);
+    expect(renderer.captureCharFrame()).toContain("OpenCode engine · OpenCode skin");
+  });
+
+  it.each(["sessions", "resume"])("routes /%s to the shared task picker", async (alias) => {
+    let listed = 0;
+    const openCodeSkin: TuiSnapshot = {
+      ...initial,
+      preferences: {
+        ...initial.preferences,
+        skin: "opencode",
+        switchSkinWithHarness: false,
+      },
+    };
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => openCodeSkin,
+      switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
+      listTasks: async () => {
+        listed += 1;
+        return [makeThread("codex")];
+      },
+      ask: async () => ({ thread: makeThread("codex"), messages: [] }),
+    };
+
+    renderer = await testRender(() => <RelayApp controller={controller} initial={openCodeSkin} />, {
+      width: 96,
+      height: 30,
+    });
+    await renderer.mockInput.typeText(`/${alias}`);
+    renderer.mockInput.pressEnter();
+    await renderer.waitForFrame((frame) => frame.includes("Sessions"));
+    expect(listed).toBe(1);
+  });
+
+  it("persists a compact behavior override and dispatches it to the selected harness", async () => {
+    const configured: Array<{ action: string; implementation?: string }> = [];
+    const controls: Array<{ action: string; harness: Harness }> = [];
+    const codexSkinOnOpenCode: TuiSnapshot = {
+      ...initial,
+      thread: makeThread("opencode"),
+      preferences: {
+        ...initial.preferences,
+        skin: "codex",
+        switchSkinWithHarness: false,
+      },
+    };
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => codexSkinOnOpenCode,
+      switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
+      setCommandImplementation: async (action, implementation) => {
+        configured.push({ action, ...(implementation ? { implementation } : {}) });
+        return {
+          ...codexSkinOnOpenCode.preferences,
+          commandImplementations: { [action]: implementation ?? "relay" },
+        };
+      },
+      control: async (action, harness) => {
+        controls.push({ action, harness });
+        return {
+          message: "Compacted",
+          thread: makeThread(harness),
+          messages: [] as ReadonlyArray<RelayMessage>,
+        };
+      },
+      ask: async () => ({ thread: makeThread("opencode"), messages: [] }),
+    };
+
+    renderer = await testRender(
+      () => <RelayApp controller={controller} initial={codexSkinOnOpenCode} />,
+      { width: 96, height: 32 },
+    );
+    await renderer.mockInput.typeText("/commands");
+    renderer.mockInput.pressEnter();
+    await renderer.waitForFrame((frame) => frame.includes("Command behavior"));
+    for (let index = 0; index < 7; index += 1) renderer.mockInput.pressArrow("down");
+    renderer.mockInput.pressEnter();
+    await renderer.waitForFrame((frame) => frame.includes("/compact behavior"));
+    renderer.mockInput.pressArrow("down");
+    renderer.mockInput.pressArrow("down");
+    renderer.mockInput.pressEnter();
+    await renderer.waitFor(() => configured.length === 1);
+    expect(configured).toEqual([{ action: "context.compact", implementation: "opencode" }]);
+
+    await renderer.mockInput.typeText("/compact");
+    renderer.mockInput.pressEnter();
+    await renderer.waitFor(() => controls.length === 1);
+    expect(controls).toEqual([{ action: "compact", harness: "opencode" }]);
+  });
+
+  it.each([
+    ["compact", "compact"],
+    ["share", "share"],
+    ["unshare", "unshare"],
+    ["undo", "undo"],
+    ["redo", "redo"],
+  ] as const)("dispatches OpenCode /%s as the %s native control", async (command, action) => {
+    const controls: Array<string> = [];
+    const openCode: TuiSnapshot = { ...initial, thread: makeThread("opencode") };
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => openCode,
+      switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
+      control: async (control, harness) => {
+        controls.push(`${control}:${harness}`);
+        return {
+          message: "Control complete",
+          thread: makeThread(harness),
+          messages: [] as ReadonlyArray<RelayMessage>,
+        };
+      },
+      ask: async () => ({ thread: makeThread("opencode"), messages: [] }),
+    };
+    renderer = await testRender(() => <RelayApp controller={controller} initial={openCode} />, {
+      width: 88,
+      height: 28,
+    });
+    await renderer.mockInput.typeText(`/${command}`);
+    renderer.mockInput.pressEnter();
+    await renderer.waitFor(() => controls.length === 1);
+    expect(controls).toEqual([`${action}:opencode`]);
+  });
+
+  it("dispatches Codex /review with its arguments as a native command", async () => {
+    const asks: Array<{ prompt: string; command?: string }> = [];
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => initial,
+      switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
+      ask: async (input) => {
+        asks.push({ prompt: input.prompt, ...(input.command ? { command: input.command } : {}) });
+        return { thread: makeThread("codex"), messages: [] };
+      },
+    };
+    renderer = await testRender(() => <RelayApp controller={controller} initial={initial} />, {
+      width: 88,
+      height: 28,
+    });
+    await renderer.mockInput.typeText("/review focus on correctness");
+    renderer.mockInput.pressEnter();
+    await renderer.waitFor(() => asks.length === 1);
+    expect(asks).toEqual([{ prompt: "/review focus on correctness", command: "review" }]);
+  });
+
+  it.each([
+    ["harness", "Select harness"],
+    ["skin", "Select interface"],
+    ["theme", "Select interface"],
+    ["model", "Codex model"],
+    ["help", "Codex commands"],
+    ["status", "Relay status"],
+  ] as const)("opens the tested Relay surface for /%s", async (command, surface) => {
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => initial,
+      switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
+      ask: async () => ({ thread: makeThread("codex"), messages: [] }),
+    };
+    renderer = await testRender(() => <RelayApp controller={controller} initial={initial} />, {
+      width: 88,
+      height: 28,
+    });
+    await renderer.mockInput.typeText(`/${command}`);
+    renderer.mockInput.pressEnter();
+    await renderer.waitForFrame((frame) => frame.includes(surface));
+  });
+
+  it("creates a fresh task through /new", async () => {
+    const created: Array<Harness> = [];
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => initial,
+      switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
+      newTask: async (harness) => {
+        created.push(harness);
+        return makeThread(harness);
+      },
+      ask: async () => ({ thread: makeThread("codex"), messages: [] }),
+    };
+    renderer = await testRender(() => <RelayApp controller={controller} initial={initial} />, {
+      width: 88,
+      height: 28,
+    });
+    await renderer.mockInput.typeText("/new");
+    renderer.mockInput.pressEnter();
+    await renderer.waitFor(() => created.length === 1);
+    expect(created).toEqual(["codex"]);
+  });
+
+  it("loads the selected task's harness capabilities and model before its next turn", async () => {
+    const task = {
+      ...makeThread("opencode"),
+      id: "thread-2",
+      bindings: {
+        opencode: {
+          harness: "opencode" as const,
+          sessionId: "opencode-task-session",
+          model: "openai/gpt-5.6-sol",
+          lastSyncedSeq: 2,
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+    };
+    const refreshes: Array<Harness> = [];
+    const asks: Array<{ harness: Harness; model?: string }> = [];
+    const codexOnly: TuiSnapshot = {
+      ...initial,
+      thread: makeThread("codex"),
+      capabilities: [initial.capabilities[0]!],
+    };
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => codexOnly,
+      switchHarness: async () => null,
+      listTasks: async () => [task],
+      selectTask: async () => ({
+        thread: task,
+        messages: [] as ReadonlyArray<RelayMessage>,
+        preferences: initial.preferences,
+      }),
+      refreshCapabilities: async (harness) => {
+        refreshes.push(harness);
+        return initial.capabilities.find((item) => item.harness === harness)!;
+      },
+      ask: async (input) => {
+        asks.push({ harness: input.harness, ...(input.model ? { model: input.model } : {}) });
+        return { thread: task, messages: [] };
+      },
+    };
+
+    renderer = await testRender(() => <RelayApp controller={controller} initial={codexOnly} />, {
+      width: 96,
+      height: 30,
+    });
+    await renderer.mockInput.typeText("/resume");
+    renderer.mockInput.pressEnter();
+    await renderer.waitForFrame((frame) => frame.includes("Resume task"));
+    renderer.mockInput.pressEnter();
+    await renderer.waitForFrame((frame) => frame.includes("OpenCode engine · OpenCode skin"));
+    expect(refreshes).toEqual(["opencode"]);
+
+    await renderer.mockInput.typeText("Continue this task");
+    renderer.mockInput.pressEnter();
+    await renderer.waitFor(() => asks.length === 1);
+    expect(asks).toEqual([{ harness: "opencode", model: "openai/gpt-5.6-sol" }]);
+  });
 });

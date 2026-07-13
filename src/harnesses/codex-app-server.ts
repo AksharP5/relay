@@ -64,12 +64,17 @@ class AppServerConnection {
       detached: process.platform !== "win32",
     });
     const connection = new AppServerConnection(child);
-    await connection.#requestRaw("initialize", {
-      clientInfo: { name: "relay", title: "Relay", version: "0.1.0" },
-      capabilities: null,
-    });
-    connection.#write({ method: "initialized" });
-    return connection;
+    try {
+      await connection.#requestRaw("initialize", {
+        clientInfo: { name: "relay", title: "Relay", version: "0.1.0" },
+        capabilities: null,
+      });
+      connection.#write({ method: "initialized" });
+      return connection;
+    } catch (cause) {
+      await connection.close();
+      throw cause;
+    }
   }
 
   #write(message: JsonObject) {
@@ -148,8 +153,8 @@ class AppServerConnection {
   }
 
   async close() {
-    if (this.#closed) return;
     this.#closed = true;
+    if (this.#child.exitCode !== null) return;
     try {
       if (process.platform !== "win32") process.kill(-this.#child.pid, "SIGTERM");
       else this.#child.kill("SIGTERM");
@@ -248,18 +253,6 @@ export const runCodexCommand = async (
           ...(input.model ? { model: input.model } : {}),
         });
     const sessionId = threadIdFrom(threadResult);
-    if (input.handoffText) {
-      await connection.request("thread/inject_items", {
-        threadId: sessionId,
-        items: [
-          {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: input.handoffText }],
-          },
-        ],
-      });
-    }
     const completion = waitForCommand(connection, sessionId, input.onProgress);
 
     try {
@@ -269,9 +262,15 @@ export const runCodexCommand = async (
         await connection.request("review/start", {
           threadId: sessionId,
           delivery: "inline",
-          target: input.arguments
-            ? { type: "custom", instructions: input.arguments }
-            : { type: "uncommittedChanges" },
+          target:
+            input.arguments || input.handoffText
+              ? {
+                  type: "custom",
+                  instructions: input.handoffText
+                    ? `${input.handoffText}\n\n<relay_current_request>\n${input.arguments}\n</relay_current_request>`
+                    : input.arguments,
+                }
+              : { type: "uncommittedChanges" },
         });
       }
       const response = await completion.promise;

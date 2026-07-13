@@ -62,6 +62,7 @@ export interface HarnessTurnInput {
   readonly cwd: string;
   readonly prompt: string;
   readonly handoff: ReadonlyArray<RelayMessage>;
+  readonly handoffOmittedMessages?: number;
   readonly sessionId?: string;
   readonly model?: string;
   readonly command?: string;
