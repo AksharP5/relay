@@ -86,7 +86,7 @@ export interface RoutedInput {
 }
 
 /**
- * Removes only Relay's Ctrl+Shift+H / F6 toggle without interpreting any other
+ * Removes only Relay's F6 / enhanced Ctrl+Shift+H toggle without interpreting any other
  * terminal input. Legacy and CSI-u encodings are recognized. Bracketed paste
  * contents are always passed through literally.
  */

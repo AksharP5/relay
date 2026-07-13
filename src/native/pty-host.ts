@@ -142,7 +142,7 @@ export const releaseNativeTuiInput = (input: NativePtyIo["input"] = process.stdi
 
 /**
  * Hosts an upstream TUI in a real PTY. Output is forwarded unchanged and all
- * input except Relay's Ctrl+Shift+H / F6 toggle is written unchanged to the child.
+ * input except Relay's F6 / enhanced Ctrl+Shift+H toggle is written unchanged to the child.
  */
 export const runNativeTui = async (
   command: NativeTuiCommand,

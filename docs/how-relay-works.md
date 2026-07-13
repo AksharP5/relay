@@ -20,11 +20,11 @@ Native sessions are persisted by their own harnesses, so stopping the temporary 
 
 ## Why switching uses distinct keys
 
-Relay does not intercept `/`, `Escape`, `Ctrl+C`, or ordinary text. `Ctrl+Shift+H` is the primary direct switch in terminals that report enhanced keyboard input. `F6` is the fallback for terminals that cannot distinguish that shortcut from `Ctrl+H` (Backspace). Relay has no prefix chord or selector.
+Relay does not intercept `/`, `Escape`, `Ctrl+C`, or ordinary text. `F6` is the portable direct switch. Relay also accepts `Ctrl+Shift+H` when a terminal reports it through an enhanced keyboard sequence. Relay has no prefix chord or selector.
 
 The input router recognizes legacy function-key sequences, CSI-u and Kitty enhanced keyboard encodings, and xterm's modified-key form. It consumes only a key press, not a repeat or release. Legacy `Ctrl+H` remains Backspace because terminals that cannot distinguish `Ctrl+Shift+H` must not lose ordinary editing. Relay also understands bracketed-paste boundaries, including markers split across input chunks, so pasted shortcut bytes cannot accidentally switch harnesses. Every other key sequence is forwarded to the native application.
 
-Relay does not implement `/harness` by watching for those characters. At the PTY boundary, the same bytes could belong to a native composer, dialog, search field, Vim command, recalled history entry, or external editor. Only the upstream TUI knows that state. A raw text interceptor would compromise the native behavior Relay exists to preserve.
+Relay does not implement `/harness` by watching for those characters. At the PTY boundary, the same bytes could belong to a native composer, dialog, search field, Vim command, recalled history entry, or external editor. Only the upstream TUI knows that state. OpenCode can register a local plugin command, but stock Codex currently has no equivalent host-command extension point, so a clean command cannot be offered consistently across both native TUIs.
 
 Switching is allowed only while the current native session reports idle. During a busy or retrying turn, Relay leaves the frontend connected and sounds the terminal bell. This preserves live output and interactive approval state.
 
@@ -99,7 +99,9 @@ By default:
 
 ```text
 ~/.local/share/relay/
-  index.json
+  index.json                 # versioned task index
+  processes/                 # secret-free child ownership records
+  deletions/                 # crash-recovery journals, normally empty
   threads/
     <relay-task-id>/
       thread.json
@@ -107,7 +109,7 @@ By default:
       native-visibility.json  # created when native IDs or undo state need linking
 ```
 
-Relay creates directories with mode `0700` and files with mode `0600` on Unix-like systems. Message storage is append-oriented and recoverable through small pending-turn and pending-handoff journals. Handoff reads retain at most the bounded context window described above. OpenCode native recovery uses cursor pages and keeps only visible conversation text. Task recovery and explicit history inspection may read the selected task's complete canonical log.
+Relay creates directories with mode `0700` and files with mode `0600` on Unix-like systems. Index and task metadata carry an explicit storage version; current unversioned files migrate atomically on first safe access, while files from an unknown future format are never rewritten. Message storage is append-oriented and recoverable through small pending-turn and pending-handoff journals. Handoff reads retain at most the bounded context window described above. OpenCode native recovery uses cursor pages and keeps only visible conversation text. Task recovery and explicit history inspection may read the selected task's complete canonical log.
 
 Set `RELAY_DATA_DIR` to use another location.
 
@@ -115,7 +117,8 @@ Exit Relay before deleting that directory to erase Relay's local records. Vendor
 
 ## Failure behavior
 
-- A task-wide run lease prevents a second Relay TUI, headless turn, or native control from using the same task concurrently. Short state locks still protect metadata transitions inside the owning TUI.
+- A task-wide run lease prevents a second Relay TUI, headless turn, or native control from using the same task concurrently. A second canonical checkout lease prevents different Relay tasks from running agents in the same git worktree. Short state locks still protect metadata transitions inside the owning TUI.
+- Every detached Relay-owned child has a private, secret-free ownership record. After SIGKILL, the next Relay launch compares both owner and child OS start identities before terminating an orphaned process group; an identity mismatch is discarded without signaling the live process.
 - Before changing a vendor session, Relay journals the handoff and clears that journal in the same metadata update that advances the cursor. If Relay stops in between, the next launch retires the uncertain binding and performs one clean bounded handoff into a fresh session. The abandoned vendor session may remain in that harness's history, but Relay will not append the batch to it again.
 - A definitively deleted vendor session is replaced once with a cold session and the bounded canonical handoff. Transient, authentication, and generic protocol failures do not discard bindings.
 - A task cannot run from a different working directory without explicit selection or creation there.

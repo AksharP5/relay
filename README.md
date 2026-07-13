@@ -9,7 +9,7 @@ $ relay
 
 Relay opens the selected harness exactly as its own CLI renders it. Codex looks and behaves like Codex; OpenCode looks and behaves like OpenCode. Type `/` and the native command palette owns the input. Press `Escape` and the native dialog closes normally.
 
-To switch harnesses immediately, press `Ctrl+Shift+H`. Relay carries the completed conversation forward and opens the other real TUI. `F6` is a second one-key option; on a Mac keyboard configured for media keys, use `Fn+F6`.
+To switch harnesses immediately, press `F6`. Relay carries the completed conversation forward and opens the other real TUI. On a Mac keyboard configured for media keys, use `Fn+F6`. `Ctrl+Shift+H` can be configured as an optional second key; see [Terminal shortcuts](#terminal-shortcuts).
 
 ## Why use Relay?
 
@@ -36,7 +36,7 @@ your terminal
           └── native OpenCode TUI ── Relay-owned OpenCode server
 ```
 
-Only one branch runs at a time. Relay forwards terminal bytes unchanged, including colors, alternate-screen behavior, mouse input, enhanced keyboard sequences, bracketed paste, and resize events. It reserves only the distinct enhanced `Ctrl+Shift+H` sequence and `F6` for direct switching. F6 is the fallback for terminals that encode `Ctrl+Shift+H` as `Ctrl+H` (Backspace); most users can ignore it.
+Only one branch runs at a time. Relay forwards terminal bytes unchanged, including colors, alternate-screen behavior, mouse input, enhanced keyboard sequences, bracketed paste, and resize events. It reserves `F6` and the distinct enhanced `Ctrl+Shift+H` sequence for direct switching. Legacy `Ctrl+H` remains native Backspace.
 
 The current release pairs each interface with its own engine: Codex TUI with Codex, and OpenCode TUI with OpenCode. Running the literal OpenCode TUI against the Codex engine would require a complete, bidirectional translation between their live protocols, approvals, tools, streaming events, session semantics, and commands. Relay does not claim that adapter exists yet.
 
@@ -61,9 +61,8 @@ Read [How Relay keeps context](docs/how-relay-works.md) for lifecycle details an
 
 ## Install
 
-### Prerequisites
+### Runtime prerequisites
 
-- [Bun](https://bun.sh/) 1.3 or newer
 - the latest stable [Codex CLI](https://github.com/openai/codex)
 - the latest stable [OpenCode](https://opencode.ai/)
 - authentication completed in each harness you plan to use
@@ -74,7 +73,32 @@ One npm-based way to install or update both harnesses is:
 npm install --global @openai/codex@latest opencode-ai@latest
 ```
 
-Install Relay from source:
+### Prebuilt binary
+
+A tagged release contains ready-to-run archives for Apple Silicon and Intel macOS, plus x64 and arm64 glibc Linux. Bun is not required to run those binaries. Download the archive and `SHA256SUMS` from the [GitHub release](https://github.com/AksharP5/relay/releases), verify the archive, then install its `relay` executable somewhere on `PATH`:
+
+```bash
+grep "  relay-v*-$(uname -s | tr '[:upper:]' '[:lower:]')-*.tar.gz$" SHA256SUMS
+shasum -a 256 --check SHA256SUMS --ignore-missing
+tar -xzf relay-v*.tar.gz
+mkdir -p "$HOME/.local/bin"
+install -m 0755 relay-v*/relay "$HOME/.local/bin/relay"
+relay doctor
+```
+
+Linux users can use `sha256sum --check SHA256SUMS` instead. Ensure `$HOME/.local/bin` is on `PATH`. The first macOS artifacts are unsigned and not notarized, so macOS may require an explicit local trust decision. Relay does not ask users to bypass Gatekeeper silently.
+
+Release archives have GitHub build-provenance attestations. With the GitHub CLI installed, verify one with:
+
+```bash
+gh attestation verify relay-v*.tar.gz \
+  --repo AksharP5/relay \
+  --signer-workflow AksharP5/relay/.github/workflows/release.yml
+```
+
+### Build from source
+
+Source installation additionally requires [Bun](https://bun.sh/) 1.3 or newer.
 
 ```bash
 git clone https://github.com/AksharP5/relay.git
@@ -86,7 +110,7 @@ bun link
 relay doctor
 ```
 
-The build creates a standalone Relay executable for the current platform. Re-run `bun run build` after pulling changes.
+The build creates a standalone Relay executable for the current platform. Re-run `bun run build` after pulling changes. A GitHub tag that exposes only the automatically generated “Source code” archives is a source-only release: users still need Bun and must build Relay themselves. Relay's release workflow now produces platform binaries, checksums, and attestations so tagged releases do not stop at that source-only state.
 
 Relay targets the latest stable releases rather than silently pinning old harnesses. The current automated contract passes with Codex CLI `0.144.3` and OpenCode `1.17.18`. On every relevant `main` change and once per day, compatibility CI installs both `@latest` packages on Linux and macOS and exercises their schemas, authenticated local servers, event streams, session creation, hidden handoff injection, resume, deleted-session recovery, status, and cleanup without a model call. The PTY byte path also has automated terminal tests; release candidates are smoke-tested with the real installed TUIs.
 
@@ -102,17 +126,39 @@ relay
 
 Relay uses the most recent task bound to that directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
 
-| Input                              | Owner      | Action                                                             |
-| ---------------------------------- | ---------- | ------------------------------------------------------------------ |
-| `/`, letters, `Enter`              | Native TUI | Type and run native slash commands normally                        |
-| `Escape`                           | Native TUI | Close its active dialog or autocomplete                            |
-| `Ctrl+C`                           | Native TUI | Interrupt or exit according to native behavior                     |
-| `Ctrl+Shift+H`                     | Relay      | Switch directly to the other harness when idle                     |
-| `F6` (`Fn+F6` with Mac media keys) | Relay      | Fallback when the terminal cannot distinguish the primary shortcut |
+| Input                              | Owner      | Action                                         |
+| ---------------------------------- | ---------- | ---------------------------------------------- |
+| `/`, letters, `Enter`              | Native TUI | Type and run native slash commands normally    |
+| `Escape`                           | Native TUI | Close its active dialog or autocomplete        |
+| `Ctrl+C`                           | Native TUI | Interrupt or exit according to native behavior |
+| `F6` (`Fn+F6` with Mac media keys) | Relay      | Switch directly to the other harness when idle |
+| configured `Ctrl+Shift+H`          | Relay      | Optional terminal-specific second switch key   |
 
 Relay refuses to detach while a turn is active, because doing so could strand an approval or lose streaming state. The terminal bell sounds; wait for the turn to finish, then use the switch key again.
 
-Relay cannot safely add `/harness` to both native command palettes today. Codex and OpenCode own different composer implementations, and Relay sees terminal bytes rather than semantic editor state. Intercepting the text would break native completion, Vim mode, dialogs, history editing, or external editors. Relay therefore leaves every slash command native and reserves only distinct keyboard sequences outside ordinary text entry.
+Relay cannot safely add `/harness` to both stock native command palettes today. OpenCode exposes a local TUI command plugin API, but Codex does not expose a corresponding host-command extension point. Relay could intercept raw text only by guessing whether bytes belong to a composer, dialog, Vim state, search field, history edit, or external editor. That would compromise the native behavior Relay exists to preserve, so every slash command remains native.
+
+### Terminal shortcuts
+
+F6 is the portable default because it has an unambiguous terminal sequence. Many terminals collapse `Ctrl+Shift+H` into `Ctrl+H`; WezTerm additionally assigns the chord to **HideApplication** by default, so Relay never receives it.
+
+To make `Ctrl+Shift+H` send Relay's enhanced key sequence in WezTerm, merge this into `~/.wezterm.lua` (or your existing WezTerm config) and reload the configuration:
+
+```lua
+local wezterm = require "wezterm"
+local config = wezterm.config_builder()
+local relay_switch = wezterm.action.SendString "\x1b[104;6u"
+
+config.keys = {
+  { key = "H", mods = "CTRL",       action = relay_switch },
+  { key = "H", mods = "CTRL|SHIFT", action = relay_switch },
+  { key = "h", mods = "CTRL|SHIFT", action = relay_switch },
+}
+
+return config
+```
+
+If you already define `config.keys`, add the three entries instead of replacing the table. F6 continues to work without any configuration.
 
 Native session navigation remains native. Relay detects a Codex thread created or resumed inside the Codex TUI, and an OpenCode session that becomes active through native work, then updates the task binding and imports its completed turns. Moving to another native session is an intentional context reset: Relay never appends older task history behind turns already completed there. Merely highlighting a different OpenCode session and switching away before any activity—or navigating during a rare event-stream gap—may not produce a trustworthy server event; Relay keeps the prior binding rather than guessing.
 
@@ -130,6 +176,8 @@ relay status
 relay history
 relay list
 relay thread <id>
+relay export [id] [--out relay-task.json]
+relay delete [id] --force
 ```
 
 See the [command guide](docs/commands.md) for full examples.
@@ -149,12 +197,14 @@ Both the backend and native frontend stop when Relay leaves that harness. Native
 
 Set `RELAY_DATA_DIR` to place Relay’s canonical log elsewhere. Protect it like any local agent transcript.
 
-To erase Relay's local records, first exit Relay and remove its data directory. This does not delete files in your workspace or the native sessions retained by Codex and OpenCode.
+Use `relay export` for a user-readable JSON archive of visible task messages. It intentionally excludes internal native session IDs, locks, journals, hidden undo entries, secrets, and vendor databases. It is an archive, not an importable backup.
+
+Use `relay delete [id] --force` to erase one task's Relay-owned records. Deletion is journaled so an interrupted delete finishes on the next launch. It does not delete files in the workspace or sessions retained by Codex and OpenCode.
 
 ## Current boundaries
 
 - Relay currently supports Codex and OpenCode on macOS and Linux. Windows PTY hosting is not implemented.
-- Run only one active agent task per checkout. Relay prevents concurrent use of the same Relay task; use separate git worktrees when running different tasks at the same time.
+- Relay prevents two tasks from running agents in the same git checkout, including tasks started from nested or symlinked paths. Use separate git worktrees for intentional concurrency.
 - Cross-engine continuity includes completed visible text and the working tree, not hidden state.
 - Attachments and rich tool events stay in their native session; they are not translated into the other harness.
 - Native undo, compaction, sharing, and session commands still use native semantics. Relay reconciles explicit OpenCode undo/redo visibility for completed imported turns, but it will not rewrite vendor-owned storage to force two histories to become identical.

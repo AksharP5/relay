@@ -39,8 +39,8 @@ ${pc.bold("Examples")}
   relay ask --with opencode "Review the change and run the tests"
 
 Bare ${pc.cyan("relay")} opens the selected harness's real native TUI.
-Press ${pc.cyan("Ctrl+Shift+H")} to switch between Codex and OpenCode.
-If your terminal cannot distinguish it from Backspace, use ${pc.cyan("F6")} instead.
+Press ${pc.cyan("F6")} to switch between Codex and OpenCode.
+An optional terminal mapping can make ${pc.cyan("Ctrl+Shift+H")} a second switch key.
 Your next harness can also be changed without running a model using ${pc.cyan("relay use")}.
 `.trim();
 

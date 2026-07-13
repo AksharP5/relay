@@ -12,7 +12,7 @@ Relay selects the most recent task for the current directory or creates one, the
 
 Inside Codex, Codex owns its composer and slash commands. Inside OpenCode, OpenCode owns them. Relay does not translate `/resume` into `/sessions`, replace `/undo`, or focus a second command dialog. Type commands exactly as you would when launching that CLI directly.
 
-Press `Ctrl+Shift+H` to switch directly to the other harness. `F6` is the compatibility fallback (`Fn+F6` when macOS treats the function row as media keys) for terminals that report `Ctrl+Shift+H` as `Ctrl+H`, which must remain native Backspace. There is no prefix chord or Relay-owned selector.
+Press `F6` to switch directly to the other harness (`Fn+F6` when macOS treats the function row as media keys). An enhanced `Ctrl+Shift+H` report is also accepted, but most terminals need an explicit mapping because the unconfigured chord is either indistinguishable from Backspace or reserved by the terminal. There is no prefix chord or Relay-owned selector. The [README terminal setup](../README.md#terminal-shortcuts) includes a WezTerm mapping.
 
 `/harness` is intentionally not intercepted. It is ordinary native composer input, just like every other slash command. Relay cannot distinguish the main composer from native dialogs, Vim state, search fields, history edits, or an external editor by reading raw PTY bytes. Adding a fake text parser would make the native interfaces less reliable.
 
@@ -51,6 +51,16 @@ relay thread <id>
 ```
 
 `relay thread` accepts a full ID or an unambiguous prefix from `relay list`.
+
+Export a user-readable archive, or delete Relay's copy of a task:
+
+```bash
+relay export
+relay export <id> --out relay-task.json
+relay delete <id> --force
+```
+
+Export includes visible canonical conversation text and public task metadata. It excludes native binding IDs, hidden undo state, locks, journals, and secrets, and is not an importable backup. Delete requires `--force`, survives interruption through a private deletion journal, and never removes workspace files or vendor-native sessions.
 
 Tasks are directory-bound. Relay will not run or synchronize a task from a different directory, which prevents an accidental native session from editing the wrong project.
 
@@ -103,3 +113,5 @@ The default is `~/.local/share/relay`. It contains visible conversation text and
 Headless commands exit `0` on success and `1` for invalid input, missing state, unavailable harnesses, or failed turns. Bare Relay normally returns the native frontend’s non-zero exit code.
 
 A failed or interrupted harness may have modified files even if Relay could not import a completed response. Inspect the working tree before retrying.
+
+If Relay itself is force-killed, the next launch checks private process-ownership records and stops surviving Relay-owned process groups only when their OS start identity still matches. Arguments, environment variables, capability tokens, and transcript text are never stored in those records.
