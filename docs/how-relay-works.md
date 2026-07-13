@@ -1,6 +1,18 @@
 # How Relay keeps context
 
-Relay coordinates a task; it does not replace either coding harness. The TUI is the shared surface, while Codex and OpenCode remain the engines that inspect files, use tools, and produce each turn.
+Relay coordinates a task; it does not replace either coding harness. Its TUI is the stable outer workspace, while Codex and OpenCode remain the engines that inspect files, use tools, and produce each turn. The interface can look and speak like either harness without changing which engine runs underneath.
+
+## Harness, skin, and commands
+
+Relay keeps three choices separate:
+
+- **Harness:** the installed Codex or OpenCode process that receives the next turn.
+- **Skin:** the Codex- or OpenCode-compatible layout, labels, and command vocabulary shown by Relay.
+- **Command behavior:** the verified implementation used for a semantic action such as compact or review.
+
+The skin follows the harness by default. Pinning a skin lets you keep, for example, OpenCode's interface while Codex handles the task. The actual harness is always labeled beside the composer so visual familiarity never hides which process can edit the workspace or contact a provider.
+
+Command names are resolved to actions before Relay dispatches them. That is why OpenCode `/sessions` and Codex `/resume` can open the same Relay task picker. When an action truly belongs to one harness, Relay leaves it visible but disabled over the other harness and explains what must change. Per-command overrides are offered only when Relay has a working adapter for each choice.
 
 ## One task, two native sessions
 
@@ -10,7 +22,7 @@ Each Relay task has three small pieces of state:
 - the working directory for the task;
 - an optional native session ID and synchronization cursor for each harness.
 
-The native bindings are lazy. Starting a task with Codex does not launch OpenCode or create an empty OpenCode session. The OpenCode binding appears only when OpenCode receives its first turn.
+The native bindings are lazy. Starting a task with Codex does not launch OpenCode or create an empty OpenCode session. The OpenCode binding appears only when OpenCode receives its first turn. Changing the skin alone never starts either harness.
 
 When a harness runs again, Relay resumes its native session. When the other harness has added messages since that session last ran, Relay adds those missing messages as a structured handoff before the current request. It never resends messages that the target harness has already received.
 
@@ -37,7 +49,7 @@ The Relay timeline remains the cross-harness source of truth. If you open a nati
 
 ## Why this stays small
 
-Relay uses append-only JSON Lines for canonical messages and a small JSON metadata file per task. It does not mirror the Codex or OpenCode databases. The TUI is one foreground process. Only one child process—the harness handling the current turn—runs, and it exits when the turn finishes. Harness output is parsed as a stream; Relay persists only the final response, session ID, and synchronization cursor. A bounded diagnostic tail exists in memory only while the process runs.
+Relay uses append-only JSON Lines for canonical messages and a small JSON metadata file per task. It does not mirror the Codex or OpenCode databases. The TUI is one foreground process. A harness process starts only for discovery or an operation that needs it, and exits when that operation finishes; Relay never keeps both harnesses warm in the background. Harness output is parsed as a stream, and Relay persists only the final response, session ID, and synchronization cursor. A bounded diagnostic tail and the visible conversation window exist in memory only while Relay runs.
 
 Relay creates its directories for the current user only (`0700`) and transcript files as private (`0600`) on Unix-like systems. Existing Relay files are tightened when read or rewritten.
 
@@ -67,6 +79,7 @@ Relay provides conversation continuity, not identical internal state.
 - A receiving harness sees the prior visible dialogue and current workspace, not another harness's hidden reasoning or tool trace.
 - A handoff is represented inside the native session as structured context attached to the next user request.
 - Provider context windows and compaction policies still apply.
+- The compatibility skins provide Relay's common workspace and familiar command vocabulary; they do not embed or copy either project's native TUI implementation.
 - A failed native turn is not committed to the canonical Relay history, but the native harness may already have edited files before it failed. Inspect the workspace before retrying.
 - Successful turns use a recoverable pending-turn journal before the canonical log and binding are advanced. Relay repairs a stale metadata cursor or incomplete final JSONL line when reopening a task.
 - An abrupt process or machine stop after a harness advances but before Relay journals its result can still leave the native session or workspace ahead of canonical history. Inspect the workspace and native session before retrying after an interrupted turn.

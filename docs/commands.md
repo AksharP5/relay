@@ -8,7 +8,20 @@ Run Relay from the project directory you want the harnesses to edit. Relay refus
 relay
 ```
 
-Bare `relay` opens the persistent TUI. Type a request and press `Enter`. Use `Ctrl+R` to select Codex or OpenCode without closing the interface; the selection applies to the next submitted turn. `Shift+Enter` inserts a newline and `Ctrl+C` exits.
+Bare `relay` opens the persistent TUI. Type a request and press `Enter`. Use `Ctrl+R` to select the underlying Codex or OpenCode harness, `Ctrl+T` to select the Codex or OpenCode interface, and `Ctrl+O` to select a model from the underlying harness. `Shift+Enter` inserts a newline and `Ctrl+C` exits.
+
+Harness and interface are separate. By default, changing harness also changes interface. Selecting an interface manually pins it; while the interface selector is open, `Ctrl+L` toggles automatic switching.
+
+Type `/` to open the selected interface's command palette. Disabled commands remain visible with the native harness they require. Examples:
+
+```text
+Codex harness + OpenCode interface
+/sessions   available through Relay
+/compact    available after selecting Codex behavior
+/share      OpenCode native; disabled
+```
+
+`/commands` opens verified behavior choices for each semantic action. Invalid combinations are not offered. Task navigation, model selection, help, status, and interface controls are Relay-owned; compaction, review, sharing, prompt commands, and undo/redo use the corresponding native protocol.
 
 Opening an empty workspace does not create a task. Relay creates it from the first request, using the current directory and selected harness.
 

@@ -2,14 +2,14 @@
 
 Carry one coding task between Codex and OpenCode.
 
-Relay is a terminal workspace where Codex and OpenCode can take turns on the same task. The transcript, composer, and working directory stay put; the harness is a selector you can change at any time.
+Relay is a terminal workspace where Codex and OpenCode can take turns on the same task. The transcript, composer, and working directory stay put; the underlying harness and interface skin can be changed independently at any time.
 
 ```console
 $ cd my-project
 $ relay
 ```
 
-Write the first request, press `Enter`, and Relay starts the task with Codex. Press `Ctrl+R` to choose OpenCode for the next turn. Switching does not close the interface, clear the draft, or start another harness until you send a message.
+Write the first request, press `Enter`, and Relay starts the task with Codex. Press `Ctrl+R` to choose the underlying harness and `Ctrl+T` to choose the Codex or OpenCode interface. Switching either one does not close the interface or clear the draft.
 
 ## Why Relay?
 
@@ -23,6 +23,8 @@ Relay makes the handoff a normal part of the task:
 - **Switch without rebuilding everything.** A harness receives only the conversation it has not seen yet, then resumes normally on later turns.
 - **Stay lightweight.** No daemon, background indexer, shadow transcript, or copy of a vendor session database.
 - **Keep your existing setup.** Authentication, models, tools, agents, and permissions remain owned by Codex and OpenCode.
+- **Choose the interface independently.** Use the OpenCode-compatible interface over Codex, the Codex-compatible interface over OpenCode, or link the interface so it switches with the harness.
+- **Keep familiar commands.** `/sessions` and `/resume` open the same Relay task picker; portable commands are translated, while truly native-only commands stay visible but disabled with an explanation.
 
 ## How it works
 
@@ -43,7 +45,7 @@ Read [How Relay keeps context](docs/how-relay-works.md) for the full model and i
 
 Relay is an early, working release for local Codex and OpenCode CLIs. The persistent TUI, create/switch/resume loop, and headless commands are tested on macOS. Linux should work anywhere Bun and the selected harness CLIs are available; Windows has not been tested yet.
 
-Relay currently carries text conversation between harnesses and shows text events exposed by their supported JSON interfaces. Rich tool-call rendering, attachments, automatic import of turns made outside Relay, and additional harnesses are not in v0.1.
+Relay currently carries text conversation between harnesses and shows text events exposed by their supported JSON interfaces. It includes independent Codex/OpenCode skins, harness-specific models, semantic slash commands, native compaction/review/share controls, and synchronized OpenCode undo/redo. Rich tool-call rendering, attachments, automatic import of turns made outside Relay, and additional harnesses are not in v0.1.
 
 ## Install
 
@@ -83,11 +85,25 @@ The first submitted message creates a Relay task lazily, so opening and leaving 
 | `Enter`                 | Send the draft through the selected harness     |
 | `Shift+Enter`           | Add a newline                                   |
 | `Ctrl+R`                | Open or close the Codex/OpenCode selector       |
+| `Ctrl+T`                | Choose the Codex or OpenCode interface skin     |
+| `Ctrl+O`                | Choose a model from the underlying harness      |
+| `/`                     | Open commands for the selected interface        |
 | `↑` / `↓`, then `Enter` | Choose a harness while the selector is open     |
 | `Escape`                | Close the selector without changing the harness |
 | `Ctrl+C`                | Exit Relay                                      |
 
-The harness name beside the composer is also clickable in terminals with mouse support. Selecting a harness changes only the next turn; its native process is started lazily when you submit.
+The harness, skin, and model beside the composer are clickable in terminals with mouse support. Interface switching is linked to harness switching by default. Choosing a skin manually pins it; open the skin selector and press `Ctrl+L` to link or unlink automatic switching.
+
+The selected skin supplies command names and defaults. Relay resolves those names to semantic actions before choosing an implementation:
+
+- OpenCode `/sessions`, `/resume`, and Codex `/resume` all open Relay's task picker.
+- `/model` or `/models` always lists models from the underlying harness, never from the skin.
+- `/compact` uses the selected native implementation without adding a fake prompt to the transcript.
+- OpenCode `/share` remains visible but disabled over Codex, with an explanation and the required harness.
+- OpenCode `/undo` and `/redo` use OpenCode's file snapshot operations and move Relay's canonical transcript to the same turn.
+- Project, skill, and MCP prompt commands discovered from OpenCode execute through OpenCode. Missed cross-harness context is injected before the command runs.
+
+Use `/commands` to inspect a command's implementation and choose another verified implementation when more than one exists. Relay never offers an override that has no working adapter.
 
 The workspace keeps its recent conversation window in memory for responsive rendering. The complete canonical transcript remains on disk and is available through `relay history`.
 
