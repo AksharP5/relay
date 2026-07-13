@@ -23,6 +23,7 @@ const makeController = () => {
 
   const controller: NativeRelayController = {
     loadLocalThread: async () => thread,
+    acquireLease: async () => ({ release: async () => {} }),
     switchHarness: async (_threadId, harness) => {
       thread = { ...thread, activeHarness: harness };
       return thread;
@@ -95,6 +96,28 @@ const makeController = () => {
 };
 
 describe("native Relay host", () => {
+  it("owns the task before backend startup and releases it after startup failure", async () => {
+    const { controller: base } = makeController();
+    const events: Array<string> = [];
+    const controller: NativeRelayController = {
+      ...base,
+      acquireLease: async () => {
+        events.push("lease acquired");
+        return { release: async () => void events.push("lease released") };
+      },
+    };
+
+    await expect(
+      launchNativeRelay(controller, {
+        startBackend: async () => {
+          events.push("backend started");
+          throw new Error("startup failed");
+        },
+      }),
+    ).rejects.toThrow("startup failed");
+    expect(events).toEqual(["lease acquired", "backend started", "lease released"]);
+  });
+
   it("imports a native turn, hands it to the other harness, and keeps one backend alive", async () => {
     const { controller, messages } = makeController();
     const transcripts: Record<Harness, Array<NativeTranscriptTurn>> = {

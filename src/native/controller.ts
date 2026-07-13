@@ -6,6 +6,7 @@ import { RelayService } from "../services/relay-service.ts";
 
 export interface NativeRelayController {
   readonly loadLocalThread: (preferredHarness?: Harness) => Promise<RelayThread>;
+  readonly acquireLease: (threadId: string) => Promise<{ readonly release: () => Promise<void> }>;
   readonly switchHarness: (threadId: string, harness: Harness) => Promise<RelayThread>;
   readonly delta: (
     threadId: string,
@@ -53,11 +54,18 @@ export const makeNativeRelayController = (
           });
         }),
       ),
+    acquireLease: (threadId) =>
+      run(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          return yield* relay.acquireNativeLease(threadId);
+        }),
+      ),
     switchHarness: (threadId, harness) =>
       run(
         Effect.gen(function* () {
           const relay = yield* RelayService;
-          return yield* relay.switchHarness(harness, threadId);
+          return yield* relay.switchNativeHarness(threadId, harness);
         }),
       ),
     delta: (threadId, harness) =>

@@ -91,6 +91,13 @@ export class RelayService extends Context.Service<
       readonly turns: ReadonlyArray<NativeTranscriptTurn>;
       readonly model?: string;
     }) => Effect.Effect<RelayThread, unknown>;
+    readonly acquireNativeLease: (
+      threadId: string,
+    ) => Effect.Effect<{ readonly release: () => Promise<void> }, unknown>;
+    readonly switchNativeHarness: (
+      threadId: string,
+      harness: Harness,
+    ) => Effect.Effect<RelayThread, unknown>;
     readonly dataRoot: string;
   }
 >()("@relay/RelayService") {
@@ -121,64 +128,67 @@ export class RelayService extends Context.Service<
       const ask = Effect.fn("RelayService.ask")((input: AskInput) =>
         Effect.gen(function* () {
           const initialThread = yield* ensureCurrent(input);
-          const lock = yield* store.acquireLock(initialThread.id);
+          const runLease = yield* store.acquireRunLease(initialThread.id);
 
           return yield* Effect.gen(function* () {
-            const thread = yield* store.get(initialThread.id);
-            if (resolve(process.cwd()) !== resolve(thread.cwd)) {
-              return yield* new CliError({
-                message: `This task belongs to ${thread.cwd}. Run Relay there, or select/create a task for ${process.cwd()}.`,
-              });
-            }
+            const lock = yield* store.acquireLock(initialThread.id);
+            return yield* Effect.gen(function* () {
+              const thread = yield* store.get(initialThread.id);
+              if (resolve(process.cwd()) !== resolve(thread.cwd)) {
+                return yield* new CliError({
+                  message: `This task belongs to ${thread.cwd}. Run Relay there, or select/create a task for ${process.cwd()}.`,
+                });
+              }
 
-            const harness = input.harness ?? thread.activeHarness;
-            const binding = thread.bindings[harness];
-            const model = input.model ?? binding?.model ?? thread.preferredModels?.[harness];
-            const handoff = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
+              const harness = input.harness ?? thread.activeHarness;
+              const binding = thread.bindings[harness];
+              const model = input.model ?? binding?.model ?? thread.preferredModels?.[harness];
+              const handoff = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
 
-            const nativeResult = yield* harnesses
-              .run(harness, {
-                cwd: thread.cwd,
+              const nativeResult = yield* harnesses
+                .run(harness, {
+                  cwd: thread.cwd,
+                  prompt: input.prompt,
+                  handoff: handoff.messages,
+                  ...(handoff.omittedMessages
+                    ? { handoffOmittedMessages: handoff.omittedMessages }
+                    : {}),
+                  ...(binding ? { sessionId: binding.sessionId } : {}),
+                  ...(model ? { model } : {}),
+                  ...(input.command ? { command: input.command } : {}),
+                  ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+                })
+                .pipe(
+                  Effect.catchTag("HarnessError", (error) =>
+                    binding && error.sessionState === "uncertain"
+                      ? store
+                          .dropBinding(thread, harness)
+                          .pipe(Effect.flatMap(() => Effect.fail(error)))
+                      : Effect.fail(error),
+                  ),
+                );
+
+              const committed = yield* store.commitTurn(thread, {
+                harness,
                 prompt: input.prompt,
-                handoff: handoff.messages,
-                ...(handoff.omittedMessages
-                  ? { handoffOmittedMessages: handoff.omittedMessages }
-                  : {}),
-                ...(binding ? { sessionId: binding.sessionId } : {}),
+                response: nativeResult.text,
+                sessionId: nativeResult.sessionId,
+                bindingCreatedAt: binding?.createdAt ?? new Date().toISOString(),
                 ...(model ? { model } : {}),
-                ...(input.command ? { command: input.command } : {}),
-                ...(input.onProgress ? { onProgress: input.onProgress } : {}),
-              })
-              .pipe(
-                Effect.catchTag("HarnessError", (error) =>
-                  binding && error.sessionState === "uncertain"
-                    ? store
-                        .dropBinding(thread, harness)
-                        .pipe(Effect.flatMap(() => Effect.fail(error)))
-                    : Effect.fail(error),
-                ),
-              );
+              });
 
-            const committed = yield* store.commitTurn(thread, {
-              harness,
-              prompt: input.prompt,
-              response: nativeResult.text,
-              sessionId: nativeResult.sessionId,
-              bindingCreatedAt: binding?.createdAt ?? new Date().toISOString(),
-              ...(model ? { model } : {}),
-            });
-
-            return {
-              thread: committed.thread,
-              response: committed.response,
-              createdBinding: binding === undefined,
-              handedOffMessages: handoff.messages.length,
-            };
-          }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+              return {
+                thread: committed.thread,
+                response: committed.response,
+                createdBinding: binding === undefined,
+                handedOffMessages: handoff.messages.length,
+              };
+            }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+          }).pipe(Effect.ensuring(Effect.promise(runLease.release)));
         }),
       );
 
-      const switchHarness = Effect.fn("RelayService.switchHarness")(
+      const switchNativeHarness = Effect.fn("RelayService.switchNativeHarness")(
         (harness: Harness, threadId?: string) =>
           Effect.gen(function* () {
             const current = yield* threadId ? store.get(threadId) : store.current();
@@ -187,6 +197,17 @@ export class RelayService extends Context.Service<
               const thread = yield* store.get(current.id);
               return yield* store.setHarness(thread, harness);
             }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+          }),
+      );
+
+      const switchHarness = Effect.fn("RelayService.switchHarness")(
+        (harness: Harness, threadId?: string) =>
+          Effect.gen(function* () {
+            const current = yield* threadId ? store.get(threadId) : store.current();
+            const runLease = yield* store.acquireRunLease(current.id);
+            return yield* switchNativeHarness(harness, current.id).pipe(
+              Effect.ensuring(Effect.promise(runLease.release)),
+            );
           }),
       );
 
@@ -246,50 +267,53 @@ export class RelayService extends Context.Service<
             const thread = input.threadId
               ? yield* store.get(input.threadId)
               : yield* store.current();
-            const lock = yield* store.acquireLock(thread.id);
+            const runLease = yield* store.acquireRunLease(thread.id);
             return yield* Effect.gen(function* () {
-              const current = yield* store.get(thread.id);
-              if (resolve(process.cwd()) !== resolve(current.cwd)) {
-                return yield* new CliError({
-                  message: `This task belongs to ${current.cwd}. Run Relay there before using native session controls.`,
+              const lock = yield* store.acquireLock(thread.id);
+              return yield* Effect.gen(function* () {
+                const current = yield* store.get(thread.id);
+                if (resolve(process.cwd()) !== resolve(current.cwd)) {
+                  return yield* new CliError({
+                    message: `This task belongs to ${current.cwd}. Run Relay there before using native session controls.`,
+                  });
+                }
+                const harness = input.harness ?? current.activeHarness;
+                const binding = current.bindings[harness];
+                if (!binding) {
+                  return yield* new CliError({
+                    message: `Run a ${harness} turn before using /${input.action}.`,
+                  });
+                }
+                if (input.action === "undo" && !(yield* store.canUndoLastTurn(current, harness))) {
+                  return yield* new CliError({
+                    message: `/${input.action} is disabled because the latest Relay turn was not produced by ${harness}. Undoing the native session now could overwrite newer work from the other harness.`,
+                  });
+                }
+                if (input.action === "redo" && !(yield* store.canRedoLastTurn(current, harness))) {
+                  return yield* new CliError({
+                    message: `There is no safe ${harness} turn to redo.`,
+                  });
+                }
+                const expectedPrompt =
+                  input.action === "undo"
+                    ? (yield* store.messages(current.id)).at(-2)?.content
+                    : undefined;
+                const result = yield* harnesses.control(harness, {
+                  cwd: current.cwd,
+                  sessionId: binding.sessionId,
+                  action: input.action,
+                  ...(binding.model ? { model: binding.model } : {}),
+                  ...(expectedPrompt ? { expectedPrompt } : {}),
                 });
-              }
-              const harness = input.harness ?? current.activeHarness;
-              const binding = current.bindings[harness];
-              if (!binding) {
-                return yield* new CliError({
-                  message: `Run a ${harness} turn before using /${input.action}.`,
-                });
-              }
-              if (input.action === "undo" && !(yield* store.canUndoLastTurn(current, harness))) {
-                return yield* new CliError({
-                  message: `/${input.action} is disabled because the latest Relay turn was not produced by ${harness}. Undoing the native session now could overwrite newer work from the other harness.`,
-                });
-              }
-              if (input.action === "redo" && !(yield* store.canRedoLastTurn(current, harness))) {
-                return yield* new CliError({
-                  message: `There is no safe ${harness} turn to redo.`,
-                });
-              }
-              const expectedPrompt =
-                input.action === "undo"
-                  ? (yield* store.messages(current.id)).at(-2)?.content
-                  : undefined;
-              const result = yield* harnesses.control(harness, {
-                cwd: current.cwd,
-                sessionId: binding.sessionId,
-                action: input.action,
-                ...(binding.model ? { model: binding.model } : {}),
-                ...(expectedPrompt ? { expectedPrompt } : {}),
-              });
-              const updated =
-                input.action === "undo"
-                  ? yield* store.undoLastTurn(current, harness)
-                  : input.action === "redo"
-                    ? yield* store.redoLastTurn(current, harness)
-                    : current;
-              return { thread: updated, message: result.message };
-            }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+                const updated =
+                  input.action === "undo"
+                    ? yield* store.undoLastTurn(current, harness)
+                    : input.action === "redo"
+                      ? yield* store.redoLastTurn(current, harness)
+                      : current;
+                return { thread: updated, message: result.message };
+              }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+            }).pipe(Effect.ensuring(Effect.promise(runLease.release)));
           }),
       );
 
@@ -366,6 +390,8 @@ export class RelayService extends Context.Service<
         nativeDelta,
         bindNativeSession,
         importNativeTurns,
+        acquireNativeLease: store.acquireRunLease,
+        switchNativeHarness: (threadId, harness) => switchNativeHarness(harness, threadId),
         dataRoot: store.root,
       };
     }),

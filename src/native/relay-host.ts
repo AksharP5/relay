@@ -242,20 +242,25 @@ export const launchNativeRelay = async (
 ) => {
   const dependencies = { ...defaultDependencies, ...overrides };
   let thread = await controller.loadLocalThread();
+  const lease = await controller.acquireLease(thread.id);
   let harness = thread.activeHarness;
 
-  while (true) {
-    const result = await runHarness(controller, thread, harness, dependencies);
-    thread = result.thread;
-    if (result.exit.reason !== "switch") {
-      if (result.exit.reason === "exit" && result.exit.exitCode !== 0)
-        process.exitCode = result.exit.exitCode;
-      if (result.exit.reason === "signal") process.exitCode = signalExitCode(result.exit.signal);
-      return;
-    }
+  try {
+    while (true) {
+      const result = await runHarness(controller, thread, harness, dependencies);
+      thread = result.thread;
+      if (result.exit.reason !== "switch") {
+        if (result.exit.reason === "exit" && result.exit.exitCode !== 0)
+          process.exitCode = result.exit.exitCode;
+        if (result.exit.reason === "signal") process.exitCode = signalExitCode(result.exit.signal);
+        return;
+      }
 
-    const selected = await dependencies.selectHarness(harness);
-    if (!selected) return;
-    harness = selected;
+      const selected = await dependencies.selectHarness(harness);
+      if (!selected) return;
+      harness = selected;
+    }
+  } finally {
+    await lease.release();
   }
 };

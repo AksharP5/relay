@@ -24,6 +24,41 @@ afterEach(async () => {
 });
 
 describe("Relay session transitions", () => {
+  it("rejects a headless turn while the native task owner is active", async () => {
+    directory = await mkdtemp(join(tmpdir(), "relay-run-lease-"));
+    process.env.RELAY_DATA_DIR = directory;
+    let harnessCalls = 0;
+    const harnesses: typeof HarnessService.Service = {
+      run: (harness) => {
+        harnessCalls += 1;
+        return Effect.succeed({ sessionId: `${harness}-session`, text: "unexpected" });
+      },
+      control: () => Effect.succeed({ message: "unexpected" }),
+      status: (harness) => Effect.succeed({ harness, installed: true, healthy: true }),
+      capabilities: (harness) => Effect.succeed({ harness, models: [], commands: [] }),
+    };
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const relay = yield* RelayService;
+        const store = yield* ThreadStore;
+        const thread = yield* relay.newThread({
+          title: "Owned native task",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        const owner = yield* store.acquireRunLease(thread.id);
+        const error = yield* relay
+          .ask({ threadId: thread.id, prompt: "must not run" })
+          .pipe(Effect.flip);
+        expect((error as Error).message).toContain("already open");
+        yield* Effect.promise(owner.release);
+      }).pipe(Effect.provide(Layer.merge(makeLayer(harnesses), ThreadStore.layer))),
+    );
+
+    expect(harnessCalls).toBe(0);
+  });
+
   it("compacts a native session without adding a fake turn or resending history", async () => {
     directory = await mkdtemp(join(tmpdir(), "relay-compact-"));
     process.env.RELAY_DATA_DIR = directory;

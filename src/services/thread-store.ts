@@ -31,6 +31,7 @@ const indexPath = () => `${dataRoot()}/index.json`;
 const pendingPath = (id: string) => `${threadDir(id)}/pending-turn.json`;
 const undoPath = (id: string) => `${threadDir(id)}/undo-stack.json`;
 const lockPath = (id: string) => `${dataRoot()}/locks/${id}`;
+const runLockPath = (id: string) => `${dataRoot()}/run-locks/${id}`;
 const maxEventLineChars = 4_000_000;
 
 const secureDirectory = async (path: string) => {
@@ -42,6 +43,7 @@ const ensureBase = async () => {
   await secureDirectory(dataRoot());
   await secureDirectory(`${dataRoot()}/threads`);
   await secureDirectory(`${dataRoot()}/locks`);
+  await secureDirectory(`${dataRoot()}/run-locks`);
 };
 
 const readJson = async <A>(path: string, schema: Schema.Decoder<A>): Promise<A | undefined> => {
@@ -294,9 +296,13 @@ function processIsAlive(pid: number) {
   }
 }
 
-async function acquireThreadLock(id: string) {
+async function acquireLockAt(
+  id: string,
+  path: string,
+  busyMessage: string,
+  startingMessage: string,
+) {
   await ensureBase();
-  const path = lockPath(id);
 
   const acquire = async (allowStaleRemoval: boolean): Promise<void> => {
     try {
@@ -323,7 +329,7 @@ async function acquireThreadLock(id: string) {
       if (ownerPid !== undefined && processIsAlive(ownerPid)) {
         throw new ThreadBusy({
           threadId: id,
-          message: "This Relay task already has a turn running",
+          message: busyMessage,
         });
       }
       if (ownerPid === undefined) {
@@ -331,7 +337,7 @@ async function acquireThreadLock(id: string) {
         if (ageMs < 5 * 60 * 1000) {
           throw new ThreadBusy({
             threadId: id,
-            message: "This Relay task already has a turn starting",
+            message: startingMessage,
           });
         }
       }
@@ -343,6 +349,22 @@ async function acquireThreadLock(id: string) {
   await acquire(true);
   return { release: () => rm(path, { recursive: true, force: true }) };
 }
+
+const acquireThreadLock = (id: string) =>
+  acquireLockAt(
+    id,
+    lockPath(id),
+    "This Relay task already has a state update running",
+    "This Relay task already has a state update starting",
+  );
+
+const acquireRunLease = (id: string) =>
+  acquireLockAt(
+    id,
+    runLockPath(id),
+    "This Relay task is already open or running a turn",
+    "This Relay task is already starting elsewhere",
+  );
 
 export interface CreateThreadInput {
   readonly title: string;
@@ -397,6 +419,9 @@ export class ThreadStore extends Context.Service<
       options: { readonly maxMessages: number; readonly maxChars: number },
     ) => Effect.Effect<ReadonlyArray<RelayMessage>, StoreError>;
     readonly acquireLock: (
+      id: string,
+    ) => Effect.Effect<{ readonly release: () => Promise<void> }, StoreError | ThreadBusy>;
+    readonly acquireRunLease: (
       id: string,
     ) => Effect.Effect<{ readonly release: () => Promise<void> }, StoreError | ThreadBusy>;
     readonly canUndoLastTurn: (
@@ -577,6 +602,16 @@ export class ThreadStore extends Context.Service<
           cause instanceof ThreadBusy
             ? cause
             : new StoreError({ operation: "lock thread", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    acquireRunLease: Effect.fn("ThreadStore.acquireRunLease")((id: string) =>
+      Effect.tryPromise({
+        try: () => acquireRunLease(id),
+        catch: (cause) =>
+          cause instanceof ThreadBusy
+            ? cause
+            : new StoreError({ operation: "own task run", message: errorMessage(cause), cause }),
       }),
     ),
 
