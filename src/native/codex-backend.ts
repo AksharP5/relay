@@ -64,7 +64,12 @@ const threadIdFrom = (value: unknown) => {
 
 const threadStatusFrom = (value: unknown) => {
   const status = asObject(asObject(asObject(value)?.thread)?.status);
-  return typeof status?.type === "string" ? status.type : "notLoaded";
+  return typeof status?.type === "string" ? status.type : undefined;
+};
+
+export const codexThreadAllowsDetach = (value: unknown) => {
+  const status = threadStatusFrom(value);
+  return status === "idle" || status === "notLoaded" || status === "systemError";
 };
 
 const threadCwdFrom = (value: unknown) => {
@@ -404,7 +409,7 @@ export class CodexNativeBackend {
             threadId,
             includeTurns: false,
           });
-          if (threadStatusFrom(result) === "active") return false;
+          if (!codexThreadAllowsDetach(result)) return false;
         }
         return true;
       }
@@ -419,7 +424,7 @@ export class CodexNativeBackend {
           }
           throw cause;
         });
-      return threadStatusFrom(result) !== "active";
+      return codexThreadAllowsDetach(result);
     } finally {
       await connection.close();
     }

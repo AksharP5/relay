@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseCodexNativeTurns, selectResolvedCodexSession } from "../src/native/codex-backend.ts";
+import {
+  codexThreadAllowsDetach,
+  parseCodexNativeTurns,
+  selectResolvedCodexSession,
+} from "../src/native/codex-backend.ts";
 
 describe("Codex native transcript", () => {
   it("imports completed user/final-answer turns and ignores commentary or controls", () => {
@@ -30,6 +34,17 @@ describe("Codex native transcript", () => {
         },
       }),
     ).toEqual([{ id: "turn-1", prompt: "Fix the parser", response: "Fixed and tested." }]);
+  });
+});
+
+describe("Codex native detach status", () => {
+  it("allows only documented non-active terminal states", () => {
+    for (const type of ["idle", "notLoaded", "systemError"]) {
+      expect(codexThreadAllowsDetach({ thread: { status: { type } } })).toBe(true);
+    }
+    expect(codexThreadAllowsDetach({ thread: { status: { type: "active" } } })).toBe(false);
+    expect(codexThreadAllowsDetach({ thread: { status: { type: "futureStatus" } } })).toBe(false);
+    expect(codexThreadAllowsDetach({ thread: {} })).toBe(false);
   });
 });
 
