@@ -150,7 +150,7 @@ export class RelayService extends Context.Service<
           return yield* Effect.gen(function* () {
             const lock = yield* store.acquireLock(initialThread.id);
             return yield* Effect.gen(function* () {
-              const thread = yield* store.get(initialThread.id);
+              let thread = yield* store.get(initialThread.id);
               if (resolve(process.cwd()) !== resolve(thread.cwd)) {
                 return yield* new CliError({
                   message: `This task belongs to ${thread.cwd}. Run Relay there, or select/create a task for ${process.cwd()}.`,
@@ -158,6 +158,9 @@ export class RelayService extends Context.Service<
               }
 
               const harness = input.harness ?? thread.activeHarness;
+              if (thread.pendingHandoffs?.[harness]) {
+                thread = yield* store.abandonNativeHandoff(thread, harness);
+              }
               const binding = thread.bindings[harness];
               const model = input.model ?? binding?.model ?? thread.preferredModels?.[harness];
               const handoff = yield* store.messagesSince(thread.id, binding?.lastSyncedSeq ?? 0);
@@ -288,13 +291,16 @@ export class RelayService extends Context.Service<
             return yield* Effect.gen(function* () {
               const lock = yield* store.acquireLock(thread.id);
               return yield* Effect.gen(function* () {
-                const current = yield* store.get(thread.id);
+                let current = yield* store.get(thread.id);
                 if (resolve(process.cwd()) !== resolve(current.cwd)) {
                   return yield* new CliError({
                     message: `This task belongs to ${current.cwd}. Run Relay there before using native session controls.`,
                   });
                 }
                 const harness = input.harness ?? current.activeHarness;
+                if (current.pendingHandoffs?.[harness]) {
+                  current = yield* store.abandonNativeHandoff(current, harness);
+                }
                 const binding = current.bindings[harness];
                 if (!binding) {
                   return yield* new CliError({

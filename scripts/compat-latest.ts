@@ -214,8 +214,11 @@ try {
     throw new Error("OpenCode native event resolver changed the attached session");
   }
 } finally {
-  if (openCodeProbeSessionId) await openCodeBackend.deleteSession(openCodeProbeSessionId);
-  await openCodeBackend.close();
+  try {
+    if (openCodeProbeSessionId) await openCodeBackend.deleteSession(openCodeProbeSessionId);
+  } finally {
+    await openCodeBackend.close();
+  }
 }
 
 console.log("Latest native compatibility contract passed");

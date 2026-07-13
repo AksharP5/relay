@@ -210,6 +210,69 @@ describe("Relay session transitions", () => {
     expect(attempts[2]?.handoff.map((message) => message.content)).toEqual(["First", "response-1"]);
   });
 
+  it("retires pending native handoffs before headless turns and controls", async () => {
+    directory = await mkdtemp(join(tmpdir(), "relay-pending-native-"));
+    process.env.RELAY_DATA_DIR = directory;
+    const attempts: Array<HarnessTurnInput> = [];
+    let controls = 0;
+    const harnesses: typeof HarnessService.Service = {
+      run: (harness, input) => {
+        attempts.push(input);
+        return Effect.succeed({
+          sessionId: `${harness}-session-${attempts.length}`,
+          text: `response-${attempts.length}`,
+        });
+      },
+      control: () => {
+        controls += 1;
+        return Effect.succeed({ message: "unexpected control" });
+      },
+      status: (harness) => Effect.succeed({ harness, installed: true, healthy: true }),
+      capabilities: (harness) => Effect.succeed({ harness, models: [], commands: [] }),
+    };
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const relay = yield* RelayService;
+        const store = yield* ThreadStore;
+        const thread = yield* relay.newThread({
+          title: "Pending native recovery",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        const first = yield* relay.ask({ threadId: thread.id, prompt: "First" });
+        yield* store.beginNativeHandoff(first.thread, {
+          harness: "codex",
+          sessionId: first.thread.bindings.codex!.sessionId,
+          fromSeq: 0,
+          throughSeq: first.thread.lastSeq,
+        });
+
+        const recovered = yield* relay.ask({ threadId: thread.id, prompt: "After crash" });
+        expect(recovered.thread.pendingHandoffs?.codex).toBeUndefined();
+        expect(attempts[1]?.sessionId).toBeUndefined();
+        expect(attempts[1]?.handoff.map((message) => message.content)).toEqual([
+          "First",
+          "response-1",
+        ]);
+
+        yield* store.beginNativeHandoff(recovered.thread, {
+          harness: "codex",
+          sessionId: recovered.thread.bindings.codex!.sessionId,
+          fromSeq: 0,
+          throughSeq: recovered.thread.lastSeq,
+        });
+        const error = yield* relay
+          .control({ threadId: thread.id, harness: "codex", action: "compact" })
+          .pipe(Effect.flip);
+        expect((error as Error).message).toContain("Run a codex turn");
+        expect((yield* relay.current()).bindings.codex).toBeUndefined();
+      }).pipe(Effect.provide(Layer.merge(makeLayer(harnesses), ThreadStore.layer))),
+    );
+
+    expect(controls).toBe(0);
+  });
+
   it("preserves a context-limited warm session so compact targets the same binding", async () => {
     directory = await mkdtemp(join(tmpdir(), "relay-context-compact-"));
     process.env.RELAY_DATA_DIR = directory;
