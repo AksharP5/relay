@@ -1192,6 +1192,13 @@ export class ThreadStore extends Context.Service<
               },
               updatedAt: now,
             };
+            // Invalidate redo and pending-turn state before publishing the new
+            // context boundary. A stop at any later compaction point can then
+            // recover the new context without restoring pre-adoption metadata.
+            await Promise.all([
+              rm(pendingPath(thread.id), { force: true }),
+              rm(undoPath(thread.id), { force: true }),
+            ]);
             await writeThread(updated);
             // A selected native conversation replaces Relay's active context.
             // Compact the superseded canonical prefix instead of making every
@@ -1200,10 +1207,6 @@ export class ThreadStore extends Context.Service<
             // the source of truth if the user deliberately adopts it again.
             await atomicTextWrite(eventsPath(thread.id), "");
             await atomicJsonWrite(visibilityPath(thread.id), { hidden: [], links: [] });
-            await Promise.all([
-              rm(pendingPath(thread.id), { force: true }),
-              rm(undoPath(thread.id), { force: true }),
-            ]);
             return updated;
           },
           catch: (cause) =>

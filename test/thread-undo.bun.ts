@@ -56,4 +56,35 @@ describe("canonical undo and redo", () => {
       }).pipe(Effect.provide(ThreadStore.layer)),
     );
   });
+
+  it("invalidates redo before adopting a different native context", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Undo adoption boundary",
+          cwd: process.cwd(),
+          harness: "opencode",
+        });
+        const committed = yield* store.commitTurn(created, {
+          harness: "opencode",
+          prompt: "old prompt",
+          response: "old response",
+          sessionId: "old-session",
+          bindingCreatedAt: created.createdAt,
+        });
+        const undone = yield* store.undoLastTurn(committed.thread, "opencode");
+        expect(yield* store.canRedoLastTurn(undone, "opencode")).toBe(true);
+
+        const adopted = yield* store.resetNativeContext(undone, {
+          harness: "opencode",
+          sessionId: "selected-session",
+        });
+        expect(yield* store.canRedoLastTurn(adopted, "opencode")).toBe(false);
+        const redoExit = yield* Effect.exit(store.redoLastTurn(adopted, "opencode"));
+        expect(redoExit._tag).toBe("Failure");
+        expect(yield* store.messages(created.id)).toEqual([]);
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+  });
 });

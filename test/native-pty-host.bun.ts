@@ -499,6 +499,7 @@ describe("native PTY host", () => {
     const resize = new EventEmitter();
     let clock = 100;
     const recentSubmits: Array<boolean | undefined> = [];
+    let submitSnapshots = 0;
     const result = runNativeTui(
       {
         executable: process.execPath,
@@ -510,6 +511,9 @@ describe("native PTY host", () => {
         now: () => clock,
         submitGraceMs: 1_000,
         submitProtectionMs: 10_000,
+        onSubmitObserved: () => {
+          submitSnapshots += 1;
+        },
         onSwitchRequest: (recentSubmit) => {
           recentSubmits.push(recentSubmit);
           return recentSubmits.length > 1;
@@ -528,6 +532,7 @@ describe("native PTY host", () => {
 
     expect(await result).toEqual({ reason: "switch" });
     expect(recentSubmits).toEqual([true, false]);
+    expect(submitSnapshots).toBe(1);
   });
 
   it("does not delay switching after Enter when cold-session protection is disabled", async () => {

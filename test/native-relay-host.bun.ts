@@ -417,7 +417,7 @@ describe("native Relay host", () => {
       lastSyncedSeq: 0,
       nativeCursor: "old-turn",
     });
-    let cursor = "old-turn";
+    let cursor = "launch-turn";
     let clock = 0;
     const backend: NativeBackend = {
       prepareSession: async () => ({ sessionId: "warm-session", handoffInjected: false }),
@@ -439,9 +439,11 @@ describe("native Relay host", () => {
       startBackend: async () => backend,
       now: () => clock,
       wait: async () => {},
-      runTui: async (_command, onSwitchRequest) => {
+      runTui: async (_command, onSwitchRequest, onSubmitObserved) => {
+        cursor = "prior-completed-turn";
+        await onSubmitObserved();
         expect(await onSwitchRequest(true)).toBe(false);
-        cursor = "completed-turn";
+        cursor = "submitted-completed-turn";
         clock = 1_001;
         expect(await onSwitchRequest(true)).toBe(true);
         return { reason: "exit", exitCode: 0 };
@@ -545,7 +547,7 @@ describe("native Relay host", () => {
       startBackend: async () => backend,
       wait: async () => {},
       now: () => clock,
-      runTui: async (_command, onSwitchRequest, coldLaunch) => {
+      runTui: async (_command, onSwitchRequest, _onSubmitObserved, coldLaunch) => {
         protectionModes.push(coldLaunch);
         expect(await onSwitchRequest(true)).toBe(false);
         clock = 1_001;
@@ -557,7 +559,7 @@ describe("native Relay host", () => {
     expect(protectionModes).toEqual([true]);
   });
 
-  it("allows an unresolved native selection only when the harness is globally idle", async () => {
+  it("requires recent-submit protection to expire before an unresolved idle switch", async () => {
     const { controller } = makeController();
     await controller.switchHarness("relay-thread", "opencode");
     let globallyIdle = false;
@@ -583,15 +585,17 @@ describe("native Relay host", () => {
         let clock = 0;
         return () => (clock += 1_001);
       })(),
-      runTui: async (_command, onSwitchRequest) => {
+      runTui: async (_command, onSwitchRequest, onSubmitObserved) => {
+        await onSubmitObserved();
         expect(await onSwitchRequest(true)).toBe(false);
         globallyIdle = true;
-        expect(await onSwitchRequest(true)).toBe(true);
+        expect(await onSwitchRequest(true)).toBe(false);
+        expect(await onSwitchRequest(false)).toBe(true);
         return { reason: "exit", exitCode: 0 };
       },
     });
 
-    expect(checkedSessions).toEqual(Array(4).fill(undefined));
+    expect(checkedSessions).toEqual(Array(3).fill(undefined));
   });
 
   it("protects a warm TUI after native /new creates an unmaterialized session", async () => {
@@ -618,8 +622,9 @@ describe("native Relay host", () => {
     await launchNativeRelay(controller, {
       startBackend: async () => backend,
       wait: async () => {},
-      runTui: async (_command, onSwitchRequest, coldLaunch) => {
+      runTui: async (_command, onSwitchRequest, onSubmitObserved, coldLaunch) => {
         coldLaunchModes.push(coldLaunch);
+        await onSubmitObserved();
         resolvedSession = "new-session";
         expect(await onSwitchRequest(true)).toBe(false);
         return { reason: "exit", exitCode: 0 };
@@ -630,6 +635,54 @@ describe("native Relay host", () => {
     await expect(
       controller.loadLocalThread().then((value) => value.bindings.codex?.sessionId),
     ).resolves.toBe("warm-session");
+  });
+
+  it("allows a recent Enter that selected a different materialized idle session", async () => {
+    const { controller } = makeController();
+    await controller.bind({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "warm-session",
+      lastSyncedSeq: 0,
+      nativeCursor: "warm-turn",
+    });
+    let resolvedSession = "warm-session";
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ sessionId: "warm-session", handoffInjected: false }),
+      inject: async () => {},
+      read: async (sessionId) => ({
+        turns: [
+          {
+            id: `${sessionId}-turn`,
+            prompt: `${sessionId} prompt`,
+            response: `${sessionId} response`,
+          },
+        ],
+        hiddenTurnIds: [],
+        cwd: process.cwd(),
+      }),
+      isMaterialized: async () => true,
+      isIdle: async () => true,
+      sessionCwd: async () => process.cwd(),
+      resolveSession: async () => resolvedSession,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      wait: async () => {},
+      runTui: async (_command, onSwitchRequest, onSubmitObserved) => {
+        await onSubmitObserved();
+        resolvedSession = "selected-session";
+        expect(await onSwitchRequest(true)).toBe(true);
+        return { reason: "exit", exitCode: 0 };
+      },
+    });
+
+    await expect(
+      controller.loadLocalThread().then((value) => value.bindings.codex?.sessionId),
+    ).resolves.toBe("selected-session");
   });
 
   it("adopts a materialized native /new session without appending old context behind it", async () => {
@@ -880,7 +933,7 @@ describe("native Relay host", () => {
 
     await launchNativeRelay(controller, {
       startBackend: async () => backend,
-      runTui: async (_command, _onSwitchRequest, protectColdSubmit) => {
+      runTui: async (_command, _onSwitchRequest, _onSubmitObserved, protectColdSubmit) => {
         protectionModes.push(protectColdSubmit);
         return { reason: "exit", exitCode: 0 };
       },

@@ -138,6 +138,7 @@ export interface NativeRelayHostDependencies {
   readonly runTui: (
     command: NativeTuiCommand,
     onSwitchRequest: (recentSubmit?: boolean) => Promise<boolean>,
+    onSubmitObserved: () => Promise<void>,
     coldLaunch: boolean,
     harness: Harness,
   ) => Promise<NativeTuiExit>;
@@ -148,12 +149,13 @@ export interface NativeRelayHostDependencies {
 
 const defaultDependencies: NativeRelayHostDependencies = {
   startBackend,
-  runTui: (command, onSwitchRequest, coldLaunch, harness) =>
+  runTui: (command, onSwitchRequest, onSubmitObserved, coldLaunch, harness) =>
     runNativeTui(
       command,
       { input: process.stdin, output: process.stdout, resizeSource: process },
       {
         onSwitchRequest,
+        onSubmitObserved,
         submitGraceMs: coldLaunch ? 2_000 : 0,
         submitProtectionMs: 10_000,
         preserveInputOnSwitch: true,
@@ -411,14 +413,31 @@ const runHarness = async (
     if (preparedSignal) return { thread, exit: { reason: "signal", signal: preparedSignal } };
     const boundSessionId = thread.bindings[harness]?.sessionId;
     const launchSessionId = sessionId;
-    const launchCursor = thread.bindings[harness]?.nativeCursor;
     const coldLaunch = sessionId === undefined;
     if (armToggleLatch) allowSwitchAttempt();
+
+    type SubmitBaseline = { readonly sessionId?: string; readonly nativeCursor?: string };
+    let latestSubmitBaseline: Promise<SubmitBaseline | undefined> | undefined;
+    const captureSubmitBaseline = async () => {
+      const capture = (async (): Promise<SubmitBaseline> => {
+        const observedSessionId = await backend.resolveSession(sessionId, true);
+        if (!observedSessionId) return {};
+        const transcript = await backend.read(observedSessionId);
+        return {
+          sessionId: observedSessionId,
+          ...(transcript.turns.at(-1)?.id ? { nativeCursor: transcript.turns.at(-1)!.id } : {}),
+        };
+      })().catch(() => undefined);
+      latestSubmitBaseline = capture;
+      await capture;
+    };
 
     const exit = await dependencies.runTui(
       backend.command(sessionId, launchModel),
       async (recentSubmit = false) => {
         if (!allowSwitchAttempt()) return false;
+        const submitBaseline = recentSubmit ? await latestSubmitBaseline : undefined;
+        if (recentSubmit && !submitBaseline) return false;
 
         // A native TUI forwards Enter before Relay sees the switch key. Sample
         // the backend across a short settling window so a newly-starting turn
@@ -429,8 +448,7 @@ const runHarness = async (
             sessionId = await backend.resolveSession(sessionId, true);
             const sessionBecameCold =
               launchSessionId === undefined || sessionId !== launchSessionId;
-            if (recentSubmit && sessionBecameCold && !sessionId && harness === "codex")
-              return false;
+            if (recentSubmit && sessionBecameCold && !sessionId) return false;
             if (
               recentSubmit &&
               sessionBecameCold &&
@@ -439,13 +457,13 @@ const runHarness = async (
               !(await backend.isMaterialized(sessionId))
             )
               return false;
-            if (recentSubmit && !sessionBecameCold && sessionId) {
+            if (recentSubmit && sessionId && submitBaseline?.sessionId === sessionId) {
               const observedCursor = (await backend.read(sessionId)).turns.at(-1)?.id;
               // For a warm session, an Enter immediately before the switch may
               // still be becoming a model request. Do not detach until that
               // submission has either produced a completed native turn or has
               // aged out of the PTY's conservative protection window.
-              if (!observedCursor || observedCursor === launchCursor) return false;
+              if (!observedCursor || observedCursor === submitBaseline.nativeCursor) return false;
             }
             if (sessionId && backend.sessionCwd) {
               const nativeCwd = await backend.sessionCwd(sessionId);
@@ -459,6 +477,7 @@ const runHarness = async (
         }
         return true;
       },
+      captureSubmitBaseline,
       coldLaunch,
       harness,
     );

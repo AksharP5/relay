@@ -60,6 +60,8 @@ export interface NativePtyOptions {
   readonly handoffInputLimitBytes?: number;
   /** Maximum queued input or output retained under PTY backpressure. */
   readonly ioQueueLimitBytes?: number;
+  /** Snapshot native state immediately before a real Enter is forwarded. */
+  readonly onSubmitObserved?: () => void | Promise<void>;
   /** Return false to leave the native TUI running (for example, during an active turn). */
   readonly onSwitchRequest?: (recentSubmit?: boolean) => boolean | Promise<boolean>;
   /**
@@ -297,8 +299,15 @@ export const runNativeTui = async (
       return;
     }
     const routed = router.route(bytes);
+    if (routed.submitObserved) {
+      lastSubmitAt = now();
+      try {
+        void Promise.resolve(options.onSubmitObserved?.()).catch(() => undefined);
+      } catch {
+        // The switch guard will fail closed when its submit snapshot is absent.
+      }
+    }
     writeInput(routed.forward);
-    if (routed.submitObserved) lastSubmitAt = now();
     if (!routed.switchRequested) {
       if (router.hasPendingSequence)
         sequenceTimer = setTimeout(
