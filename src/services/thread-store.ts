@@ -201,6 +201,12 @@ const readRawMessages = async (
       }
     }
   }
+  if (options.repairTail && !text.endsWith("\n")) {
+    await atomicTextWrite(
+      eventsPath(id),
+      messages.map((message) => JSON.stringify(message)).join("\n") + "\n",
+    );
+  }
   return messages;
 };
 

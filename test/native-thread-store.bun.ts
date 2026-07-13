@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { Effect } from "effect";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -66,6 +66,50 @@ describe("native transcript storage", () => {
         }).pipe(Effect.provide(ThreadStore.layer)),
       ),
     ).rejects.toThrow("was not found");
+  });
+
+  it("repairs a valid unterminated event before appending the next turn", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Unterminated tail",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        const first = yield* store.commitTurn(created, {
+          harness: "codex",
+          prompt: "first",
+          response: "response one",
+          sessionId: "tail-session",
+          bindingCreatedAt: created.createdAt,
+        });
+        const events = join(directory, "threads", created.id, "events.jsonl");
+        const firstEvents = yield* Effect.promise(() => readFile(events, "utf8"));
+        yield* Effect.promise(() =>
+          writeFile(events, firstEvents.trimEnd(), {
+            mode: 0o600,
+          }),
+        );
+
+        const recovered = yield* store.get(created.id);
+        yield* store.commitTurn(recovered, {
+          harness: "codex",
+          prompt: "second",
+          response: "response two",
+          sessionId: "tail-session",
+          bindingCreatedAt: first.thread.bindings.codex!.createdAt,
+        });
+        expect((yield* store.messages(created.id)).map((message) => message.content)).toEqual([
+          "first",
+          "response one",
+          "second",
+          "response two",
+        ]);
+        const repairedEvents = yield* Effect.promise(() => readFile(events, "utf8"));
+        expect(repairedEvents.endsWith("\n")).toBe(true);
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
   });
 
   it("prevents two Relay tasks from running in the same checkout", async () => {
