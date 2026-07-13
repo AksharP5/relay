@@ -72,6 +72,7 @@ export const RelayApp = (props: RelayAppProps) => {
   const [overlay, setOverlay] = createSignal<Overlay>(null);
   const [draft, setDraft] = createSignal("");
   const [busy, setBusy] = createSignal(false);
+  const [capabilitiesLoading, setCapabilitiesLoading] = createSignal(false);
   const [pendingPrompt, setPendingPrompt] = createSignal("");
   const [streamingResponse, setStreamingResponse] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
@@ -121,8 +122,18 @@ export const RelayApp = (props: RelayAppProps) => {
     try {
       const thread = await props.controller.switchHarness(harness);
       if (thread) setSnapshot((current) => ({ ...current, thread }));
+      if (!capabilities().some((item) => item.harness === harness)) {
+        setCapabilitiesLoading(true);
+        const discovered = await props.controller.refreshCapabilities(harness);
+        setCapabilities((current) => [
+          ...current.filter((item) => item.harness !== harness),
+          discovered,
+        ]);
+      }
     } catch (cause) {
       setError(errorMessage(cause));
+    } finally {
+      setCapabilitiesLoading(false);
     }
   };
 
@@ -483,7 +494,10 @@ export const RelayApp = (props: RelayAppProps) => {
               if (!busy()) setOverlay("model");
             }}
           >
-            {selectedModel() ?? "Default model"} ▾
+            {capabilitiesLoading()
+              ? "Loading capabilities…"
+              : (selectedModel() ?? "Native default")}{" "}
+            ▾
           </text>
           <text fg={theme.subtle}>
             {compact()

@@ -63,28 +63,24 @@ export const makeTuiController = (
       runtime.runPromise(
         Effect.gen(function* () {
           const relay = yield* RelayService;
-          const [harnesses, capabilities] = yield* Effect.all(
+          const thread = yield* selectDirectoryTask(relay);
+          const activeHarness = thread?.activeHarness ?? "codex";
+          const [harnesses, activeCapabilities] = yield* Effect.all(
             [
               relay.doctor(),
-              Effect.all(
-                ["codex", "opencode"].map((harness) =>
-                  relay.capabilities(harness as Harness).pipe(
-                    Effect.orElseSucceed(() => ({
-                      harness: harness as Harness,
-                      models: [],
-                      commands: [],
-                    })),
-                  ),
-                ),
-                { concurrency: 2 },
+              relay.capabilities(activeHarness).pipe(
+                Effect.orElseSucceed(() => ({
+                  harness: activeHarness,
+                  models: [],
+                  commands: [],
+                })),
               ),
             ],
             { concurrency: 2 },
           );
-          const thread = yield* selectDirectoryTask(relay);
           activeThreadId = thread?.id;
           const messages = thread ? yield* relay.historyForDisplay(thread.id) : [];
-          return { thread, messages, harnesses, capabilities };
+          return { thread, messages, harnesses, capabilities: [activeCapabilities] };
         }),
       ),
     ask: (input) =>

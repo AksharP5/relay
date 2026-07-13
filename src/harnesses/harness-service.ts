@@ -11,6 +11,7 @@ import { HarnessError, HarnessUnavailable } from "../errors.ts";
 import { composePrompt } from "../handoff.ts";
 import { ProcessRunner } from "../services/process-runner.ts";
 import { runCodexCommand } from "./codex-app-server.ts";
+import { discoverOpenCodeCommands } from "./opencode-server.ts";
 import { parseCodexOutput, parseOpenCodeEvent } from "./parsing.ts";
 
 export interface HarnessStatus {
@@ -86,19 +87,6 @@ const parseOpenCodeModels = (stdout: string): ReadonlyArray<HarnessModel> =>
     .map((line) => line.trim())
     .filter(Boolean)
     .map((id) => ({ id, name: id }));
-
-const parseOpenCodeCommands = (stdout: string): ReadonlyArray<HarnessCommand> => {
-  const value = JSON.parse(stdout) as {
-    command?: Record<string, { description?: unknown }>;
-  };
-  return Object.entries(value.command ?? {}).map(([name, command]) => ({
-    name,
-    description:
-      typeof command.description === "string" ? command.description : `Run OpenCode /${name}`,
-    source: "native" as const,
-    acceptsArguments: true,
-  }));
-};
 
 export class HarnessService extends Context.Service<
   HarnessService,
@@ -192,26 +180,11 @@ export class HarnessService extends Context.Service<
 
             let nativeCommands = harness === "codex" ? codexCommands : opencodeBuiltins;
             if (harness === "opencode") {
-              const configOutput = yield* runner
-                .run({
-                  command,
-                  args: ["debug", "config"],
-                  cwd,
-                  timeoutMs: 30_000,
-                  captureLimitChars: 4_000_000,
-                  lineLimitChars: 4_000_000,
-                })
-                .pipe(Effect.orElseSucceed(() => ({ exitCode: 1, stdout: "", stderr: "" })));
-              if (configOutput.exitCode === 0) {
-                try {
-                  nativeCommands = [
-                    ...nativeCommands,
-                    ...parseOpenCodeCommands(configOutput.stdout),
-                  ];
-                } catch {
-                  // Custom command discovery is additive; built-ins still work if config is invalid.
-                }
-              }
+              const discovered = yield* Effect.tryPromise({
+                try: () => discoverOpenCodeCommands(command, cwd),
+                catch: () => undefined,
+              }).pipe(Effect.orElseSucceed(() => undefined));
+              if (discovered) nativeCommands = [...nativeCommands, ...discovered];
             }
 
             const commands = [...relayCommands, ...nativeCommands].filter(
