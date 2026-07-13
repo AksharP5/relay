@@ -244,4 +244,29 @@ describe("native harness selector", () => {
     expect(input.listenerCount("data")).toBe(0);
     expect(output.join("")).toContain("\u001b[?1049l");
   });
+
+  it("restores the terminal when Relay is terminated inside its selector", async () => {
+    class Input extends EventEmitter {
+      isRaw = false;
+      setRawMode(enabled: boolean) {
+        this.isRaw = enabled;
+      }
+      resume() {}
+      pause() {}
+    }
+    const input = new Input();
+    const signals = new EventEmitter();
+    const output: Array<string> = [];
+    const selection = selectHarness("codex", {
+      input,
+      output: { write: (value) => void output.push(String(value)) },
+      signalSource: signals,
+    });
+    signals.emit("SIGTERM");
+
+    expect(await selection).toBeUndefined();
+    expect(input.isRaw).toBe(false);
+    expect(signals.listenerCount("SIGTERM")).toBe(0);
+    expect(output.join("")).toContain("\u001b[?1049l");
+  });
 });

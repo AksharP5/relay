@@ -16,6 +16,7 @@ interface SelectorOutput {
 export interface SelectorIo {
   readonly input: SelectorInput;
   readonly output: SelectorOutput;
+  readonly signalSource?: EventEmitter;
 }
 
 const defaultIo = (): SelectorIo => ({ input: process.stdin, output: process.stdout });
@@ -31,6 +32,7 @@ export const selectHarness = (
   io: SelectorIo = defaultIo(),
 ): Promise<Harness | undefined> => {
   const initialRawMode = io.input.isRaw === true;
+  const signalSource = io.signalSource ?? process;
   let selected = Math.max(0, options.indexOf(current));
   let pending = "";
   let escapeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -51,6 +53,9 @@ export const selectHarness = (
       settled = true;
       if (escapeTimer) clearTimeout(escapeTimer);
       io.input.off("data", onData);
+      signalSource.off("SIGHUP", onHangup);
+      signalSource.off("SIGTERM", onTerminate);
+      signalSource.off("SIGQUIT", onQuit);
       io.input.pause?.();
       io.input.setRawMode?.(initialRawMode);
       io.output.write(restoreScreen);
@@ -103,11 +108,22 @@ export const selectHarness = (
       pending += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
       consume();
     };
+    const onSignal = (signal: "SIGHUP" | "SIGTERM" | "SIGQUIT") => {
+      if (signalSource === process)
+        process.exitCode = { SIGHUP: 129, SIGTERM: 143, SIGQUIT: 131 }[signal];
+      finish(undefined);
+    };
+    const onHangup = () => onSignal("SIGHUP");
+    const onTerminate = () => onSignal("SIGTERM");
+    const onQuit = () => onSignal("SIGQUIT");
 
     io.output.write(alternateScreen);
     io.input.setRawMode?.(true);
     io.input.resume();
     io.input.on("data", onData);
+    signalSource.on("SIGHUP", onHangup);
+    signalSource.on("SIGTERM", onTerminate);
+    signalSource.on("SIGQUIT", onQuit);
     render();
   });
 };

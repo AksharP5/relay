@@ -96,6 +96,9 @@ const defaultDependencies: NativeRelayHostDependencies = {
   selectHarness,
 };
 
+const signalExitCode = (signal: "SIGHUP" | "SIGTERM" | "SIGQUIT") =>
+  ({ SIGHUP: 129, SIGTERM: 143, SIGQUIT: 131 })[signal];
+
 const messagesOutsideTranscript = (
   messages: ReadonlyArray<RelayMessage>,
   turns: ReadonlyArray<NativeTranscriptTurn>,
@@ -243,6 +246,7 @@ export const launchNativeRelay = async (
     if (result.exit.reason !== "switch") {
       if (result.exit.reason === "exit" && result.exit.exitCode !== 0)
         process.exitCode = result.exit.exitCode;
+      if (result.exit.reason === "signal") process.exitCode = signalExitCode(result.exit.signal);
       return;
     }
 
