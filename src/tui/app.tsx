@@ -111,6 +111,7 @@ export const RelayApp = (props: RelayAppProps) => {
   const [pendingPrompt, setPendingPrompt] = createSignal("");
   const [streamingResponse, setStreamingResponse] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
+  const [notice, setNotice] = createSignal<string | null>(null);
   let composer: TextareaRenderable | undefined;
 
   const skin = createMemo<Skin>(() =>
@@ -295,6 +296,30 @@ export const RelayApp = (props: RelayAppProps) => {
     }
   };
 
+  const executeControl = async (command: ResolvedCommand) => {
+    const action =
+      command.action === "context.compact"
+        ? "compact"
+        : command.action === "session.share"
+          ? "share"
+          : command.action === "session.unshare"
+            ? "unshare"
+            : undefined;
+    if (!action) return false;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      setNotice(await props.controller.control(action, selectedHarness()));
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+      focusComposer();
+    }
+    return true;
+  };
+
   const chooseModel = (model: string) => {
     setSelectedModels((current) => ({ ...current, [selectedHarness()]: model }));
     closeOverlay();
@@ -322,6 +347,17 @@ export const RelayApp = (props: RelayAppProps) => {
       else setError(`/${command.name} is not implemented yet`);
       return;
     }
+    if (
+      command.action === "context.compact" ||
+      command.action === "session.share" ||
+      command.action === "session.unshare"
+    ) {
+      composer?.clear();
+      setDraft("");
+      closeOverlay();
+      void executeControl(command);
+      return;
+    }
     const value = `/${command.name}${command.acceptsArguments ? " " : ""}`;
     composer?.setText(value);
     setDraft(value);
@@ -346,6 +382,17 @@ export const RelayApp = (props: RelayAppProps) => {
       composer?.clear();
       setDraft("");
       insertCommand(resolvedCommand);
+      return;
+    }
+    if (
+      resolvedCommand &&
+      (resolvedCommand.action === "context.compact" ||
+        resolvedCommand.action === "session.share" ||
+        resolvedCommand.action === "session.unshare")
+    ) {
+      composer?.clear();
+      setDraft("");
+      await executeControl(resolvedCommand);
       return;
     }
     const nativeCommand = resolvedCommand?.source === "native" ? resolvedCommand : undefined;
@@ -498,6 +545,13 @@ export const RelayApp = (props: RelayAppProps) => {
         {(message) => (
           <box border={["left"]} borderColor={palette().error} paddingLeft={1}>
             <text fg={palette().error}>{message()}</text>
+          </box>
+        )}
+      </Show>
+      <Show when={notice()}>
+        {(message) => (
+          <box border={["left"]} borderColor={palette().border} paddingLeft={1}>
+            <text fg={palette().muted}>{message()}</text>
           </box>
         )}
       </Show>

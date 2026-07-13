@@ -98,6 +98,13 @@ const codex: ReadonlyArray<CommandSpec> = [
     action: "review.start",
     name: "review",
     description: "Review the working tree",
+    implementation: "opencode",
+    acceptsArguments: true,
+  },
+  {
+    action: "review.start",
+    name: "review",
+    description: "Review the working tree",
     implementation: "codex",
     acceptsArguments: true,
   },
@@ -209,7 +216,7 @@ const allowedByAction: Readonly<Record<CommandAction, ReadonlyArray<CommandImple
   "history.redo": ["opencode"],
   "history.undo": ["opencode"],
   "model.select": ["relay"],
-  "review.start": ["codex"],
+  "review.start": ["codex", "opencode"],
   "session.new": ["relay"],
   "session.open": ["relay"],
   "session.share": ["opencode"],
@@ -230,18 +237,24 @@ const resolve = (
     override && allowedImplementations.includes(override) ? override : spec.implementation;
   const required = requiredHarness(implementation);
   const available = required === undefined || required === harness;
+  const compatibilityPending = spec.action === "history.undo" || spec.action === "history.redo";
   return {
     ...spec,
     defaultImplementation: spec.implementation,
     allowedImplementations,
     implementation,
     source: implementation === "relay" ? "relay" : "native",
-    available,
-    ...(!available
+    available: available && !compatibilityPending,
+    ...(compatibilityPending
       ? {
-          disabledReason: `${spec.name} uses ${required === "codex" ? "Codex" : "OpenCode"} native behavior. Switch the underlying harness to use it.`,
+          disabledReason:
+            "Relay is still validating synchronized conversation and file restoration for this command.",
         }
-      : {}),
+      : !available
+        ? {
+            disabledReason: `${spec.name} uses ${required === "codex" ? "Codex" : "OpenCode"} native behavior. Switch the underlying harness to use it.`,
+          }
+        : {}),
   };
 };
 

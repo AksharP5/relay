@@ -97,5 +97,16 @@ export interface HarnessTurnResult {
   readonly text: string;
 }
 
+export interface HarnessControlInput {
+  readonly cwd: string;
+  readonly sessionId: string;
+  readonly action: "compact" | "share" | "unshare";
+  readonly model?: string;
+}
+
+export interface HarnessControlResult {
+  readonly message: string;
+}
+
 export const isHarness = (value: string): value is Harness =>
   value === "codex" || value === "opencode";

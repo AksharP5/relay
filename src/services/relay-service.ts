@@ -71,6 +71,11 @@ export class RelayService extends Context.Service<
       action: string,
       implementation?: CommandImplementation,
     ) => Effect.Effect<RelayPreferences, unknown>;
+    readonly control: (input: {
+      readonly action: "compact" | "share" | "unshare";
+      readonly harness?: Harness;
+      readonly threadId?: string;
+    }) => Effect.Effect<{ readonly thread: RelayThread; readonly message: string }, unknown>;
     readonly dataRoot: string;
   }
 >()("@relay/RelayService") {
@@ -210,6 +215,33 @@ export class RelayService extends Context.Service<
         (harness: Harness, cwd = process.cwd()) => harnesses.capabilities(harness, cwd),
       );
 
+      const control = Effect.fn("RelayService.control")(
+        (input: {
+          readonly action: "compact" | "share" | "unshare";
+          readonly harness?: Harness;
+          readonly threadId?: string;
+        }) =>
+          Effect.gen(function* () {
+            const thread = input.threadId
+              ? yield* store.get(input.threadId)
+              : yield* store.current();
+            const harness = input.harness ?? thread.activeHarness;
+            const binding = thread.bindings[harness];
+            if (!binding) {
+              return yield* new CliError({
+                message: `Run a ${harness} turn before using /${input.action}.`,
+              });
+            }
+            const result = yield* harnesses.control(harness, {
+              cwd: thread.cwd,
+              sessionId: binding.sessionId,
+              action: input.action,
+              ...(binding.model ? { model: binding.model } : {}),
+            });
+            return { thread, message: result.message };
+          }),
+      );
+
       return {
         newThread,
         ask,
@@ -226,6 +258,7 @@ export class RelayService extends Context.Service<
         setSkin: preferences.setSkin,
         setSwitchSkinWithHarness: preferences.setSwitchSkinWithHarness,
         setCommandImplementation: preferences.setCommandImplementation,
+        control,
         dataRoot: store.root,
       };
     }),

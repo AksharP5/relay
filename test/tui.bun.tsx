@@ -72,6 +72,7 @@ const preferenceControls = {
     preferences: initial.preferences,
   }),
   newTask: async (harness: Harness) => makeThread(harness),
+  control: async () => "Control complete",
 };
 
 afterEach(() => {

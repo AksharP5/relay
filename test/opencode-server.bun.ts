@@ -1,7 +1,7 @@
 import { chmod } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { discoverOpenCodeCommands } from "../src/harnesses/opencode-server.ts";
+import { discoverOpenCodeCommands, runOpenCodeControl } from "../src/harnesses/opencode-server.ts";
 
 const executable = fileURLToPath(new URL("./fixtures/fake-opencode-server.ts", import.meta.url));
 
@@ -24,5 +24,26 @@ describe("OpenCode command discovery", () => {
         acceptsArguments: true,
       },
     ]);
+  });
+
+  it("runs session controls without turning them into prompts", async () => {
+    const compact = await runOpenCodeControl(executable, {
+      cwd: process.cwd(),
+      sessionId: "ses_test",
+      action: "compact",
+    });
+    const share = await runOpenCodeControl(executable, {
+      cwd: process.cwd(),
+      sessionId: "ses_test",
+      action: "share",
+    });
+    const unshare = await runOpenCodeControl(executable, {
+      cwd: process.cwd(),
+      sessionId: "ses_test",
+      action: "unshare",
+    });
+    expect(compact).toBe("OpenCode compacted its native context.");
+    expect(share).toBe("OpenCode shared this session: https://opncd.ai/s/test");
+    expect(unshare).toBe("OpenCode stopped sharing this session.");
   });
 });

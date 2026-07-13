@@ -44,6 +44,7 @@ export interface TuiController {
     threadId: string,
   ) => Promise<Pick<TuiSnapshot, "thread" | "messages" | "preferences">>;
   readonly newTask: (harness: Harness) => Promise<RelayThread>;
+  readonly control: (action: "compact" | "share" | "unshare", harness: Harness) => Promise<string>;
   readonly setSkin: (skin: Skin) => Promise<RelayPreferences>;
   readonly setSwitchSkinWithHarness: (enabled: boolean) => Promise<RelayPreferences>;
   readonly setCommandImplementation: (
@@ -187,6 +188,18 @@ export const makeTuiController = (
           });
           activeThreadId = thread.id;
           return thread;
+        }),
+      ),
+    control: (action, harness) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          const result = yield* relay.control({
+            action,
+            harness,
+            ...(activeThreadId ? { threadId: activeThreadId } : {}),
+          });
+          return result.message;
         }),
       ),
     setSkin: (skin) =>

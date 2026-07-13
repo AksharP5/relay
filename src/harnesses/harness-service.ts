@@ -3,6 +3,8 @@ import type {
   Harness,
   HarnessCapabilities,
   HarnessCommand,
+  HarnessControlInput,
+  HarnessControlResult,
   HarnessModel,
   HarnessTurnInput,
   HarnessTurnResult,
@@ -11,7 +13,7 @@ import { HarnessError, HarnessUnavailable } from "../errors.ts";
 import { composePrompt } from "../handoff.ts";
 import { ProcessRunner } from "../services/process-runner.ts";
 import { runCodexCommand } from "./codex-app-server.ts";
-import { discoverOpenCodeCommands } from "./opencode-server.ts";
+import { discoverOpenCodeCommands, runOpenCodeControl } from "./opencode-server.ts";
 import { parseCodexOutput, parseOpenCodeEvent } from "./parsing.ts";
 
 export interface HarnessStatus {
@@ -100,6 +102,10 @@ export class HarnessService extends Context.Service<
       harness: Harness,
       cwd: string,
     ) => Effect.Effect<HarnessCapabilities, HarnessUnavailable | HarnessError>;
+    readonly control: (
+      harness: Harness,
+      input: HarnessControlInput,
+    ) => Effect.Effect<HarnessControlResult, HarnessUnavailable | HarnessError>;
   }
 >()("@relay/HarnessService") {
   static readonly layer = Layer.effect(
@@ -351,7 +357,53 @@ export class HarnessService extends Context.Service<
         }),
       );
 
-      return { run, status, capabilities };
+      const control = Effect.fn("HarnessService.control")(
+        (harness: Harness, input: HarnessControlInput) =>
+          Effect.gen(function* () {
+            const command = yield* runner.which(executable(harness));
+            if (!command)
+              return yield* new HarnessUnavailable({
+                harness,
+                command: executable(harness),
+                message: `${harness} was not found in PATH. Install it, then run relay doctor.`,
+              });
+            if (harness === "codex") {
+              if (input.action !== "compact") {
+                return yield* new HarnessError({
+                  harness,
+                  message: `${input.action} is native to OpenCode`,
+                });
+              }
+              const result = yield* Effect.tryPromise({
+                try: () =>
+                  runCodexCommand(command, {
+                    command: "compact",
+                    cwd: input.cwd,
+                    sessionId: input.sessionId,
+                    arguments: "",
+                    ...(input.model ? { model: input.model } : {}),
+                  }),
+                catch: (cause) =>
+                  new HarnessError({
+                    harness,
+                    message: cause instanceof Error ? cause.message : String(cause),
+                  }),
+              });
+              return { message: result.text };
+            }
+            const message = yield* Effect.tryPromise({
+              try: () => runOpenCodeControl(command, input),
+              catch: (cause) =>
+                new HarnessError({
+                  harness,
+                  message: cause instanceof Error ? cause.message : String(cause),
+                }),
+            });
+            return { message };
+          }),
+      );
+
+      return { run, status, capabilities, control };
     }),
   );
 }

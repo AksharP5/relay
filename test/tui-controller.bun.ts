@@ -77,6 +77,7 @@ describe("TUI task routing", () => {
       setSwitchSkinWithHarness: (switchSkinWithHarness) =>
         Effect.succeed({ ...preferences, switchSkinWithHarness }),
       setCommandImplementation: () => Effect.succeed(preferences),
+      control: () => Effect.die("not expected"),
       dataRoot: "/tmp/relay-test",
     };
     const runtime = ManagedRuntime.make(Layer.succeed(RelayService, service));
@@ -126,6 +127,7 @@ describe("TUI task routing", () => {
       setSwitchSkinWithHarness: (switchSkinWithHarness) =>
         Effect.succeed({ ...preferences, switchSkinWithHarness }),
       setCommandImplementation: () => Effect.succeed(preferences),
+      control: () => Effect.die("not expected"),
       dataRoot: "/tmp/relay-test",
     };
     const runtime = ManagedRuntime.make(Layer.succeed(RelayService, service));
