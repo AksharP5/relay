@@ -14,6 +14,60 @@ afterAll(async () => {
 });
 
 describe("native transcript storage", () => {
+  it("indexes every concurrently created task without leaving orphans", async () => {
+    const create = (index: number) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.create({
+            title: `Concurrent task ${index}`,
+            cwd: process.cwd(),
+            harness: "codex",
+          });
+        }).pipe(Effect.provide(ThreadStore.layer)),
+      );
+    const created = await Promise.all(Array.from({ length: 30 }, (_, index) => create(index)));
+    const listed = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        return yield* store.list();
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+    const listedIds = new Set(listed.map((thread) => thread.id));
+    expect(created.every((thread) => listedIds.has(thread.id))).toBe(true);
+  });
+
+  it("rejects stale export and selection after a task is deleted", async () => {
+    const created = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const thread = yield* store.create({
+          title: "Race victim",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        yield* store.deleteTask(thread);
+        return thread;
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.exportTask(created);
+        }).pipe(Effect.provide(ThreadStore.layer)),
+      ),
+    ).rejects.toThrow("no longer exists");
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.setCurrent(created.id);
+        }).pipe(Effect.provide(ThreadStore.layer)),
+      ),
+    ).rejects.toThrow("was not found");
+  });
+
   it("prevents two Relay tasks from running in the same checkout", async () => {
     const checkout = join(directory, "checkout-lease-fixture");
     const nested = join(checkout, "packages", "app");

@@ -332,7 +332,7 @@ const loadIndex = async (options: { readonly lockHeld?: boolean } = {}): Promise
     }
     return value;
   }
-  const lock = await acquireThreadLock("__index__");
+  const lock = await acquireIndexLock();
   try {
     return await loadIndex({ lockHeld: true });
   } finally {
@@ -521,6 +521,18 @@ const acquireThreadLock = (id: string) =>
     "This Relay task already has a turn starting",
   );
 
+const acquireIndexLock = async () => {
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    try {
+      return await acquireThreadLock("__index__");
+    } catch (cause) {
+      if (!(cause instanceof ThreadBusy) || Date.now() >= deadline) throw cause;
+      await Bun.sleep(10);
+    }
+  }
+};
+
 const acquireTaskRunLease = (id: string) =>
   acquireLockAt(
     id,
@@ -691,17 +703,21 @@ export class ThreadStore extends Context.Service<
             createdAt: now,
             updatedAt: now,
           };
-          await writeThread(thread);
-          await secureDirectory(threadDir(thread.id));
-          await writeFile(eventsPath(thread.id), "", { encoding: "utf8", mode: 0o600 });
-
-          const indexLock = await acquireThreadLock("__index__");
+          const indexLock = await acquireIndexLock();
           try {
-            const index = await loadIndex({ lockHeld: true });
-            await writeIndex({
-              currentThreadId: thread.id,
-              threadIds: [thread.id, ...index.threadIds.filter((id) => id !== thread.id)],
-            } satisfies RelayIndex);
+            try {
+              await writeThread(thread);
+              await secureDirectory(threadDir(thread.id));
+              await writeFile(eventsPath(thread.id), "", { encoding: "utf8", mode: 0o600 });
+              const index = await loadIndex({ lockHeld: true });
+              await writeIndex({
+                currentThreadId: thread.id,
+                threadIds: [thread.id, ...index.threadIds.filter((id) => id !== thread.id)],
+              } satisfies RelayIndex);
+            } catch (cause) {
+              await rm(threadDir(thread.id), { recursive: true, force: true });
+              throw cause;
+            }
           } finally {
             await indexLock.release();
           }
@@ -809,17 +825,19 @@ export class ThreadStore extends Context.Service<
           try {
             const lock = await acquireThreadLock(thread.id);
             try {
+              const current = await readThreadFile(thread.id);
+              if (!current) throw new Error(`Relay task ${thread.id} no longer exists`);
               return {
                 formatVersion: 1 as const,
                 exportedAt: new Date().toISOString(),
-                task: ((current) => ({
-                  id: current.id,
-                  title: current.title,
-                  cwd: current.cwd,
-                  activeHarness: current.activeHarness,
-                  createdAt: current.createdAt,
-                  updatedAt: current.updatedAt,
-                }))((await readThreadFile(thread.id))?.value ?? thread),
+                task: {
+                  id: current.value.id,
+                  title: current.value.title,
+                  cwd: current.value.cwd,
+                  activeHarness: current.value.activeHarness,
+                  createdAt: current.value.createdAt,
+                  updatedAt: current.value.updatedAt,
+                },
                 messages: (await readMessages(thread.id)).map((message) => ({
                   seq: message.seq,
                   role: message.role,
@@ -847,7 +865,7 @@ export class ThreadStore extends Context.Service<
           try {
             const lock = await acquireThreadLock(thread.id);
             try {
-              const indexLock = await acquireThreadLock("__index__");
+              const indexLock = await acquireIndexLock();
               try {
                 const index = await loadIndex({ lockHeld: true });
                 const remaining = index.threadIds.filter((id) => id !== thread.id);
@@ -1311,10 +1329,14 @@ export class ThreadStore extends Context.Service<
     setCurrent: Effect.fn("ThreadStore.setCurrent")((id: string) =>
       Effect.tryPromise({
         try: async () => {
-          if (!(await Bun.file(metadataPath(id)).exists()))
-            throw new ThreadNotFound({ threadId: id, message: `Relay task ${id} was not found` });
-          const indexLock = await acquireThreadLock("__index__");
+          const indexLock = await acquireIndexLock();
           try {
+            if (!(await Bun.file(metadataPath(id)).exists())) {
+              throw new ThreadNotFound({
+                threadId: id,
+                message: `Relay task ${id} was not found`,
+              });
+            }
             const index = await loadIndex({ lockHeld: true });
             await writeIndex({
               currentThreadId: id,
