@@ -170,8 +170,8 @@ describe("native PTY host", () => {
     await Bun.sleep(40);
     expect(output.text()).toContain("INPUT:1d");
 
-    resize.emit("SIGTERM");
-    expect(await result).toEqual({ reason: "signal", signal: "SIGTERM" });
+    resize.emit("SIGINT");
+    expect(await result).toEqual({ reason: "signal", signal: "SIGINT" });
     expect(input.rawModes).toEqual([true, false]);
   });
 

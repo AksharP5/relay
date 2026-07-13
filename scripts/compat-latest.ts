@@ -205,13 +205,16 @@ try {
 }
 
 const openCodeBackend = await OpenCodeNativeBackend.start(opencode, process.cwd());
+let openCodeProbeSessionId: string | undefined;
 try {
   const sessionId = await openCodeBackend.ensureSession({ title: "Relay native event probe" });
+  openCodeProbeSessionId = sessionId;
   openCodeBackend.command(sessionId);
   if ((await openCodeBackend.resolveSession(sessionId)) !== sessionId) {
     throw new Error("OpenCode native event resolver changed the attached session");
   }
 } finally {
+  if (openCodeProbeSessionId) await openCodeBackend.deleteSession(openCodeProbeSessionId);
   await openCodeBackend.close();
 }
 

@@ -54,6 +54,7 @@ export const selectHarness = (
       if (escapeTimer) clearTimeout(escapeTimer);
       io.input.off("data", onData);
       signalSource.off("SIGHUP", onHangup);
+      signalSource.off("SIGINT", onInterrupt);
       signalSource.off("SIGTERM", onTerminate);
       signalSource.off("SIGQUIT", onQuit);
       io.input.pause?.();
@@ -108,12 +109,13 @@ export const selectHarness = (
       pending += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
       consume();
     };
-    const onSignal = (signal: "SIGHUP" | "SIGTERM" | "SIGQUIT") => {
+    const onSignal = (signal: "SIGHUP" | "SIGINT" | "SIGTERM" | "SIGQUIT") => {
       if (signalSource === process)
-        process.exitCode = { SIGHUP: 129, SIGTERM: 143, SIGQUIT: 131 }[signal];
+        process.exitCode = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143, SIGQUIT: 131 }[signal];
       finish(undefined);
     };
     const onHangup = () => onSignal("SIGHUP");
+    const onInterrupt = () => onSignal("SIGINT");
     const onTerminate = () => onSignal("SIGTERM");
     const onQuit = () => onSignal("SIGQUIT");
 
@@ -122,6 +124,7 @@ export const selectHarness = (
     io.input.resume();
     io.input.on("data", onData);
     signalSource.on("SIGHUP", onHangup);
+    signalSource.on("SIGINT", onInterrupt);
     signalSource.on("SIGTERM", onTerminate);
     signalSource.on("SIGQUIT", onQuit);
     render();

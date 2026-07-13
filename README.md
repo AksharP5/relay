@@ -86,7 +86,7 @@ relay doctor
 
 The build creates a standalone Relay executable for the current platform. Re-run `bun run build` after pulling changes.
 
-Relay targets the latest stable releases rather than silently pinning old harnesses. The current automated contract passes with Codex CLI `0.144.2` and OpenCode `1.17.18`. On every relevant `main` change and once per day, compatibility CI installs both `@latest` packages and exercises their schemas, authenticated local servers, event streams, session creation, hidden handoff injection, resume, deleted-session recovery, status, and cleanup without a model call. Manual compatibility runs cover macOS as well as Linux. The PTY byte path also has automated terminal tests; release candidates are smoke-tested with the real installed TUIs.
+Relay targets the latest stable releases rather than silently pinning old harnesses. The current automated contract passes with Codex CLI `0.144.3` and OpenCode `1.17.18`. On every relevant `main` change and once per day, compatibility CI installs both `@latest` packages and exercises their schemas, authenticated local servers, event streams, session creation, hidden handoff injection, resume, deleted-session recovery, status, and cleanup without a model call. Manual compatibility runs cover macOS as well as Linux. The PTY byte path also has automated terminal tests; release candidates are smoke-tested with the real installed TUIs.
 
 Relay does not auto-update tools on startup. That would add latency, network traffic, and an unexpected global machine mutation. `relay doctor` reports the locally installed versions; Relay’s CI detects upstream changes, and releases should pass `bun run compat:latest` against the latest harnesses.
 

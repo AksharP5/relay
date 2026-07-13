@@ -10,12 +10,14 @@ export interface NativeTuiCommand {
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
+export type NativeParentSignal = "SIGHUP" | "SIGINT" | "SIGTERM" | "SIGQUIT";
+
 export type NativeTuiExit =
   | { readonly reason: "switch" }
   | { readonly reason: "exit"; readonly exitCode: number }
   | {
       readonly reason: "signal";
-      readonly signal: "SIGHUP" | "SIGTERM" | "SIGQUIT";
+      readonly signal: NativeParentSignal;
     };
 
 interface HostInput extends EventEmitter {
@@ -73,7 +75,7 @@ export const runNativeTui = async (
   const initialRawMode = io.input.isRaw === true;
   let switchRequested = false;
   let switchCheckPending = false;
-  let parentSignal: "SIGHUP" | "SIGTERM" | "SIGQUIT" | undefined;
+  let parentSignal: NativeParentSignal | undefined;
   let hostFailure: Error | undefined;
   let stopping: Promise<void> | undefined;
   let prefixTimer: ReturnType<typeof setTimeout> | undefined;
@@ -182,12 +184,13 @@ export const runNativeTui = async (
     const next = dimensions(io.output);
     terminal?.resize(next.cols, next.rows);
   };
-  const onSignal = (signal: "SIGHUP" | "SIGTERM" | "SIGQUIT") => {
+  const onSignal = (signal: NativeParentSignal) => {
     if (parentSignal) return;
     parentSignal = signal;
     if (child) stopping = stopProcessTree(child);
   };
   const onHangup = () => onSignal("SIGHUP");
+  const onInterrupt = () => onSignal("SIGINT");
   const onTerminate = () => onSignal("SIGTERM");
   const onQuit = () => onSignal("SIGQUIT");
 
@@ -217,6 +220,7 @@ export const runNativeTui = async (
     io.input.on("data", onInput);
     io.resizeSource.on("SIGWINCH", onResize);
     io.resizeSource.on("SIGHUP", onHangup);
+    io.resizeSource.on("SIGINT", onInterrupt);
     io.resizeSource.on("SIGTERM", onTerminate);
     io.resizeSource.on("SIGQUIT", onQuit);
 
@@ -243,6 +247,7 @@ export const runNativeTui = async (
     io.input.pause?.();
     io.resizeSource.off("SIGWINCH", onResize);
     io.resizeSource.off("SIGHUP", onHangup);
+    io.resizeSource.off("SIGINT", onInterrupt);
     io.resizeSource.off("SIGTERM", onTerminate);
     io.resizeSource.off("SIGQUIT", onQuit);
     io.input.setRawMode?.(initialRawMode);

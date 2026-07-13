@@ -277,6 +277,17 @@ export class OpenCodeNativeBackend {
     return type !== "busy" && type !== "retry";
   }
 
+  async deleteSession(sessionId: string) {
+    const response = await fetch(this.#url(`/session/${encodeURIComponent(sessionId)}`), {
+      method: "DELETE",
+      headers: this.#headers(),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok)
+      throw new Error(`OpenCode session deletion failed with HTTP ${response.status}`);
+    await response.body?.cancel();
+  }
+
   /** Detects sessions created or used through native /new and /sessions commands. */
   async resolveSession(fallbackSessionId: string) {
     return this.#observedRoot ?? fallbackSessionId;
