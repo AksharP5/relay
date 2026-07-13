@@ -240,6 +240,33 @@ describe("native PTY host", () => {
     expect(resize.listenerCount("SIGWINCH")).toBe(0);
   });
 
+  it("extracts a session hint from bounded graceful-exit output", async () => {
+    const input = new TestInput();
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+        env: {
+          FAKE_NATIVE_OUTPUT_BYTES: "4096",
+          FAKE_NATIVE_TRAILING_OUTPUT: "\nContinue opencode -s ses_selected123\n",
+        },
+      },
+      { input, output: new TestOutput(), resizeSource: new EventEmitter() },
+      {
+        sessionIdHint: {
+          maxBytes: 128,
+          extract: (tail) => tail.match(/opencode -s (ses_[A-Za-z0-9]+)/)?.[1],
+        },
+      },
+    );
+    running.push(result);
+
+    await Bun.sleep(75);
+    input.emit("data", Buffer.from([0x11]));
+    expect(await result).toEqual({ reason: "switch", sessionIdHint: "ses_selected123" });
+  });
+
   it("keeps shared stdin flowing and buffers bytes between native harnesses", async () => {
     const input = new TestInput();
     const command = {

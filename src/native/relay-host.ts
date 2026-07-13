@@ -36,7 +36,8 @@ export interface NativeBackend {
   ) => Promise<void>;
   readonly read: (sessionId: string) => Promise<NativeTranscript>;
   readonly isMaterialized?: (sessionId: string) => Promise<boolean>;
-  readonly isIdle: (sessionId: string) => Promise<boolean>;
+  /** With no id, return whether detaching an unresolved native selection is safe. */
+  readonly isIdle: (sessionId?: string) => Promise<boolean>;
   readonly resolveSession: (
     fallbackSessionId?: string,
     requireCurrentObservation?: boolean,
@@ -52,6 +53,22 @@ const executableFor = (harness: Harness) => {
       `${harness} was not found in PATH. Install its latest release, then run relay doctor.`,
     );
   return executable;
+};
+
+const stripTerminalControls = (value: string) =>
+  value
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[@-_]/g, "");
+
+export const openCodeSessionIdFromExit = (outputTail: string) => {
+  const plain = stripTerminalControls(outputTail);
+  const matches = [
+    ...plain.matchAll(
+      /(?:^|[\r\n])\s*Session[ \t]+[^\r\n]+[\r\n]+\s*Continue[ \t]+opencode[ \t]+-s[ \t]+(ses_[A-Za-z0-9]+)/g,
+    ),
+  ];
+  return matches.at(-1)?.[1];
 };
 
 const startBackend = async (
@@ -116,6 +133,7 @@ export interface NativeRelayHostDependencies {
     command: NativeTuiCommand,
     onSwitchRequest: (recentSubmit?: boolean) => Promise<boolean>,
     coldLaunch: boolean,
+    harness: Harness,
   ) => Promise<NativeTuiExit>;
   readonly signalSource: EventEmitter;
   readonly wait: (milliseconds: number) => Promise<void>;
@@ -124,7 +142,7 @@ export interface NativeRelayHostDependencies {
 
 const defaultDependencies: NativeRelayHostDependencies = {
   startBackend,
-  runTui: (command, onSwitchRequest, coldLaunch) =>
+  runTui: (command, onSwitchRequest, coldLaunch, harness) =>
     runNativeTui(
       command,
       { input: process.stdin, output: process.stdout, resizeSource: process },
@@ -133,6 +151,9 @@ const defaultDependencies: NativeRelayHostDependencies = {
         submitGraceMs: coldLaunch ? 2_000 : 0,
         submitProtectionMs: 10_000,
         preserveInputOnSwitch: true,
+        ...(harness === "opencode"
+          ? { sessionIdHint: { extract: openCodeSessionIdFromExit } }
+          : {}),
       },
     ),
   signalSource: process,
@@ -381,7 +402,7 @@ const runHarness = async (
               if (backend.isMaterialized && !(await backend.isMaterialized(sessionId)))
                 return false;
             }
-            if (sessionId && !(await backend.isIdle(sessionId))) return false;
+            if (!(await backend.isIdle(sessionId))) return false;
           }
         } catch {
           // Losing native session visibility is not permission to detach it.
@@ -390,13 +411,14 @@ const runHarness = async (
         return true;
       },
       coldLaunch,
+      harness,
     );
 
     const tuiSignal = exit.reason === "signal" ? exit.signal : getSignal();
     if (tuiSignal) return { thread, exit: { reason: "signal", signal: tuiSignal } };
 
     try {
-      const resolvedSessionId = await backend.resolveSession(sessionId);
+      const resolvedSessionId = exit.sessionIdHint ?? (await backend.resolveSession(sessionId));
       if (resolvedSessionId) {
         const transcript = await backend.read(resolvedSessionId);
         const turns = transcript.turns;

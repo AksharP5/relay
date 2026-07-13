@@ -4,7 +4,11 @@ import { describe, expect, it } from "bun:test";
 import type { Harness, NativeTranscriptTurn, RelayMessage, RelayThread } from "../src/domain.ts";
 import type { NativeRelayController } from "../src/native/controller.ts";
 import { NativeSessionUnavailable } from "../src/native/errors.ts";
-import { launchNativeRelay, type NativeBackend } from "../src/native/relay-host.ts";
+import {
+  launchNativeRelay,
+  openCodeSessionIdFromExit,
+  type NativeBackend,
+} from "../src/native/relay-host.ts";
 
 const now = "2026-07-13T00:00:00.000Z";
 
@@ -135,6 +139,16 @@ const makeController = () => {
 };
 
 describe("native Relay host", () => {
+  it("extracts only OpenCode's graceful continuation session id", () => {
+    const output = [
+      "A chat mentioned Continue opencode -s ses_not_selected",
+      "\u001b[90mSession   \u001b[0m\u001b[1mExisting task\u001b[0m",
+      "\u001b[90mContinue  \u001b[0m\u001b[1mopencode -s ses_selectedABC123\u001b[0m",
+    ].join("\r\r\n");
+    expect(openCodeSessionIdFromExit(output)).toBe("ses_selectedABC123");
+    expect(openCodeSessionIdFromExit("Continue opencode -s ses_not_selected")).toBeUndefined();
+  });
+
   it("owns the task before backend startup and releases it after startup failure", async () => {
     const { controller: base } = makeController();
     const events: Array<string> = [];
@@ -564,6 +578,38 @@ describe("native Relay host", () => {
       sessionId: "new-session",
       lastSyncedSeq: 4,
       nativeCursor: "new-turn",
+    });
+  });
+
+  it("adopts a previously standalone OpenCode session from its exit hint", async () => {
+    const { controller, messages, thread } = makeController();
+    await controller.switchHarness("relay-thread", "opencode");
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ handoffInjected: false }),
+      inject: async () => {},
+      read: async (sessionId) => ({
+        turns:
+          sessionId === "ses_existing"
+            ? [{ id: "existing-turn", prompt: "old prompt", response: "old answer" }]
+            : [],
+        hiddenTurnIds: [],
+      }),
+      isIdle: async () => true,
+      resolveSession: async () => undefined,
+      command: () => ({ executable: "opencode", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      runTui: async () => ({ reason: "exit", exitCode: 0, sessionIdHint: "ses_existing" }),
+    });
+
+    expect(messages.map((message) => message.content)).toEqual(["old prompt", "old answer"]);
+    expect(thread().bindings.opencode).toMatchObject({
+      sessionId: "ses_existing",
+      lastSyncedSeq: 2,
+      nativeCursor: "existing-turn",
     });
   });
 

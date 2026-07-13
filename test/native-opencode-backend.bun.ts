@@ -277,6 +277,10 @@ describe("OpenCode native backend", () => {
       expect(command.args).not.toContain(command.env?.OPENCODE_SERVER_PASSWORD);
       expect(command.env?.OPENCODE_SERVER_PASSWORD).toBeTruthy();
       expect(await backend.isIdle(sessionId)).toBe(true);
+      expect(await backend.isIdle("ses_busy")).toBe(false);
+      expect(await backend.isIdle("ses_retrying")).toBe(false);
+      expect(await backend.isIdle("ses_unknown")).toBe(false);
+      expect(await backend.isIdle()).toBe(false);
       expect(await backend.resolveSession(sessionId)).toBe(sessionId);
       await expect(backend.read("ses_retry")).resolves.toEqual({
         turns: [],

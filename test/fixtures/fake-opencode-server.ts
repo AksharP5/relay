@@ -121,7 +121,11 @@ const server = Bun.serve({
       ]);
     }
     if (url.pathname === "/session/status" && request.method === "GET") {
-      return Response.json({});
+      return Response.json({
+        ses_busy: { type: "busy" },
+        ses_retrying: { type: "retry" },
+        ses_unknown: { type: "paused" },
+      });
     }
     if (url.pathname.endsWith("/ses_paged") && request.method === "GET") return Response.json({});
     if (url.pathname.endsWith("/ses_grouped_undo") && request.method === "GET")

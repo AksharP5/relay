@@ -16,11 +16,12 @@ export interface NativeTuiCommand {
 export type NativeParentSignal = "SIGHUP" | "SIGINT" | "SIGTERM" | "SIGQUIT";
 
 export type NativeTuiExit =
-  | { readonly reason: "switch" }
-  | { readonly reason: "exit"; readonly exitCode: number }
+  | { readonly reason: "switch"; readonly sessionIdHint?: string }
+  | { readonly reason: "exit"; readonly exitCode: number; readonly sessionIdHint?: string }
   | {
       readonly reason: "signal";
       readonly signal: NativeParentSignal;
+      readonly sessionIdHint?: string;
     };
 
 interface HostInput extends EventEmitter {
@@ -61,6 +62,14 @@ export interface NativePtyOptions {
   readonly ioQueueLimitBytes?: number;
   /** Return false to leave the native TUI running (for example, during an active turn). */
   readonly onSwitchRequest?: (recentSubmit?: boolean) => boolean | Promise<boolean>;
+  /**
+   * Extract a native session id from a bounded tail of graceful-exit output.
+   * The tail exists only for this PTY run and is never persisted by Relay.
+   */
+  readonly sessionIdHint?: {
+    readonly extract: (outputTail: string) => string | undefined;
+    readonly maxBytes?: number;
+  };
 }
 
 const defaultIo = (): NativePtyIo => ({
@@ -91,6 +100,7 @@ interface NativeInputPump extends BoundedInputBuffer {
 
 const DEFAULT_HANDOFF_INPUT_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_IO_QUEUE_LIMIT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_SESSION_HINT_TAIL_BYTES = 8 * 1024;
 const nativeInputPumps = new WeakMap<HostInput, NativeInputPump>();
 
 const bytesFrom = (chunk: Buffer | Uint8Array | string) =>
@@ -168,6 +178,11 @@ export const runNativeTui = async (
     options.handoffInputLimitBytes ?? DEFAULT_HANDOFF_INPUT_LIMIT_BYTES,
   );
   const ioQueueLimitBytes = Math.max(0, options.ioQueueLimitBytes ?? DEFAULT_IO_QUEUE_LIMIT_BYTES);
+  const sessionHintTailLimitBytes = Math.max(
+    0,
+    options.sessionIdHint?.maxBytes ?? DEFAULT_SESSION_HINT_TAIL_BYTES,
+  );
+  let sessionHintTail = Buffer.alloc(0);
   const pendingSwitchInput: BoundedInputBuffer = {
     buffered: [],
     bufferedBytes: 0,
@@ -236,6 +251,13 @@ export const runNativeTui = async (
     outputDrainWaiters.clear();
   };
   const writeOutput = (data: Uint8Array) => {
+    if (options.sessionIdHint && sessionHintTailLimitBytes > 0) {
+      const chunk = Buffer.from(data);
+      sessionHintTail =
+        chunk.byteLength >= sessionHintTailLimitBytes
+          ? chunk.subarray(chunk.byteLength - sessionHintTailLimitBytes)
+          : Buffer.concat([sessionHintTail, chunk]).subarray(-sessionHintTailLimitBytes);
+    }
     if (outputBlocked) {
       if (outputQueueBytes + data.byteLength > ioQueueLimitBytes) {
         failHost("Relay output backpressure exceeded its memory limit");
@@ -484,8 +506,16 @@ export const runNativeTui = async (
       cancelWait?.();
     }
     if (hostFailure) throw hostFailure;
-    if (parentSignal) return { reason: "signal", signal: parentSignal };
-    return switchRequested ? { reason: "switch" } : { reason: "exit", exitCode };
+    const sessionIdHint = options.sessionIdHint?.extract(sessionHintTail.toString("utf8"));
+    if (parentSignal)
+      return {
+        reason: "signal",
+        signal: parentSignal,
+        ...(sessionIdHint ? { sessionIdHint } : {}),
+      };
+    return switchRequested
+      ? { reason: "switch", ...(sessionIdHint ? { sessionIdHint } : {}) }
+      : { reason: "exit", exitCode, ...(sessionIdHint ? { sessionIdHint } : {}) };
   } finally {
     if (sequenceTimer) clearTimeout(sequenceTimer);
     io.resizeSource.off("SIGWINCH", onResize);

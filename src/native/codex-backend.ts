@@ -371,9 +371,20 @@ export class CodexNativeBackend {
     }
   }
 
-  async isIdle(sessionId: string) {
+  async isIdle(sessionId?: string) {
     const connection = await this.#connect();
     try {
+      if (!sessionId) {
+        const loaded = stringDataFrom(await connection.request("thread/loaded/list", {}));
+        for (const threadId of loaded) {
+          const result = await connection.request("thread/read", {
+            threadId,
+            includeTurns: false,
+          });
+          if (threadStatusFrom(result) === "active") return false;
+        }
+        return true;
+      }
       const result = await connection
         .request("thread/read", {
           threadId: sessionId,

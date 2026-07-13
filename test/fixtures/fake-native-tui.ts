@@ -13,6 +13,6 @@ process.stdin.on("data", (chunk) => {
 });
 
 process.on("SIGTERM", () => {
-  process.stdout.write(":TRAILING_OUTPUT");
+  process.stdout.write(process.env.FAKE_NATIVE_TRAILING_OUTPUT ?? ":TRAILING_OUTPUT");
   process.exit(0);
 });

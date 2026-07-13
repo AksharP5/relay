@@ -455,12 +455,14 @@ export class OpenCodeNativeBackend {
     }
   }
 
-  async isIdle(sessionId: string) {
+  async isIdle(sessionId?: string) {
     const response = await this.#get("/session/status", 2_000);
     if (!response.ok) throw new Error(`OpenCode status failed with HTTP ${response.status}`);
     const statuses = asObject(await response.json());
-    const type = asObject(statuses?.[sessionId])?.type;
-    return type !== "busy" && type !== "retry";
+    const types = sessionId
+      ? [asObject(statuses?.[sessionId])?.type]
+      : Object.values(statuses ?? {}).map((status) => asObject(status)?.type);
+    return types.every((type) => type === undefined || type === "idle");
   }
 
   async deleteSession(sessionId: string) {
