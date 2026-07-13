@@ -194,6 +194,48 @@ describe("native Relay host", () => {
     expect(signals.listenerCount("SIGINT")).toBe(0);
   });
 
+  it("returns promptly when interrupted during backend startup and closes a late backend", async () => {
+    const { controller } = makeController();
+    const signals = new EventEmitter();
+    let resolveBackend!: (backend: NativeBackend) => void;
+    let notifyStarting!: () => void;
+    const backendReady = new Promise<NativeBackend>((resolve) => (resolveBackend = resolve));
+    const starting = new Promise<void>((resolve) => (notifyStarting = resolve));
+    let closed = false;
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      isIdle: async () => true,
+      resolveSession: async () => undefined,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => void (closed = true),
+    };
+
+    const previousExitCode = process.exitCode;
+    try {
+      const launched = launchNativeRelay(controller, {
+        signalSource: signals,
+        startBackend: async () => {
+          notifyStarting();
+          return backendReady;
+        },
+      });
+      await starting;
+      signals.emit("SIGINT");
+      await launched;
+      expect(process.exitCode).toBe(130);
+      expect(closed).toBe(false);
+
+      resolveBackend(backend);
+      await Bun.sleep(0);
+      expect(closed).toBe(true);
+    } finally {
+      process.exitCode = previousExitCode ?? 0;
+    }
+    expect(signals.listenerCount("SIGINT")).toBe(0);
+  });
+
   it("imports a native turn, hands it to the other harness, and keeps one backend alive", async () => {
     const { controller, messages } = makeController();
     const transcripts: Record<Harness, Array<NativeTranscriptTurn>> = {

@@ -205,6 +205,7 @@ const runHarness = async (
   harness: Harness,
   dependencies: NativeRelayHostDependencies,
   getSignal: () => NativeParentSignal | undefined,
+  subscribeSignal: (listener: (signal: NativeParentSignal) => void) => () => void,
   allowSwitchAttempt: () => boolean,
   armToggleLatch: boolean,
 ): Promise<{ readonly thread: RelayThread; readonly exit: NativeTuiExit }> => {
@@ -212,10 +213,42 @@ const runHarness = async (
   if (thread.pendingHandoffs?.[harness]) {
     thread = await controller.abandonHandoff(thread.id, harness);
   }
-  const backend = await dependencies.startBackend(harness, thread.cwd);
+  let backend: NativeBackend | undefined;
+  let closingBackend: Promise<void> | undefined;
+  const closeBackend = () => {
+    if (!backend) return Promise.resolve();
+    closingBackend ??= backend.close();
+    return closingBackend;
+  };
+  let startupSignal: NativeParentSignal | undefined;
+  let resolveSignal: (signal: NativeParentSignal) => void;
+  const signalReceived = new Promise<NativeParentSignal>((resolve) => (resolveSignal = resolve));
+  const unsubscribeSignal = subscribeSignal((signal) => {
+    startupSignal ??= signal;
+    resolveSignal(signal);
+    if (backend) void closeBackend().catch(() => undefined);
+  });
+  const startingBackend = dependencies.startBackend(harness, thread.cwd);
+  let started: { readonly backend: NativeBackend } | { readonly signal: NativeParentSignal };
   try {
-    const startupSignal = getSignal();
-    if (startupSignal) return { thread, exit: { reason: "signal", signal: startupSignal } };
+    started = await Promise.race([
+      startingBackend.then((value) => ({ backend: value }) as const),
+      signalReceived.then((signal) => ({ signal }) as const),
+    ]);
+  } catch (cause) {
+    unsubscribeSignal();
+    throw cause;
+  }
+  if ("signal" in started) {
+    void startingBackend.then((lateBackend) => lateBackend.close()).catch(() => undefined);
+    unsubscribeSignal();
+    return { thread, exit: { reason: "signal", signal: started.signal } };
+  }
+  backend = started.backend;
+  try {
+    const signalAfterStartup = startupSignal ?? getSignal();
+    if (signalAfterStartup)
+      return { thread, exit: { reason: "signal", signal: signalAfterStartup } };
     let binding = thread.bindings[harness];
     let storedModel: string | undefined;
     let launchModel: string | undefined;
@@ -331,8 +364,13 @@ const runHarness = async (
       thread = await controller.dropBinding(thread.id, harness, boundSessionId);
     }
     return { thread, exit };
+  } catch (cause) {
+    const signal = startupSignal ?? getSignal();
+    if (signal) return { thread, exit: { reason: "signal", signal } };
+    throw cause;
   } finally {
-    await backend.close();
+    unsubscribeSignal();
+    await closeBackend();
   }
 };
 
@@ -343,8 +381,20 @@ export const launchNativeRelay = async (
 ) => {
   const dependencies = { ...defaultDependencies, ...overrides };
   let pendingSignal: NativeParentSignal | undefined;
+  const signalSubscribers = new Set<(signal: NativeParentSignal) => void>();
   const onSignal = (signal: NativeParentSignal) => {
-    pendingSignal ??= signal;
+    if (pendingSignal) return;
+    pendingSignal = signal;
+    for (const subscriber of signalSubscribers) subscriber(signal);
+    signalSubscribers.clear();
+  };
+  const subscribeSignal = (listener: (signal: NativeParentSignal) => void) => {
+    if (pendingSignal) {
+      queueMicrotask(() => listener(pendingSignal!));
+      return () => undefined;
+    }
+    signalSubscribers.add(listener);
+    return () => signalSubscribers.delete(listener);
   };
   const onHangup = () => onSignal("SIGHUP");
   const onInterrupt = () => onSignal("SIGINT");
@@ -386,6 +436,7 @@ export const launchNativeRelay = async (
         harness,
         dependencies,
         () => pendingSignal,
+        subscribeSignal,
         allowSwitchAttempt,
         armToggleLatch,
       );
@@ -401,7 +452,7 @@ export const launchNativeRelay = async (
       harness = harness === "codex" ? "opencode" : "codex";
     }
   } finally {
-    releaseNativeTuiInput();
+    await releaseNativeTuiInput();
     await lease?.release();
     dependencies.signalSource.off("SIGHUP", onHangup);
     dependencies.signalSource.off("SIGINT", onInterrupt);

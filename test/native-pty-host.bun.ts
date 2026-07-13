@@ -2,13 +2,14 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it } from "bun:test";
 
 import { NativeInputRouter } from "../src/native/input-router.ts";
-import { runNativeTui } from "../src/native/pty-host.ts";
+import { releaseNativeTuiInput, runNativeTui } from "../src/native/pty-host.ts";
 
 class TestInput extends EventEmitter {
   isTTY = true;
   isRaw = false;
   paused = false;
   readonly rawModes: Array<boolean> = [];
+  readonly dataListenerCounts: Array<number> = [];
   pauseCalls = 0;
 
   setRawMode(enabled: boolean) {
@@ -22,6 +23,18 @@ class TestInput extends EventEmitter {
   pause() {
     this.paused = true;
     this.pauseCalls += 1;
+  }
+
+  override on(event: string | symbol, listener: (...args: Array<unknown>) => void) {
+    super.on(event, listener);
+    if (event === "data") this.dataListenerCounts.push(this.listenerCount("data"));
+    return this;
+  }
+
+  override off(event: string | symbol, listener: (...args: Array<unknown>) => void) {
+    super.off(event, listener);
+    if (event === "data") this.dataListenerCounts.push(this.listenerCount("data"));
+    return this;
   }
 }
 
@@ -256,6 +269,99 @@ describe("native PTY host", () => {
     expect(input.isRaw).toBe(false);
     expect(input.paused).toBe(true);
     expect(input.listenerCount("data")).toBe(0);
+    expect(input.dataListenerCounts).toEqual([1, 0]);
+  });
+
+  it("turns standby Ctrl+C into an interrupt instead of replaying it", async () => {
+    const input = new TestInput();
+    const resize = new EventEmitter();
+    let interrupts = 0;
+    resize.on("SIGINT", () => (interrupts += 1));
+    const command = {
+      executable: process.execPath,
+      args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+      cwd: process.cwd(),
+    };
+    const first = runNativeTui(
+      command,
+      { input, output: new TestOutput(), resizeSource: resize },
+      { preserveInputOnSwitch: true },
+    );
+    running.push(first);
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from("\u001b[17~"));
+    expect(await first).toEqual({ reason: "switch" });
+
+    input.emit("data", Buffer.from([0x03]));
+    expect(interrupts).toBe(1);
+    const secondOutput = new TestOutput();
+    const second = runNativeTui(
+      command,
+      { input, output: secondOutput, resizeSource: resize },
+      { preserveInputOnSwitch: true },
+    );
+    running.push(second);
+    await Bun.sleep(50);
+    expect(secondOutput.text()).not.toContain("INPUT:03");
+    resize.emit("SIGTERM");
+    expect(await second).toEqual({ reason: "signal", signal: "SIGTERM" });
+  });
+
+  it("bounds standby input and signals when excess bytes are dropped", async () => {
+    const input = new TestInput();
+    const resize = new EventEmitter();
+    const command = {
+      executable: process.execPath,
+      args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+      cwd: process.cwd(),
+    };
+    const first = runNativeTui(
+      command,
+      { input, output: new TestOutput(), resizeSource: resize },
+      { preserveInputOnSwitch: true, handoffInputLimitBytes: 8 },
+    );
+    running.push(first);
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from("\u001b[17~"));
+    expect(await first).toEqual({ reason: "switch" });
+    input.emit("data", Buffer.from("0123456789"));
+
+    const secondOutput = new TestOutput();
+    const second = runNativeTui(
+      command,
+      { input, output: secondOutput, resizeSource: resize },
+      { preserveInputOnSwitch: true },
+    );
+    running.push(second);
+    await Bun.sleep(50);
+    expect(secondOutput.text()).toContain(`INPUT:${Buffer.from("01234567").toString("hex")}`);
+    expect(secondOutput.text()).not.toContain(Buffer.from("89").toString("hex"));
+    expect(secondOutput.chunks.some((chunk) => chunk.includes(0x07))).toBe(true);
+    resize.emit("SIGTERM");
+    expect(await second).toEqual({ reason: "signal", signal: "SIGTERM" });
+  });
+
+  it("can release an abandoned preserved custom input", async () => {
+    const input = new TestInput();
+    const resize = new EventEmitter();
+    const first = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output: new TestOutput(), resizeSource: resize },
+      { preserveInputOnSwitch: true },
+    );
+    running.push(first);
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from("\u001b[17~"));
+    expect(await first).toEqual({ reason: "switch" });
+
+    await releaseNativeTuiInput(input);
+    expect(input.listenerCount("data")).toBe(0);
+    expect(input.paused).toBe(true);
+    expect(input.isRaw).toBe(false);
   });
 
   it("rejects non-interactive input before starting a child", async () => {

@@ -1,4 +1,5 @@
 import type { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
 
 import { stopProcessTree } from "../services/process-runner.ts";
 import { NativeInputRouter } from "./input-router.ts";
@@ -52,6 +53,8 @@ export interface NativePtyOptions {
   readonly now?: () => number;
   /** Keep the outer TTY flowing while Relay starts the next native harness. */
   readonly preserveInputOnSwitch?: boolean;
+  /** Maximum input retained while the next harness starts. */
+  readonly handoffInputLimitBytes?: number;
   /** Return false to leave the native TUI running (for example, during an active turn). */
   readonly onSwitchRequest?: (recentSubmit?: boolean) => boolean | Promise<boolean>;
 }
@@ -67,28 +70,58 @@ const dimensions = (output: HostOutput) => ({
   rows: Math.max(1, output.rows ?? 24),
 });
 
-interface PreservedNativeInput {
+interface NativeInputPump {
   readonly initialRawMode: boolean;
-  readonly buffered: Array<Uint8Array>;
-  readonly standby: (chunk: Buffer | Uint8Array | string) => void;
+  readonly limitBytes: number;
+  readonly listener: (chunk: Buffer | Uint8Array | string) => void;
+  readonly onStandbyInterrupt: () => void;
+  stop: () => Promise<void>;
+  consumer: ((chunk: Uint8Array) => void) | undefined;
+  buffered: Array<Uint8Array>;
+  bufferedBytes: number;
+  overflowed: boolean;
 }
 
-const preservedNativeInputs = new WeakMap<HostInput, PreservedNativeInput>();
+const DEFAULT_HANDOFF_INPUT_LIMIT_BYTES = 256 * 1024;
+const nativeInputPumps = new WeakMap<HostInput, NativeInputPump>();
 
 const bytesFrom = (chunk: Buffer | Uint8Array | string) =>
   typeof chunk === "string" ? Buffer.from(chunk) : new Uint8Array(chunk);
 
-const releasePreservedInput = (input: HostInput) => {
-  const preserved = preservedNativeInputs.get(input);
-  if (!preserved) return;
-  input.off("data", preserved.standby);
+const bufferStandbyInput = (pump: NativeInputPump, input: Uint8Array) => {
+  let sawInterrupt = false;
+  const filtered = input.filter((byte) => {
+    if (byte !== 0x03) return true;
+    sawInterrupt = true;
+    return false;
+  });
+  if (sawInterrupt) pump.onStandbyInterrupt();
+  if (filtered.byteLength === 0) return;
+
+  const remaining = Math.max(0, pump.limitBytes - pump.bufferedBytes);
+  if (remaining === 0) {
+    pump.overflowed = true;
+    return;
+  }
+  const retained = filtered.slice(0, remaining);
+  pump.buffered.push(retained);
+  pump.bufferedBytes += retained.byteLength;
+  if (retained.byteLength < filtered.byteLength) pump.overflowed = true;
+};
+
+const releaseInputPump = async (input: HostInput) => {
+  const pump = nativeInputPumps.get(input);
+  if (!pump) return;
+  pump.consumer = undefined;
+  await pump.stop();
   input.pause?.();
-  input.setRawMode?.(preserved.initialRawMode);
-  preservedNativeInputs.delete(input);
+  input.setRawMode?.(pump.initialRawMode);
+  nativeInputPumps.delete(input);
 };
 
 /** Restores stdin if a switch was followed by a backend startup failure. */
-export const releaseNativeTuiInput = () => releasePreservedInput(process.stdin);
+export const releaseNativeTuiInput = (input: NativePtyIo["input"] = process.stdin) =>
+  releaseInputPump(input);
 
 /**
  * Hosts an upstream TUI in a real PTY. Output is forwarded unchanged and all
@@ -101,13 +134,10 @@ export const runNativeTui = async (
 ): Promise<NativeTuiExit> => {
   if (!io.input.isTTY) throw new Error("Relay's native interface needs an interactive terminal");
 
-  const preservedInput = preservedNativeInputs.get(io.input);
-  if (preservedInput) {
-    io.input.off("data", preservedInput.standby);
-    preservedNativeInputs.delete(io.input);
-  }
+  const preservedPump = nativeInputPumps.get(io.input);
   const router = new NativeInputRouter();
-  const initialRawMode = preservedInput?.initialRawMode ?? io.input.isRaw === true;
+  const initialRawMode = preservedPump?.initialRawMode ?? io.input.isRaw === true;
+  let inputPump: NativeInputPump | undefined;
   let switchRequested = false;
   let switchCheckPending = false;
   let parentSignal: NativeParentSignal | undefined;
@@ -117,7 +147,6 @@ export const runNativeTui = async (
   let lastSubmitAt: number | undefined;
   const now = options.now ?? Date.now;
   const pendingSwitchInput: Array<Uint8Array> = [];
-  const handoffInput: Array<Uint8Array> = [];
   let terminal: Bun.Terminal | undefined;
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let resolvePtyEof: () => void;
@@ -177,7 +206,7 @@ export const runNativeTui = async (
     }
     const bytes = bytesFrom(chunk);
     if (switchRequested) {
-      if (options.preserveInputOnSwitch) handoffInput.push(bytes);
+      if (inputPump) bufferStandbyInput(inputPump, bytes);
       return;
     }
     if (parentSignal) return;
@@ -218,13 +247,10 @@ export const runNativeTui = async (
           switchCheckPending = false;
           return;
         }
-        if (options.preserveInputOnSwitch) {
-          for (const buffered of pendingSwitchInput.splice(0)) {
-            if (buffered.byteLength > 0) handoffInput.push(buffered);
-          }
-        } else {
-          pendingSwitchInput.length = 0;
-        }
+        if (options.preserveInputOnSwitch && inputPump) {
+          for (const buffered of pendingSwitchInput.splice(0))
+            bufferStandbyInput(inputPump, buffered);
+        } else pendingSwitchInput.length = 0;
         switchCheckPending = false;
         switchRequested = true;
         if (child) stopping = stopProcessTree(child);
@@ -256,19 +282,89 @@ export const runNativeTui = async (
 
   try {
     const size = dimensions(io.output);
-    // Listen before the child exists. OpenTUI can emit terminal capability
-    // queries immediately at startup, and their replies must never land while
-    // the shared outer TTY is paused. writeInput buffers until terminal exists.
-    if (!io.input.isRaw) io.input.setRawMode?.(true);
-    io.input.on("data", onInput);
+    // Relay owns one input listener for the entire native handoff sequence.
+    // Replacing the final listener between TUIs can lose Bun's existing TTY
+    // readiness edge when OpenTUI terminal capability replies are already queued.
+    if (options.preserveInputOnSwitch) {
+      inputPump = preservedPump;
+      if (!inputPump) {
+        const pump: NativeInputPump = {
+          initialRawMode,
+          limitBytes: Math.max(
+            0,
+            options.handoffInputLimitBytes ?? DEFAULT_HANDOFF_INPUT_LIMIT_BYTES,
+          ),
+          listener: (chunk) => {
+            const bytes = bytesFrom(chunk);
+            if (pump.consumer) pump.consumer(bytes);
+            else bufferStandbyInput(pump, bytes);
+          },
+          onStandbyInterrupt: () => io.resizeSource.emit("SIGINT"),
+          stop: async () => undefined,
+          consumer: onInput,
+          buffered: [],
+          bufferedBytes: 0,
+          overflowed: false,
+        };
+        inputPump = pump;
+        nativeInputPumps.set(io.input, pump);
+        if (!io.input.isRaw) io.input.setRawMode?.(true);
+        if (io.input === process.stdin) {
+          // A tiny native reader owns fd 0 for Relay's lifetime. Bun's Node and
+          // Web stdin bridges can both report a false EOF when child PTYs are
+          // replaced; the pipe from cat remains stable and event-driven.
+          const inputProxyExecutable = Bun.which("cat");
+          if (!inputProxyExecutable)
+            throw new Error("Relay could not find the system input reader (cat) in PATH");
+          const inputProxy = spawn(inputProxyExecutable, ["/dev/tty"], {
+            stdio: ["ignore", "pipe", "ignore"],
+          });
+          let reading = true;
+          let proxyFailed = false;
+          const closed = new Promise<void>((resolve) => inputProxy.once("close", () => resolve()));
+          const onProxyFailure = () => {
+            if (!reading || proxyFailed) return;
+            proxyFailed = true;
+            io.resizeSource.emit("SIGHUP");
+          };
+          inputProxy.stdout.on("data", pump.listener);
+          inputProxy.once("error", onProxyFailure);
+          inputProxy.once("exit", onProxyFailure);
+          pump.stop = async () => {
+            reading = false;
+            inputProxy.stdout.off("data", pump.listener);
+            inputProxy.off("error", onProxyFailure);
+            inputProxy.off("exit", onProxyFailure);
+            if (inputProxy.exitCode === null && inputProxy.signalCode === null)
+              inputProxy.kill("SIGTERM");
+            await closed;
+          };
+        } else {
+          io.input.on("data", pump.listener);
+          io.input.resume();
+          pump.stop = async () => void io.input.off("data", pump.listener);
+        }
+      } else {
+        inputPump.consumer = onInput;
+        const buffered = inputPump.buffered;
+        const overflowed = inputPump.overflowed;
+        inputPump.buffered = [];
+        inputPump.bufferedBytes = 0;
+        inputPump.overflowed = false;
+        for (const chunk of buffered) onInput(chunk);
+        if (overflowed) writeOutput(Uint8Array.of(0x07));
+      }
+    } else {
+      if (preservedPump) await releaseInputPump(io.input);
+      if (!io.input.isRaw) io.input.setRawMode?.(true);
+      io.input.on("data", onInput);
+      io.input.resume();
+    }
     io.resizeSource.on("SIGWINCH", onResize);
     io.resizeSource.on("SIGHUP", onHangup);
     io.resizeSource.on("SIGINT", onInterrupt);
     io.resizeSource.on("SIGTERM", onTerminate);
     io.resizeSource.on("SIGQUIT", onQuit);
-    io.input.resume();
-    for (const buffered of preservedInput?.buffered ?? []) onInput(buffered);
-
     child = Bun.spawn([command.executable, ...command.args], {
       cwd: command.cwd,
       env: {
@@ -309,25 +405,26 @@ export const runNativeTui = async (
     return switchRequested ? { reason: "switch" } : { reason: "exit", exitCode };
   } finally {
     if (sequenceTimer) clearTimeout(sequenceTimer);
-    io.input.off("data", onInput);
     io.resizeSource.off("SIGWINCH", onResize);
     io.resizeSource.off("SIGHUP", onHangup);
     io.resizeSource.off("SIGINT", onInterrupt);
     io.resizeSource.off("SIGTERM", onTerminate);
     io.resizeSource.off("SIGQUIT", onQuit);
-    if (options.preserveInputOnSwitch && switchRequested && !parentSignal && !hostFailure) {
-      const standby = (chunk: Buffer | Uint8Array | string) => handoffInput.push(bytesFrom(chunk));
-      preservedNativeInputs.set(io.input, {
-        initialRawMode,
-        buffered: handoffInput,
-        standby,
-      });
-      io.input.on("data", standby);
-      io.input.resume();
+    if (
+      options.preserveInputOnSwitch &&
+      inputPump &&
+      switchRequested &&
+      !parentSignal &&
+      !hostFailure
+    ) {
+      inputPump.consumer = undefined;
     } else {
-      releasePreservedInput(io.input);
-      io.input.pause?.();
-      io.input.setRawMode?.(initialRawMode);
+      if (inputPump) await releaseInputPump(io.input);
+      else {
+        io.input.off("data", onInput);
+        io.input.pause?.();
+        io.input.setRawMode?.(initialRawMode);
+      }
     }
     if (child) await stopProcessTree(child);
     if (terminal && !terminal.closed) terminal.close();
