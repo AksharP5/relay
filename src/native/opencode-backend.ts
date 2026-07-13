@@ -63,7 +63,11 @@ export class OpenCodeNativeBackend {
   readonly #server: RunningOpenCodeServer;
   readonly #executable: string;
   readonly #cwd: string;
-  #baselineSessions = new Map<string, number>();
+  readonly #eventAbort = new AbortController();
+  readonly #sessionParents = new Map<string, string>();
+  #eventLoop: Promise<void> | undefined;
+  #observeTui = false;
+  #observedRoot: string | undefined;
 
   private constructor(server: RunningOpenCodeServer, executable: string, cwd: string) {
     this.#server = server;
@@ -72,7 +76,18 @@ export class OpenCodeNativeBackend {
   }
 
   static async start(executable: string, cwd: string) {
-    return new OpenCodeNativeBackend(await startOpenCodeServer(executable, cwd), executable, cwd);
+    const backend = new OpenCodeNativeBackend(
+      await startOpenCodeServer(executable, cwd),
+      executable,
+      cwd,
+    );
+    try {
+      await backend.#startEventObserver();
+      return backend;
+    } catch (cause) {
+      await backend.close();
+      throw cause;
+    }
   }
 
   #url(path: string) {
@@ -88,21 +103,84 @@ export class OpenCodeNativeBackend {
     };
   }
 
-  async #sessions() {
-    const response = await fetch(this.#url("/session?limit=100"), {
+  async #startEventObserver() {
+    const response = await fetch(this.#url("/event"), {
       headers: this.#headers(),
-      signal: AbortSignal.timeout(15_000),
+      signal: this.#eventAbort.signal,
     });
-    if (!response.ok) throw new Error(`OpenCode session list failed with HTTP ${response.status}`);
-    const value: unknown = await response.json();
-    if (!Array.isArray(value)) return [];
-    return value.flatMap((candidate) => {
-      const session = asObject(candidate);
-      const time = asObject(session?.time);
-      return typeof session?.id === "string"
-        ? [{ id: session.id, updated: typeof time?.updated === "number" ? time.updated : 0 }]
-        : [];
+    if (!response.ok || !response.body)
+      throw new Error(`OpenCode event stream failed with HTTP ${response.status}`);
+    this.#eventLoop = this.#consumeEvents(response.body).catch(() => {
+      if (!this.#eventAbort.signal.aborted) this.#observeTui = false;
     });
+  }
+
+  async #consumeEvents(stream: ReadableStream<Uint8Array>) {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let pending = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        pending += decoder.decode(value, { stream: true });
+        let boundary = pending.indexOf("\n\n");
+        while (boundary >= 0) {
+          this.#consumeEventBlock(pending.slice(0, boundary));
+          pending = pending.slice(boundary + 2);
+          boundary = pending.indexOf("\n\n");
+        }
+      }
+      pending += decoder.decode();
+      if (pending.trim()) this.#consumeEventBlock(pending);
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  #consumeEventBlock(block: string) {
+    for (const line of block.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      let event: JsonObject | undefined;
+      try {
+        event = asObject(JSON.parse(line.slice(5).trim()));
+      } catch {
+        continue;
+      }
+      const properties = asObject(event?.properties);
+      const info = asObject(properties?.info);
+      const sessionId =
+        typeof properties?.sessionID === "string"
+          ? properties.sessionID
+          : typeof info?.sessionID === "string"
+            ? info.sessionID
+            : typeof info?.id === "string"
+              ? info.id
+              : undefined;
+      if (!sessionId) continue;
+      if (typeof info?.parentID === "string") this.#sessionParents.set(sessionId, info.parentID);
+      if (!this.#observeTui) continue;
+      if (
+        event?.type === "tui.session.select" ||
+        event?.type === "session.created" ||
+        event?.type === "session.updated" ||
+        event?.type === "session.status" ||
+        event?.type === "session.idle" ||
+        event?.type === "message.updated"
+      ) {
+        this.#observedRoot = this.#rootSession(sessionId);
+      }
+    }
+  }
+
+  #rootSession(sessionId: string) {
+    const visited = new Set<string>();
+    let current = sessionId;
+    while (this.#sessionParents.has(current) && !visited.has(current)) {
+      visited.add(current);
+      current = this.#sessionParents.get(current)!;
+    }
+    return current;
   }
 
   async ensureSession(input: { sessionId?: string; title: string }) {
@@ -122,9 +200,6 @@ export class OpenCodeNativeBackend {
           throw new Error(
             `OpenCode session lookup failed for ${input.sessionId} (HTTP ${response.status})`,
           );
-      this.#baselineSessions = new Map(
-        (await this.#sessions()).map((session) => [session.id, session.updated]),
-      );
       return input.sessionId;
     }
 
@@ -138,9 +213,6 @@ export class OpenCodeNativeBackend {
       throw new Error(`OpenCode session creation failed with HTTP ${response.status}`);
     const session = asObject(await response.json());
     if (typeof session?.id !== "string") throw new Error("OpenCode did not return a session id");
-    this.#baselineSessions = new Map(
-      (await this.#sessions()).map((candidate) => [candidate.id, candidate.updated]),
-    );
     return session.id;
   }
 
@@ -199,14 +271,12 @@ export class OpenCodeNativeBackend {
 
   /** Detects sessions created or used through native /new and /sessions commands. */
   async resolveSession(fallbackSessionId: string) {
-    const sessions = await this.#sessions();
-    const changed = sessions
-      .filter((session) => session.updated > (this.#baselineSessions.get(session.id) ?? -1))
-      .sort((left, right) => right.updated - left.updated);
-    return changed[0]?.id ?? fallbackSessionId;
+    return this.#observedRoot ?? fallbackSessionId;
   }
 
   command(sessionId: string): NativeTuiCommand {
+    this.#observeTui = true;
+    this.#observedRoot = sessionId;
     return {
       executable: this.#executable,
       args: ["attach", this.#server.baseUrl, "--dir", this.#cwd, "--session", sessionId],
@@ -215,7 +285,9 @@ export class OpenCodeNativeBackend {
     };
   }
 
-  close() {
-    return this.#server.close();
+  async close() {
+    this.#eventAbort.abort();
+    await this.#eventLoop?.catch(() => undefined);
+    await this.#server.close();
   }
 }

@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
 
 let revertMessageID: string | undefined = "msg_003";
+let createdSessions = 0;
+const eventControllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
+const encoder = new TextEncoder();
+const emitEvent = (event: unknown) => {
+  const data = encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
+  for (const controller of eventControllers) controller.enqueue(data);
+};
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -16,11 +23,45 @@ const server = Bun.serve({
         { name: "skill-command", source: "skill" },
       ]);
     }
+    if (url.pathname === "/event") {
+      let eventController: ReadableStreamDefaultController<Uint8Array> | undefined;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          eventController = controller;
+          eventControllers.add(controller);
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ type: "server.connected", properties: {} })}\n\n`,
+            ),
+          );
+        },
+        cancel() {
+          if (eventController) eventControllers.delete(eventController);
+        },
+      });
+      return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+    }
     if (url.pathname === "/session" && request.method === "POST") {
-      return Response.json({ id: "ses_created" });
+      createdSessions += 1;
+      const body = (await request.json()) as { parentID?: unknown };
+      const id = createdSessions === 1 ? "ses_created" : `ses_native_${createdSessions}`;
+      emitEvent({
+        type: "session.created",
+        properties: {
+          sessionID: id,
+          info: {
+            id,
+            ...(typeof body.parentID === "string" ? { parentID: body.parentID } : {}),
+          },
+        },
+      });
+      return Response.json({ id });
     }
     if (url.pathname === "/session" && request.method === "GET") {
-      return Response.json([{ id: "ses_created", time: { created: 1, updated: 2 } }]);
+      return Response.json([
+        { id: "ses_created", time: { created: 1, updated: 2 } },
+        { id: "unrelated_newer", time: { created: 3, updated: 9_999 } },
+      ]);
     }
     if (url.pathname === "/session/status" && request.method === "GET") {
       return Response.json({});

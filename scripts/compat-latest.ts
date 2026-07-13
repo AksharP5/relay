@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import { CodexNativeBackend } from "../src/native/codex-backend.ts";
 import { NativeSessionUnavailable } from "../src/native/errors.ts";
+import { OpenCodeNativeBackend } from "../src/native/opencode-backend.ts";
 import { startOpenCodeServer } from "../src/harnesses/opencode-server.ts";
 
 const run = async (command: string, args: ReadonlyArray<string>) => {
@@ -153,7 +154,13 @@ try {
   const openApi = JSON.stringify(await document.json());
   requireText(
     openApi,
-    ["/session", "/session/status", "/session/{sessionID}", "/session/{sessionID}/message"],
+    [
+      "/event",
+      "/session",
+      "/session/status",
+      "/session/{sessionID}",
+      "/session/{sessionID}/message",
+    ],
     "OpenCode schema",
   );
 
@@ -195,6 +202,17 @@ try {
   await deleted.body?.cancel();
 } finally {
   await server.close();
+}
+
+const openCodeBackend = await OpenCodeNativeBackend.start(opencode, process.cwd());
+try {
+  const sessionId = await openCodeBackend.ensureSession({ title: "Relay native event probe" });
+  openCodeBackend.command(sessionId);
+  if ((await openCodeBackend.resolveSession(sessionId)) !== sessionId) {
+    throw new Error("OpenCode native event resolver changed the attached session");
+  }
+} finally {
+  await openCodeBackend.close();
 }
 
 console.log("Latest native compatibility contract passed");

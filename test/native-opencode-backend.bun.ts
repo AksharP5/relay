@@ -84,6 +84,30 @@ describe("OpenCode native backend", () => {
         ],
         7,
       );
+
+      const baseUrl = command.args[1]!;
+      const headers = {
+        authorization: `Basic ${Buffer.from(`opencode:${command.env?.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`,
+        "content-type": "application/json",
+      };
+      const nativeSession = await fetch(new URL(`/session?directory=${process.cwd()}`, baseUrl), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({}),
+      });
+      expect(nativeSession.ok).toBe(true);
+      const created = (await nativeSession.json()) as { id: string };
+      await Bun.sleep(10);
+      expect(await backend.resolveSession(sessionId)).toBe(created.id);
+
+      const childSession = await fetch(new URL(`/session?directory=${process.cwd()}`, baseUrl), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ parentID: created.id }),
+      });
+      expect(childSession.ok).toBe(true);
+      await Bun.sleep(10);
+      expect(await backend.resolveSession(sessionId)).toBe(created.id);
     } finally {
       await backend.close();
     }
