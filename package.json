@@ -1,13 +1,14 @@
 {
   "name": "@aksharp5/relay",
   "version": "0.1.0",
-  "description": "Carry one coding task between Codex and OpenCode.",
+  "description": "A terminal workspace for carrying one coding task between Codex and OpenCode.",
   "keywords": [
     "cli",
     "codex",
     "coding-agent",
     "effect",
-    "opencode"
+    "opencode",
+    "tui"
   ],
   "homepage": "https://github.com/AksharP5/relay#readme",
   "bugs": {

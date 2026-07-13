@@ -107,6 +107,7 @@ relay ask --with codex --model <model-name> "Apply the useful findings"
 ```
 
 Model names and availability belong to the selected harness and provider.
+When a turn explicitly selects a model, Relay remembers it on that harness's native binding and reuses it on later turns until another model is selected.
 
 ## Commands
 

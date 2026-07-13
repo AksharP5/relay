@@ -45,6 +45,8 @@ relay ask --with opencode "Review the fix for encoding edge cases"
 relay ask --with opencode --model anthropic/claude-sonnet-4-5 "Review this"
 ```
 
+An explicit model becomes part of that harness's native binding. Later turns reuse it unless another `--model` value replaces it.
+
 Quote multi-word messages so your shell passes them as one request.
 
 ## Switch without running a turn
