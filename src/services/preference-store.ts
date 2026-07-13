@@ -86,7 +86,7 @@ export class PreferenceStore extends Context.Service<
     setSkin: Effect.fn("PreferenceStore.setSkin")((skin: Skin) =>
       Effect.tryPromise({
         try: async () => {
-          const next = { ...(await read()), skin };
+          const next = { ...(await read()), skin, switchSkinWithHarness: false };
           await write(next);
           return next;
         },

@@ -39,6 +39,11 @@ export interface TuiController {
     harness: Harness,
   ) => Promise<{ readonly thread: RelayThread; readonly preferences: RelayPreferences } | null>;
   readonly refreshCapabilities: (harness: Harness) => Promise<HarnessCapabilities>;
+  readonly listTasks: () => Promise<ReadonlyArray<RelayThread>>;
+  readonly selectTask: (
+    threadId: string,
+  ) => Promise<Pick<TuiSnapshot, "thread" | "messages" | "preferences">>;
+  readonly newTask: (harness: Harness) => Promise<RelayThread>;
   readonly setSkin: (skin: Skin) => Promise<RelayPreferences>;
   readonly setSwitchSkinWithHarness: (enabled: boolean) => Promise<RelayPreferences>;
   readonly setCommandImplementation: (
@@ -133,18 +138,11 @@ export const makeTuiController = (
           if (!activeThreadId) return null;
           return yield* relay.switchHarness(harness, activeThreadId).pipe(
             Effect.flatMap((thread) =>
-              relay.preferences().pipe(
-                Effect.flatMap((preferences) =>
-                  preferences.switchSkinWithHarness
-                    ? relay.setSkin(harness).pipe(
-                        Effect.map((next) => ({
-                          thread: thread as RelayThread,
-                          preferences: next,
-                        })),
-                      )
-                    : Effect.succeed({ thread: thread as RelayThread, preferences }),
+              relay
+                .preferences()
+                .pipe(
+                  Effect.map((preferences) => ({ thread: thread as RelayThread, preferences })),
                 ),
-              ),
             ),
             Effect.catchIf(isNoCurrentThread, () => Effect.succeed(null)),
           );
@@ -157,24 +155,52 @@ export const makeTuiController = (
           return yield* relay.capabilities(harness);
         }),
       ),
+    listTasks: () =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          return (yield* relay.list()).filter(isCurrentDirectory);
+        }),
+      ),
+    selectTask: (threadId) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          const thread = yield* relay.useThread(threadId);
+          if (!isCurrentDirectory(thread)) {
+            return yield* Effect.fail(new Error(`This task belongs to ${thread.cwd}`));
+          }
+          activeThreadId = thread.id;
+          const messages = yield* relay.historyForDisplay(thread.id);
+          const preferences = yield* relay.preferences();
+          return { thread, messages, preferences };
+        }),
+      ),
+    newTask: (harness) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          const thread = yield* relay.newThread({
+            title: "New Relay task",
+            cwd: process.cwd(),
+            harness,
+          });
+          activeThreadId = thread.id;
+          return thread;
+        }),
+      ),
     setSkin: (skin) =>
       runtime.runPromise(
         Effect.gen(function* () {
           const relay = yield* RelayService;
-          const preferences = yield* relay.setSkin(skin);
-          return yield* relay
-            .setSwitchSkinWithHarness(false)
-            .pipe(Effect.map((next) => ({ ...next, skin: preferences.skin })));
+          return yield* relay.setSkin(skin);
         }),
       ),
     setSwitchSkinWithHarness: (enabled) =>
       runtime.runPromise(
         Effect.gen(function* () {
           const relay = yield* RelayService;
-          const preferences = yield* relay.setSwitchSkinWithHarness(enabled);
-          if (!enabled) return preferences;
-          const thread = activeThreadId ? yield* relay.current() : null;
-          return thread ? yield* relay.setSkin(thread.activeHarness) : preferences;
+          return yield* relay.setSwitchSkinWithHarness(enabled);
         }),
       ),
     setCommandImplementation: (action, implementation) =>

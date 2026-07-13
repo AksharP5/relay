@@ -55,12 +55,23 @@ const initial: TuiSnapshot = {
 };
 
 const preferenceControls = {
-  setSkin: async (skin: Harness) => ({ ...initial.preferences, skin }),
+  setSkin: async (skin: Harness) => ({
+    ...initial.preferences,
+    skin,
+    switchSkinWithHarness: false,
+  }),
   setSwitchSkinWithHarness: async (switchSkinWithHarness: boolean) => ({
     ...initial.preferences,
     switchSkinWithHarness,
   }),
   setCommandImplementation: async () => initial.preferences,
+  listTasks: async () => [] as ReadonlyArray<RelayThread>,
+  selectTask: async () => ({
+    thread: makeThread("codex"),
+    messages: [] as ReadonlyArray<RelayMessage>,
+    preferences: initial.preferences,
+  }),
+  newTask: async (harness: Harness) => makeThread(harness),
 };
 
 afterEach(() => {
@@ -242,5 +253,71 @@ describe("Relay TUI", () => {
     renderer.mockInput.pressEnter();
     await renderer.waitFor(() => asks.length === 1);
     expect(asks).toEqual([{ prompt: "/commit release-ready", command: "commit" }]);
+  });
+
+  it("changes the interface without changing the harness or draft", async () => {
+    const asks: Array<Harness> = [];
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => initial,
+      switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
+      ask: async (input) => {
+        asks.push(input.harness);
+        return { thread: makeThread(input.harness), messages: [] };
+      },
+    };
+
+    renderer = await testRender(() => <RelayApp controller={controller} initial={initial} />, {
+      width: 96,
+      height: 30,
+    });
+    await renderer.mockInput.typeText("Keep this draft");
+    renderer.mockInput.pressKey("t", { ctrl: true });
+    await renderer.waitForFrame((frame) => frame.includes("Select interface"));
+    renderer.mockInput.pressArrow("down");
+    renderer.mockInput.pressEnter();
+    await renderer.waitForFrame((frame) => frame.includes("OpenCode skin"));
+    const frame = renderer.captureCharFrame();
+    expect(frame).toContain("Keep this draft");
+    expect(frame).toContain("Codex engine");
+
+    renderer.mockInput.pressEnter();
+    await renderer.waitFor(() => asks.length === 1);
+    expect(asks).toEqual(["codex"]);
+  });
+
+  it("explains a skin-native command that the harness cannot execute", async () => {
+    let asks = 0;
+    const pinnedOpenCode: TuiSnapshot = {
+      ...initial,
+      preferences: {
+        ...initial.preferences,
+        skin: "opencode",
+        switchSkinWithHarness: false,
+      },
+    };
+    const controller: TuiController = {
+      ...preferenceControls,
+      load: async () => pinnedOpenCode,
+      switchHarness: async () => null,
+      refreshCapabilities: async (harness) =>
+        initial.capabilities.find((item) => item.harness === harness)!,
+      ask: async () => {
+        asks += 1;
+        return { thread: makeThread("codex"), messages: [] };
+      },
+    };
+
+    renderer = await testRender(
+      () => <RelayApp controller={controller} initial={pinnedOpenCode} />,
+      { width: 96, height: 30 },
+    );
+    await renderer.mockInput.typeText("/share");
+    renderer.mockInput.pressEnter();
+    await renderer.waitForFrame((frame) => frame.includes("OpenCode native behavior"));
+    expect(asks).toBe(0);
+    expect(renderer.captureCharFrame()).toContain("/share");
   });
 });

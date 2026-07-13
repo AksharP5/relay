@@ -34,6 +34,8 @@ interface CommandSpec {
 }
 
 export interface ResolvedCommand extends CommandSpec {
+  readonly defaultImplementation: CommandImplementation;
+  readonly allowedImplementations: ReadonlyArray<CommandImplementation>;
   readonly source: "relay" | "native";
   readonly available: boolean;
   readonly disabledReason?: string;
@@ -198,16 +200,40 @@ const opencode: ReadonlyArray<CommandSpec> = [
 const requiredHarness = (implementation: CommandImplementation) =>
   implementation === "codex" || implementation === "opencode" ? implementation : undefined;
 
+const allowedByAction: Readonly<Record<CommandAction, ReadonlyArray<CommandImplementation>>> = {
+  "app.exit": ["relay"],
+  "command.configure": ["relay"],
+  "context.compact": ["codex", "opencode"],
+  "harness.select": ["relay"],
+  "help.show": ["relay"],
+  "history.redo": ["opencode"],
+  "history.undo": ["opencode"],
+  "model.select": ["relay"],
+  "review.start": ["codex"],
+  "session.new": ["relay"],
+  "session.open": ["relay"],
+  "session.share": ["opencode"],
+  "session.unshare": ["opencode"],
+  "skin.select": ["relay"],
+  "status.show": ["relay"],
+  "theme.select": ["relay"],
+};
+
 const resolve = (
   spec: CommandSpec,
   harness: Harness,
   preferences: RelayPreferences,
 ): ResolvedCommand => {
-  const implementation = preferences.commandImplementations[spec.action] ?? spec.implementation;
+  const allowedImplementations = allowedByAction[spec.action];
+  const override = preferences.commandImplementations[spec.action];
+  const implementation =
+    override && allowedImplementations.includes(override) ? override : spec.implementation;
   const required = requiredHarness(implementation);
   const available = required === undefined || required === harness;
   return {
     ...spec,
+    defaultImplementation: spec.implementation,
+    allowedImplementations,
     implementation,
     source: implementation === "relay" ? "relay" : "native",
     available,
@@ -236,6 +262,8 @@ export const commandsFor = (input: {
         name: command.name,
         description: command.description,
         implementation: "opencode",
+        defaultImplementation: "opencode",
+        allowedImplementations: ["opencode"],
         source: "native",
         ...(command.acceptsArguments ? { acceptsArguments: true } : {}),
         available: input.harness === "opencode",
