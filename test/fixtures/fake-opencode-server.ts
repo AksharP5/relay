@@ -18,6 +18,20 @@ const fakeMessages = [
   },
 ];
 if (Bun.argv[2] === "export") {
+  if (!Bun.argv.includes("--pure")) {
+    process.stderr.write("expected --pure\n");
+    process.exit(2);
+  }
+  const sessionId = Bun.argv.find((argument) => argument.startsWith("ses_"));
+  if (sessionId === "ses_hang") {
+    if (Bun.env.RELAY_TEST_EXPORT_PID_FILE)
+      writeFileSync(Bun.env.RELAY_TEST_EXPORT_PID_FILE, String(process.pid));
+    await new Promise(() => undefined);
+  }
+  if (sessionId === "ses_large") {
+    process.stdout.write("{" + "x".repeat(1_024));
+    await new Promise(() => undefined);
+  }
   process.stdout.write(
     JSON.stringify({
       info: { ...(revertMessageID ? { revert: { messageID: revertMessageID } } : {}) },
@@ -129,7 +143,12 @@ const server = Bun.serve({
       if (url.pathname.includes("/ses_retry/") && retryHistoryAttempts++ === 0)
         return new Response("transient", { status: 503 });
       const recoveryFile = Bun.env.RELAY_TEST_RECOVERY_FILE;
-      if (url.pathname.includes("/ses_recover/") && recoveryFile) {
+      if (
+        (url.pathname.includes("/ses_recover/") ||
+          url.pathname.includes("/ses_hang/") ||
+          url.pathname.includes("/ses_large/")) &&
+        recoveryFile
+      ) {
         const attempts = Number(
           (() => {
             try {

@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,6 +70,53 @@ describe("OpenCode native backend", () => {
         turns: [],
         hiddenTurnIds: [],
       });
+    } finally {
+      await backend.close();
+      if (previousMarker === undefined) delete Bun.env.RELAY_TEST_RECOVERY_FILE;
+      else Bun.env.RELAY_TEST_RECOVERY_FILE = previousMarker;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds and terminates a hung detached-history export", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-read-timeout-"));
+    const marker = join(directory, "attempts");
+    const pidFile = join(directory, "export.pid");
+    const previousMarker = Bun.env.RELAY_TEST_RECOVERY_FILE;
+    const previousPidFile = Bun.env.RELAY_TEST_EXPORT_PID_FILE;
+    Bun.env.RELAY_TEST_RECOVERY_FILE = marker;
+    Bun.env.RELAY_TEST_EXPORT_PID_FILE = pidFile;
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), undefined, {
+      exportTimeoutMs: 500,
+    });
+    try {
+      await expect(backend.read("ses_hang")).rejects.toThrow(
+        "OpenCode history export timed out after 500ms",
+      );
+      const pid = Number(await readFile(pidFile, "utf8"));
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      await backend.close();
+      if (previousMarker === undefined) delete Bun.env.RELAY_TEST_RECOVERY_FILE;
+      else Bun.env.RELAY_TEST_RECOVERY_FILE = previousMarker;
+      if (previousPidFile === undefined) delete Bun.env.RELAY_TEST_EXPORT_PID_FILE;
+      else Bun.env.RELAY_TEST_EXPORT_PID_FILE = previousPidFile;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reports and terminates an oversized detached-history export", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-read-limit-"));
+    const marker = join(directory, "attempts");
+    const previousMarker = Bun.env.RELAY_TEST_RECOVERY_FILE;
+    Bun.env.RELAY_TEST_RECOVERY_FILE = marker;
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), undefined, {
+      exportLimitBytes: 512,
+    });
+    try {
+      await expect(backend.read("ses_large")).rejects.toThrow(
+        "OpenCode history export exceeded 512 bytes",
+      );
     } finally {
       await backend.close();
       if (previousMarker === undefined) delete Bun.env.RELAY_TEST_RECOVERY_FILE;

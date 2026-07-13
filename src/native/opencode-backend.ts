@@ -84,6 +84,25 @@ const transcriptFrom = (session: unknown, messages: unknown) => {
   };
 };
 
+const readBoundedStream = async (stream: ReadableStream<Uint8Array>, limitBytes: number) => {
+  const reader = stream.getReader();
+  const chunks: Array<Uint8Array> = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > limitBytes)
+        throw new Error(`OpenCode history export exceeded ${limitBytes} bytes`);
+      chunks.push(value.slice());
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
+};
+
 export class OpenCodeNativeBackend {
   readonly #server: RunningOpenCodeServer;
   readonly #executable: string;
@@ -91,23 +110,40 @@ export class OpenCodeNativeBackend {
   readonly #eventAbort = new AbortController();
   readonly #requestAbort = new AbortController();
   readonly #sessionParents = new Map<string, string>();
+  readonly #exportTimeoutMs: number;
+  readonly #exportLimitBytes: number;
   #eventLoop: Promise<void> | undefined;
   #observeTui = false;
   #observerHealthy = false;
   #observerGap = false;
   #observedRoot: string | undefined;
 
-  private constructor(server: RunningOpenCodeServer, executable: string, cwd: string) {
+  private constructor(
+    server: RunningOpenCodeServer,
+    executable: string,
+    cwd: string,
+    exportTimeoutMs: number,
+    exportLimitBytes: number,
+  ) {
     this.#server = server;
     this.#executable = executable;
     this.#cwd = cwd;
+    this.#exportTimeoutMs = exportTimeoutMs;
+    this.#exportLimitBytes = exportLimitBytes;
   }
 
-  static async start(executable: string, cwd: string, signal?: AbortSignal) {
+  static async start(
+    executable: string,
+    cwd: string,
+    signal?: AbortSignal,
+    options: { readonly exportTimeoutMs?: number; readonly exportLimitBytes?: number } = {},
+  ) {
     const backend = new OpenCodeNativeBackend(
       await startOpenCodeServer(executable, cwd, signal),
       executable,
       cwd,
+      options.exportTimeoutMs ?? 30_000,
+      options.exportLimitBytes ?? 64 * 1024 * 1024,
     );
     const onAbort = () => backend.#eventAbort.abort(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -365,7 +401,8 @@ export class OpenCodeNativeBackend {
   }
 
   async #readExport(sessionId: string) {
-    const child = Bun.spawn([this.#executable, "export", sessionId], {
+    this.#requestAbort.signal.throwIfAborted();
+    const child = Bun.spawn([this.#executable, "export", "--pure", sessionId], {
       cwd: this.#cwd,
       env: Bun.env,
       stdin: "ignore",
@@ -373,19 +410,41 @@ export class OpenCodeNativeBackend {
       stderr: "pipe",
       detached: process.platform !== "win32",
     });
-    if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
-      await stopProcessTree(child);
-      throw new Error("OpenCode export pipes are unavailable");
-    }
     let stopping: Promise<void> | undefined;
     const stop = () => (stopping ??= stopProcessTree(child));
-    const onAbort = () => void stop();
+    let rejectAbort: (reason: unknown) => void = () => undefined;
+    const aborted = new Promise<never>((_, reject) => {
+      rejectAbort = reject;
+    });
+    const onAbort = () => {
+      void stop();
+      rejectAbort(
+        this.#requestAbort.signal.reason instanceof Error
+          ? this.#requestAbort.signal.reason
+          : new DOMException("The operation was aborted", "AbortError"),
+      );
+    };
     this.#requestAbort.signal.addEventListener("abort", onAbort, { once: true });
+    const timeout = setTimeout(
+      () => {
+        void stop();
+        rejectAbort(
+          new Error(`OpenCode history export timed out after ${this.#exportTimeoutMs}ms`),
+        );
+      },
+      this.#exportTimeoutMs,
+    );
     try {
-      const [stdout, stderr, exitCode] = await Promise.all([
-        readStream(child.stdout, { limit: 64 * 1024 * 1024 }),
-        readStream(child.stderr, { limit: 128_000 }),
-        child.exited,
+      if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream))
+        throw new Error("OpenCode export pipes are unavailable");
+      if (this.#requestAbort.signal.aborted) onAbort();
+      const [stdout, stderr, exitCode] = await Promise.race([
+        Promise.all([
+          readBoundedStream(child.stdout, this.#exportLimitBytes),
+          readStream(child.stderr, { limit: 128_000 }),
+          child.exited,
+        ]),
+        aborted,
       ]);
       if (exitCode !== 0)
         throw new Error(
@@ -401,9 +460,12 @@ export class OpenCodeNativeBackend {
       if (!Array.isArray(value?.messages))
         throw new Error("OpenCode history export did not include messages");
       return transcriptFrom(value?.info, value.messages);
+    } catch (cause) {
+      await stop();
+      throw cause;
     } finally {
+      clearTimeout(timeout);
       this.#requestAbort.signal.removeEventListener("abort", onAbort);
-      if (this.#requestAbort.signal.aborted) await stop();
     }
   }
 
