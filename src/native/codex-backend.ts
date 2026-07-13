@@ -67,6 +67,11 @@ const threadStatusFrom = (value: unknown) => {
   return typeof status?.type === "string" ? status.type : "notLoaded";
 };
 
+const threadCwdFrom = (value: unknown) => {
+  const cwd = asObject(asObject(value)?.thread)?.cwd;
+  return typeof cwd === "string" ? cwd : undefined;
+};
+
 const stringDataFrom = (value: unknown) => {
   const data = asObject(value)?.data;
   return Array.isArray(data) ? data.filter((item): item is string => typeof item === "string") : [];
@@ -365,7 +370,25 @@ export class CodexNativeBackend {
           }
           throw cause;
         });
-      return { turns: parseCodexNativeTurns(result), hiddenTurnIds: [] };
+      const cwd = threadCwdFrom(result);
+      return {
+        turns: parseCodexNativeTurns(result),
+        hiddenTurnIds: [],
+        ...(cwd ? { cwd } : {}),
+      };
+    } finally {
+      await connection.close();
+    }
+  }
+
+  async sessionCwd(sessionId: string) {
+    const connection = await this.#connect();
+    try {
+      const result = await connection.request("thread/read", {
+        threadId: sessionId,
+        includeTurns: false,
+      });
+      return threadCwdFrom(result);
     } finally {
       await connection.close();
     }

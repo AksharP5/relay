@@ -650,6 +650,66 @@ describe("native Relay host", () => {
     });
   });
 
+  it("rejects an existing session from a different workspace", async () => {
+    const { controller, thread } = makeController();
+    await controller.switchHarness("relay-thread", "opencode");
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({
+        turns: [{ id: "foreign-turn", prompt: "foreign prompt", response: "foreign answer" }],
+        hiddenTurnIds: [],
+        cwd: `${process.cwd()}/another-workspace`,
+      }),
+      isIdle: async () => true,
+      resolveSession: async () => undefined,
+      command: () => ({ executable: "opencode", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await expect(
+      launchNativeRelay(controller, {
+        startBackend: async () => backend,
+        runTui: async () => ({ reason: "exit", exitCode: 0, sessionIdHint: "ses_foreign" }),
+      }),
+    ).rejects.toThrow("Select a session from the current workspace");
+    expect(thread().bindings.opencode).toBeUndefined();
+  });
+
+  it("vetoes a switch after native navigation leaves the Relay workspace", async () => {
+    const { controller } = makeController();
+    await controller.bind({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "warm-session",
+      lastSyncedSeq: 0,
+    });
+    let resolvedSession = "warm-session";
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ sessionId: "warm-session", handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      isMaterialized: async () => true,
+      isIdle: async () => true,
+      sessionCwd: async (sessionId) =>
+        sessionId === "foreign-session" ? `${process.cwd()}/another-workspace` : process.cwd(),
+      resolveSession: async () => resolvedSession,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      wait: async () => {},
+      runTui: async (_command, onSwitchRequest) => {
+        resolvedSession = "foreign-session";
+        expect(await onSwitchRequest()).toBe(false);
+        resolvedSession = "warm-session";
+        return { reason: "exit", exitCode: 0 };
+      },
+    });
+  });
+
   it("does not persist an unresumable empty Codex thread", async () => {
     const { controller, thread } = makeController();
     const backend: NativeBackend = {

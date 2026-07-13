@@ -153,6 +153,8 @@ export interface NativeTranscriptTurn {
 export interface NativeTranscript {
   readonly turns: ReadonlyArray<NativeTranscriptTurn>;
   readonly hiddenTurnIds: ReadonlyArray<string>;
+  /** Native working directory, when the harness exposes it. */
+  readonly cwd?: string;
 }
 
 export const isHarness = (value: string): value is Harness =>

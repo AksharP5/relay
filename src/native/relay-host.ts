@@ -5,6 +5,8 @@ import type {
   RelayMessage,
   RelayThread,
 } from "../domain.ts";
+import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import { CodexNativeBackend } from "./codex-backend.ts";
 import type { NativeRelayController } from "./controller.ts";
 import { NativeSessionUnavailable } from "./errors.ts";
@@ -38,6 +40,8 @@ export interface NativeBackend {
   readonly isMaterialized?: (sessionId: string) => Promise<boolean>;
   /** With no id, return whether detaching an unresolved native selection is safe. */
   readonly isIdle: (sessionId?: string) => Promise<boolean>;
+  /** Return the native session's working directory when the harness exposes it. */
+  readonly sessionCwd?: (sessionId: string) => Promise<string | undefined>;
   readonly resolveSession: (
     fallbackSessionId?: string,
     requireCurrentObservation?: boolean,
@@ -93,6 +97,7 @@ const startBackend = async (
       read: (sessionId) => backend.read(sessionId),
       isMaterialized: (sessionId) => backend.isMaterialized(sessionId),
       isIdle: (sessionId) => backend.isIdle(sessionId),
+      sessionCwd: (sessionId) => backend.sessionCwd(sessionId),
       resolveSession: (sessionId) => backend.resolveSession(sessionId),
       command: (sessionId, model) => backend.command(sessionId, model),
       close: () => backend.close(),
@@ -116,6 +121,7 @@ const startBackend = async (
     read: (sessionId) => backend.read(sessionId),
     isMaterialized: async () => true,
     isIdle: (sessionId) => backend.isIdle(sessionId),
+    sessionCwd: (sessionId) => backend.sessionCwd(sessionId),
     resolveSession: (sessionId, requireCurrentObservation) =>
       backend.resolveSession(sessionId, requireCurrentObservation),
     command: (sessionId) => backend.command(sessionId),
@@ -172,6 +178,26 @@ const messagesOutsideTranscript = (
   return messages.filter((message) => !message.nativeId || !nativeIds.has(message.nativeId));
 };
 
+const canonicalPath = async (path: string) => {
+  const absolute = resolve(path);
+  return realpath(absolute).catch(() => absolute);
+};
+
+const nativeCwdMatches = async (relayCwd: string, nativeCwd?: string) =>
+  nativeCwd === undefined || (await canonicalPath(relayCwd)) === (await canonicalPath(nativeCwd));
+
+const assertNativeCwd = async (
+  harness: Harness,
+  sessionId: string,
+  relayCwd: string,
+  nativeCwd?: string,
+) => {
+  if (await nativeCwdMatches(relayCwd, nativeCwd)) return;
+  throw new Error(
+    `Cannot adopt ${harness} session ${sessionId} from ${nativeCwd}; this Relay task belongs to ${relayCwd}. Select a session from the current workspace.`,
+  );
+};
+
 const synchronize = async (input: {
   readonly controller: NativeRelayController;
   readonly backend: NativeBackend;
@@ -184,6 +210,7 @@ const synchronize = async (input: {
   const { controller, backend, harness, sessionId } = input;
   const model = input.thread.bindings[harness]?.model ?? input.thread.preferredModels?.[harness];
   const transcript = input.transcript ?? (await backend.read(sessionId));
+  await assertNativeCwd(harness, sessionId, input.thread.cwd, transcript.cwd);
   const turns = transcript.turns;
 
   if (input.sessionChanged) {
@@ -242,6 +269,7 @@ const adoptNativeSession = async (input: {
 }) => {
   const { controller, harness, sessionId, transcript } = input;
   const model = input.thread.bindings[harness]?.model ?? input.thread.preferredModels?.[harness];
+  await assertNativeCwd(harness, sessionId, input.thread.cwd, transcript.cwd);
   const turns = transcript.turns;
   let thread = await controller.bind({
     threadId: input.thread.id,
@@ -405,6 +433,12 @@ const runHarness = async (
               sessionId &&
               backend.isMaterialized &&
               !(await backend.isMaterialized(sessionId))
+            )
+              return false;
+            if (
+              sessionId &&
+              backend.sessionCwd &&
+              !(await nativeCwdMatches(thread.cwd, await backend.sessionCwd(sessionId)))
             )
               return false;
             if (!(await backend.isIdle(sessionId))) return false;

@@ -123,7 +123,9 @@ export const parseOpenCodeNativeTurns = (
   parseCompactTurns(compactOpenCodeMessages(value), revertedMessageId);
 
 const transcriptFrom = (session: unknown, messages: ReadonlyArray<OpenCodeVisibleMessage>) => {
-  const revertedMessageId = asObject(asObject(session)?.revert)?.messageID;
+  const sessionObject = asObject(session);
+  const revertedMessageId = asObject(sessionObject?.revert)?.messageID;
+  const cwd = typeof sessionObject?.directory === "string" ? sessionObject.directory : undefined;
   const turns = parseCompactTurns(
     messages,
     typeof revertedMessageId === "string" ? revertedMessageId : undefined,
@@ -134,6 +136,7 @@ const transcriptFrom = (session: unknown, messages: ReadonlyArray<OpenCodeVisibl
     hiddenTurnIds: parseCompactTurns(messages)
       .map((turn) => turn.id)
       .filter((id) => !visible.has(id)),
+    ...(cwd ? { cwd } : {}),
   };
 };
 
@@ -463,6 +466,16 @@ export class OpenCodeNativeBackend {
       ? [asObject(statuses?.[sessionId])?.type]
       : Object.values(statuses ?? {}).map((status) => asObject(status)?.type);
     return types.every((type) => type === undefined || type === "idle");
+  }
+
+  async sessionCwd(sessionId: string) {
+    const response = await this.#get(`/session/${encodeURIComponent(sessionId)}`, 2_000);
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`OpenCode session lookup failed with HTTP ${response.status}`);
+    }
+    const session = asObject(await response.json());
+    return typeof session?.directory === "string" ? session.directory : undefined;
   }
 
   async deleteSession(sessionId: string) {
