@@ -22,6 +22,7 @@ export interface NativeBackend {
     omittedMessages?: number,
   ) => Promise<void>;
   readonly read: (sessionId: string) => Promise<ReadonlyArray<NativeTranscriptTurn>>;
+  readonly isMaterialized?: (sessionId: string) => Promise<boolean>;
   readonly isIdle: (sessionId: string) => Promise<boolean>;
   readonly resolveSession: (fallbackSessionId?: string) => Promise<string | undefined>;
   readonly command: (sessionId?: string, model?: string) => NativeTuiCommand;
@@ -52,6 +53,7 @@ const startBackend = async (harness: Harness, cwd: string): Promise<NativeBacken
       inject: (sessionId, messages, omittedMessages) =>
         backend.inject(sessionId, messages, omittedMessages),
       read: (sessionId) => backend.read(sessionId),
+      isMaterialized: (sessionId) => backend.isMaterialized(sessionId),
       isIdle: (sessionId) => backend.isIdle(sessionId),
       resolveSession: (sessionId) => backend.resolveSession(sessionId),
       command: (sessionId, model) => backend.command(sessionId, model),
@@ -71,6 +73,7 @@ const startBackend = async (harness: Harness, cwd: string): Promise<NativeBacken
     inject: (sessionId, messages, omittedMessages) =>
       backend.inject(sessionId, messages, omittedMessages),
     read: (sessionId) => backend.read(sessionId),
+    isMaterialized: async () => true,
     isIdle: (sessionId) => backend.isIdle(sessionId),
     resolveSession: (sessionId) =>
       sessionId ? backend.resolveSession(sessionId) : Promise.resolve(undefined),
@@ -171,11 +174,14 @@ const runHarness = async (
   const backend = await dependencies.startBackend(harness, thread.cwd);
   try {
     const binding = thread.bindings[harness];
-    const model = binding?.model ?? thread.preferredModels?.[harness];
+    const storedModel = binding?.model ?? thread.preferredModels?.[harness];
+    // Once a native session exists, its own /model command owns the choice.
+    // Passing Relay's last-known model on every resume would overwrite it.
+    const launchModel = binding ? undefined : storedModel;
     const initialDelta = await controller.delta(thread.id, harness);
     const prepared = await backend.prepareSession({
       ...(binding ? { sessionId: binding.sessionId } : {}),
-      ...(model ? { model } : {}),
+      ...(launchModel ? { model: launchModel } : {}),
       title: thread.title,
       handoff: initialDelta.messages,
       handoffOmittedMessages: initialDelta.omittedMessages,
@@ -188,7 +194,7 @@ const runHarness = async (
           harness,
           sessionId,
           lastSyncedSeq: initialDelta.thread.lastSeq,
-          ...(model ? { model } : {}),
+          ...(storedModel ? { model: storedModel } : {}),
         });
       }
       thread = await synchronize({
@@ -202,7 +208,7 @@ const runHarness = async (
     }
     const boundSessionId = thread.bindings[harness]?.sessionId;
 
-    const exit = await dependencies.runTui(backend.command(sessionId, model), async () => {
+    const exit = await dependencies.runTui(backend.command(sessionId, launchModel), async () => {
       sessionId = await backend.resolveSession(sessionId);
       return sessionId ? backend.isIdle(sessionId) : true;
     });
@@ -210,7 +216,9 @@ const runHarness = async (
     const resolvedSessionId = await backend.resolveSession(sessionId);
     if (resolvedSessionId) {
       const turns = await backend.read(resolvedSessionId);
-      if (boundSessionId || turns.length > 0) {
+      const materialized =
+        turns.length > 0 || (await backend.isMaterialized?.(resolvedSessionId)) === true;
+      if (boundSessionId || materialized) {
         thread = await synchronize({
           controller,
           backend,

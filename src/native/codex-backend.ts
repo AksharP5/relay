@@ -77,6 +77,18 @@ const listedThreadIdsFrom = (value: unknown) => {
   });
 };
 
+export const selectResolvedCodexSession = (input: {
+  readonly loaded: ReadonlyArray<string>;
+  readonly baseline: ReadonlySet<string>;
+  readonly recency: ReadonlyArray<string>;
+  readonly fallback?: string;
+}) => {
+  const eligible = new Set(
+    input.loaded.filter((id) => !input.baseline.has(id) || id === input.fallback),
+  );
+  return input.recency.find((id) => eligible.has(id)) ?? [...eligible].at(-1) ?? input.fallback;
+};
+
 const extractText = (content: unknown) =>
   Array.isArray(content)
     ? content
@@ -351,26 +363,39 @@ export class CodexNativeBackend {
     }
   }
 
+  async isMaterialized(sessionId: string) {
+    const connection = await this.#connect();
+    try {
+      await connection.request("thread/read", {
+        threadId: sessionId,
+        includeTurns: false,
+      });
+      return true;
+    } catch (cause) {
+      if (cause instanceof Error && cause.message.includes("is not materialized yet")) return false;
+      throw cause;
+    } finally {
+      await connection.close();
+    }
+  }
+
   /** Detects /new or /resume inside the native TUI without intercepting either command. */
   async resolveSession(fallbackSessionId?: string) {
     const connection = await this.#connect();
     try {
       const loaded = stringDataFrom(await connection.request("thread/loaded/list", {}));
-      const candidates = loaded.filter((id) => !this.#baselineLoaded.has(id));
-      if (candidates.length === 0) return fallbackSessionId;
-      if (candidates.length === 1) return candidates[0]!;
-
       const listed = await connection.request("thread/list", {
         cwd: [this.#cwd],
         limit: 100,
         sortKey: "recency_at",
         sortDirection: "desc",
       });
-      return (
-        listedThreadIdsFrom(listed).find((id) => candidates.includes(id)) ??
-        candidates.at(-1) ??
-        fallbackSessionId
-      );
+      return selectResolvedCodexSession({
+        loaded,
+        baseline: this.#baselineLoaded,
+        recency: listedThreadIdsFrom(listed),
+        ...(fallbackSessionId ? { fallback: fallbackSessionId } : {}),
+      });
     } finally {
       await connection.close();
     }

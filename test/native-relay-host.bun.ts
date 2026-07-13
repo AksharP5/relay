@@ -218,6 +218,63 @@ describe("native Relay host", () => {
     expect(thread().bindings.codex).toBeUndefined();
   });
 
+  it("keeps a materialized Codex session after an interrupted cold turn", async () => {
+    const { controller, thread } = makeController();
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ handoffInjected: false }),
+      inject: async () => {},
+      read: async () => [],
+      isMaterialized: async () => true,
+      isIdle: async () => true,
+      resolveSession: async () => "interrupted-codex-thread",
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      runTui: async () => ({ reason: "exit", exitCode: 0 }),
+    });
+
+    expect(thread().bindings.codex?.sessionId).toBe("interrupted-codex-thread");
+  });
+
+  it("does not overwrite a warm native session's model selection", async () => {
+    const { controller } = makeController();
+    await controller.bind({
+      threadId: "relay-thread",
+      harness: "codex",
+      sessionId: "codex-session",
+      lastSyncedSeq: 0,
+      model: "stale-relay-model",
+    });
+    const preparedModels: Array<string | undefined> = [];
+    const commandModels: Array<string | undefined> = [];
+    const backend: NativeBackend = {
+      prepareSession: async (input) => {
+        preparedModels.push(input.model);
+        return { sessionId: "codex-session", handoffInjected: false };
+      },
+      inject: async () => {},
+      read: async () => [],
+      isIdle: async () => true,
+      resolveSession: async (fallback) => fallback,
+      command: (_sessionId, model) => {
+        commandModels.push(model);
+        return { executable: "codex", args: [], cwd: process.cwd() };
+      },
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      runTui: async () => ({ reason: "exit", exitCode: 0 }),
+    });
+
+    expect(preparedModels).toEqual([undefined]);
+    expect(commandModels).toEqual([undefined]);
+  });
+
   it("hands off pending cross-harness messages before importing out-of-band native turns", async () => {
     const { controller, messages } = makeController();
     await controller.bind({
