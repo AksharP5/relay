@@ -98,6 +98,111 @@ describe("OpenCode native backend", () => {
     ]);
   });
 
+  it("keeps legacy no-finish assistant records terminal even when they contain tools", () => {
+    expect(
+      parseOpenCodeNativeTurns([
+        {
+          info: { id: "user-1", role: "user" },
+          parts: [{ type: "text", text: "Inspect the change" }],
+        },
+        {
+          info: { id: "assistant-1", role: "assistant", time: { completed: 2 } },
+          parts: [
+            { type: "tool", tool: "read", state: { status: "completed" } },
+            { type: "text", text: "Inspection complete." },
+          ],
+        },
+      ]),
+    ).toEqual([{ id: "user-1", prompt: "Inspect the change", response: "Inspection complete." }]);
+  });
+
+  it("treats provider-executed and interrupted tool records as terminal", () => {
+    expect(
+      parseOpenCodeNativeTurns([
+        {
+          info: { id: "user-1", role: "user" },
+          parts: [{ type: "text", text: "Use a provider tool" }],
+        },
+        {
+          info: {
+            id: "assistant-1",
+            role: "assistant",
+            parentID: "user-1",
+            finish: "stop",
+            time: { completed: 2 },
+          },
+          parts: [
+            { type: "tool", metadata: { providerExecuted: true } },
+            { type: "text", text: "Provider tool complete." },
+          ],
+        },
+        {
+          info: { id: "user-2", role: "user" },
+          parts: [{ type: "text", text: "Interrupt a tool" }],
+        },
+        {
+          info: {
+            id: "assistant-2",
+            role: "assistant",
+            parentID: "user-2",
+            finish: "stop",
+            time: { completed: 4 },
+          },
+          parts: [
+            {
+              type: "tool",
+              state: { status: "error", metadata: { interrupted: true } },
+            },
+            { type: "text", text: "Interrupted cleanly." },
+          ],
+        },
+      ]),
+    ).toEqual([
+      { id: "user-1", prompt: "Use a provider tool", response: "Provider tool complete." },
+      { id: "user-2", prompt: "Interrupt a tool", response: "Interrupted cleanly." },
+    ]);
+  });
+
+  it("discards accumulated partial text when the terminal assistant fails", () => {
+    expect(
+      parseOpenCodeNativeTurns([
+        {
+          info: { id: "user-1", role: "user" },
+          parts: [{ type: "text", text: "Run the suite" }],
+        },
+        {
+          info: {
+            id: "assistant-1",
+            role: "assistant",
+            parentID: "user-1",
+            finish: "tool-calls",
+            time: { completed: 2 },
+          },
+          parts: [{ type: "text", text: "Starting the suite." }],
+        },
+        {
+          info: {
+            id: "assistant-2",
+            role: "assistant",
+            parentID: "user-1",
+            finish: "error",
+            error: { name: "ProviderError" },
+            time: { completed: 3 },
+          },
+          parts: [{ type: "text", text: "This must not be imported." }],
+        },
+        {
+          info: { id: "user-2", role: "user" },
+          parts: [{ type: "text", text: "Try again" }],
+        },
+        {
+          info: { id: "assistant-3", role: "assistant", time: { completed: 5 } },
+          parts: [{ type: "text", text: "Retry complete." }],
+        },
+      ]),
+    ).toEqual([{ id: "user-2", prompt: "Try again", response: "Retry complete." }]);
+  });
+
   it("does not import turns hidden by native OpenCode undo", () => {
     const messages = [
       { info: { id: "user-1", role: "user" }, parts: [{ type: "text", text: "Keep" }] },
@@ -183,6 +288,16 @@ describe("OpenCode native backend", () => {
           { id: "page-user-2", prompt: "newer prompt", response: "newer response" },
         ],
         hiddenTurnIds: [],
+      });
+      await expect(backend.read("ses_grouped_undo")).resolves.toEqual({
+        turns: [
+          {
+            id: "undo-user-1",
+            prompt: "Keep this turn",
+            response: "Checking first.\n\nKept response.",
+          },
+        ],
+        hiddenTurnIds: ["undo-user-2"],
       });
       await backend.inject(
         sessionId,

@@ -124,6 +124,8 @@ const server = Bun.serve({
       return Response.json({});
     }
     if (url.pathname.endsWith("/ses_paged") && request.method === "GET") return Response.json({});
+    if (url.pathname.endsWith("/ses_grouped_undo") && request.method === "GET")
+      return Response.json({ revert: { messageID: "undo-user-2" } });
     if (
       url.pathname.includes("/ses_missing") &&
       request.method === "GET" &&
@@ -154,6 +156,58 @@ const server = Bun.serve({
       return Response.json({ info: { id: "hidden", role: "user" }, parts: body.parts });
     }
     if (url.pathname.endsWith("/message") && request.method === "GET") {
+      if (url.pathname.includes("/ses_grouped_undo/")) {
+        return Response.json([
+          {
+            info: { id: "undo-user-1", role: "user" },
+            parts: [{ type: "text", text: "Keep this turn" }],
+          },
+          {
+            info: {
+              id: "undo-assistant-1a",
+              role: "assistant",
+              parentID: "undo-user-1",
+              finish: "tool-calls",
+              time: { completed: 2 },
+            },
+            parts: [{ type: "text", text: "Checking first." }],
+          },
+          {
+            info: {
+              id: "undo-assistant-1b",
+              role: "assistant",
+              parentID: "undo-user-1",
+              finish: "stop",
+              time: { completed: 3 },
+            },
+            parts: [{ type: "text", text: "Kept response." }],
+          },
+          {
+            info: { id: "undo-user-2", role: "user" },
+            parts: [{ type: "text", text: "Hide this turn" }],
+          },
+          {
+            info: {
+              id: "undo-assistant-2a",
+              role: "assistant",
+              parentID: "undo-user-2",
+              finish: "tool-calls",
+              time: { completed: 5 },
+            },
+            parts: [{ type: "text", text: "Hidden partial." }],
+          },
+          {
+            info: {
+              id: "undo-assistant-2b",
+              role: "assistant",
+              parentID: "undo-user-2",
+              finish: "stop",
+              time: { completed: 6 },
+            },
+            parts: [{ type: "text", text: "Hidden response." }],
+          },
+        ]);
+      }
       if (url.pathname.includes("/ses_paged/")) {
         if (url.searchParams.get("limit") !== "20")
           return new Response("expected bounded page", { status: 400 });
