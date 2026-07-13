@@ -353,7 +353,7 @@ export class CodexNativeBackend {
           }
           throw cause;
         });
-      return parseCodexNativeTurns(result);
+      return { turns: parseCodexNativeTurns(result), hiddenTurnIds: [] };
     } finally {
       await connection.close();
     }

@@ -29,6 +29,7 @@ export interface NativeRelayController {
     readonly harness: Harness;
     readonly sessionId: string;
     readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+    readonly hiddenTurnIds?: ReadonlyArray<string>;
     readonly model?: string;
   }) => Promise<RelayThread>;
   readonly dropBinding: (

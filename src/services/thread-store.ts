@@ -30,9 +30,17 @@ const eventsPath = (id: string) => `${threadDir(id)}/events.jsonl`;
 const indexPath = () => `${dataRoot()}/index.json`;
 const pendingPath = (id: string) => `${threadDir(id)}/pending-turn.json`;
 const undoPath = (id: string) => `${threadDir(id)}/undo-stack.json`;
+const visibilityPath = (id: string) => `${threadDir(id)}/native-visibility.json`;
 const lockPath = (id: string) => `${dataRoot()}/locks/${id}`;
 const runLockPath = (id: string) => `${dataRoot()}/run-locks/${id}`;
 const maxEventLineChars = 4_000_000;
+const NativeVisibility = Schema.Struct({
+  hidden: Schema.Array(Schema.String),
+  links: Schema.optional(
+    Schema.Array(Schema.Struct({ messageId: Schema.String, key: Schema.String })),
+  ),
+});
+type NativeVisibility = typeof NativeVisibility.Type;
 
 const secureDirectory = async (path: string) => {
   await mkdir(path, { recursive: true, mode: 0o700 });
@@ -54,6 +62,24 @@ const readJson = async <A>(path: string, schema: Schema.Decoder<A>): Promise<A |
   return Schema.decodeUnknownSync(schema)(value) as A;
 };
 
+const readVisibility = async (id: string): Promise<NativeVisibility> =>
+  (await readJson(visibilityPath(id), NativeVisibility)) ?? { hidden: [] };
+
+const visibilityKey = (harness: Harness, sessionId: string, nativeId: string) =>
+  `${harness}:${sessionId}:${nativeId}`;
+
+const isVisible = (
+  message: RelayMessage,
+  hidden: ReadonlySet<string>,
+  links: ReadonlyMap<string, string>,
+) => {
+  const key =
+    message.nativeId && message.nativeSessionId
+      ? visibilityKey(message.harness, message.nativeSessionId, message.nativeId)
+      : links.get(message.id);
+  return !key || !hidden.has(key);
+};
+
 const atomicTextWrite = async (path: string, value: string) => {
   const temp = `${path}.${crypto.randomUUID()}.tmp`;
   await ensureBase();
@@ -66,7 +92,7 @@ const atomicTextWrite = async (path: string, value: string) => {
 const atomicJsonWrite = (path: string, value: unknown) =>
   atomicTextWrite(path, `${JSON.stringify(value, null, 2)}\n`);
 
-const readMessages = async (
+const readRawMessages = async (
   id: string,
   options: { readonly repairTail?: boolean } = {},
 ): Promise<Array<RelayMessage>> => {
@@ -92,6 +118,16 @@ const readMessages = async (
     }
   }
   return messages;
+};
+
+const readMessages = async (id: string, options: { readonly repairTail?: boolean } = {}) => {
+  const [messages, visibility] = await Promise.all([
+    readRawMessages(id, options),
+    readVisibility(id),
+  ]);
+  const hidden = new Set(visibility.hidden);
+  const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
+  return messages.filter((message) => isVisible(message, hidden, links));
 };
 
 const scanMessages = async (id: string, onMessage: (message: RelayMessage) => void) => {
@@ -138,7 +174,11 @@ const readMessagesSince = async (
   const messages: Array<RelayMessage> = [];
   let chars = 0;
   let omittedMessages = 0;
+  const visibility = await readVisibility(id);
+  const hidden = new Set(visibility.hidden);
+  const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
   await scanMessages(id, (message) => {
+    if (!isVisible(message, hidden, links)) return;
     if (message.seq <= afterSeq) return;
     const truncation = "[Earlier content in this message was truncated by Relay.]\n";
     const retained =
@@ -165,7 +205,11 @@ const readRecentMessages = async (
 ) => {
   const messages: Array<RelayMessage> = [];
   let chars = 0;
+  const visibility = await readVisibility(id);
+  const hidden = new Set(visibility.hidden);
+  const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
   await scanMessages(id, (message) => {
+    if (!isVisible(message, hidden, links)) return;
     const retained =
       message.content.length > options.maxChars
         ? {
@@ -256,7 +300,7 @@ const recoverThread = async (thread: RelayThread): Promise<RelayThread> => {
   try {
     const latest = (await readJson<RelayThread>(metadataPath(thread.id), RelayThread)) ?? thread;
     const latestPending = await readJson<PendingTurn>(pendingPath(thread.id), PendingTurn);
-    const latestMessages = await readMessages(thread.id, { repairTail: true });
+    const latestMessages = await readRawMessages(thread.id, { repairTail: true });
     if (latestPending) {
       const existingIds = new Set(latestMessages.map((message) => message.id));
       const missing = latestPending.messages.filter((message) => !existingIds.has(message.id));
@@ -354,8 +398,8 @@ const acquireThreadLock = (id: string) =>
   acquireLockAt(
     id,
     lockPath(id),
-    "This Relay task already has a state update running",
-    "This Relay task already has a state update starting",
+    "This Relay task already has a turn running",
+    "This Relay task already has a turn starting",
   );
 
 const acquireRunLease = (id: string) =>
@@ -393,6 +437,7 @@ export interface ImportNativeTurnsInput {
   readonly harness: Harness;
   readonly sessionId: string;
   readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+  readonly hiddenTurnIds?: ReadonlyArray<string>;
   readonly model?: string;
 }
 
@@ -655,6 +700,7 @@ export class ThreadStore extends Context.Service<
             role: "user",
             content: input.prompt,
             harness: input.harness,
+            nativeSessionId: input.sessionId,
             createdAt: now,
           };
           const response: RelayMessage = {
@@ -663,6 +709,7 @@ export class ThreadStore extends Context.Service<
             role: "assistant",
             content: input.response,
             harness: input.harness,
+            nativeSessionId: input.sessionId,
             createdAt: now,
           };
           const binding: HarnessBinding = {
@@ -755,13 +802,58 @@ export class ThreadStore extends Context.Service<
       (thread: RelayThread, input: ImportNativeTurnsInput) =>
         Effect.tryPromise({
           try: async () => {
-            const existingMessages = await readMessages(thread.id);
-            const importedIds = new Set(
-              existingMessages.flatMap((message) =>
-                message.harness === input.harness && message.nativeId ? [message.nativeId] : [],
-              ),
+            const existingMessages = await readRawMessages(thread.id);
+            const visibility = await readVisibility(thread.id);
+            const links = new Map(
+              (visibility.links ?? []).map((link) => [link.messageId, link.key]),
             );
-            const fresh = input.turns.filter((turn) => !importedIds.has(turn.id));
+            const sessionPrefix = `${input.harness}:${input.sessionId}:`;
+            const importedIds = new Set([
+              ...existingMessages.flatMap((message) =>
+                message.harness === input.harness &&
+                message.nativeSessionId === input.sessionId &&
+                message.nativeId
+                  ? [message.nativeId]
+                  : [],
+              ),
+              ...[...links.values()].flatMap((key) =>
+                key.startsWith(sessionPrefix) ? [key.slice(sessionPrefix.length)] : [],
+              ),
+            ]);
+            const linkedMessageIds = new Set(links.keys());
+            const linkablePairs = existingMessages.flatMap((user, index) => {
+              const assistant = existingMessages[index + 1];
+              return user.role === "user" &&
+                assistant?.role === "assistant" &&
+                user.harness === input.harness &&
+                assistant.harness === input.harness &&
+                user.nativeSessionId === input.sessionId &&
+                assistant.nativeSessionId === input.sessionId &&
+                !user.nativeId &&
+                !assistant.nativeId &&
+                !linkedMessageIds.has(user.id) &&
+                !linkedMessageIds.has(assistant.id)
+                ? [{ user, assistant, used: false }]
+                : [];
+            });
+            const fresh: Array<NativeTranscriptTurn> = [];
+            for (const turn of input.turns) {
+              if (importedIds.has(turn.id)) continue;
+              const pair = linkablePairs.find(
+                (candidate) =>
+                  !candidate.used &&
+                  candidate.user.content === turn.prompt &&
+                  candidate.assistant.content === turn.response,
+              );
+              if (!pair) {
+                fresh.push(turn);
+                continue;
+              }
+              pair.used = true;
+              const key = visibilityKey(input.harness, input.sessionId, turn.id);
+              links.set(pair.user.id, key);
+              links.set(pair.assistant.id, key);
+            }
             const now = new Date().toISOString();
             let nextSeq = thread.lastSeq;
             const messages = fresh.flatMap((turn): ReadonlyArray<RelayMessage> => {
@@ -772,6 +864,7 @@ export class ThreadStore extends Context.Service<
                 content: turn.prompt,
                 harness: input.harness,
                 nativeId: turn.id,
+                nativeSessionId: input.sessionId,
                 createdAt: now,
               };
               const assistant: RelayMessage = {
@@ -781,6 +874,7 @@ export class ThreadStore extends Context.Service<
                 content: turn.response,
                 harness: input.harness,
                 nativeId: turn.id,
+                nativeSessionId: input.sessionId,
                 createdAt: now,
               };
               return [user, assistant];
@@ -806,6 +900,28 @@ export class ThreadStore extends Context.Service<
             const updateTitle =
               fresh.length > 0 &&
               (thread.title === "New Relay task" || thread.title === "Untitled task");
+            const hiddenBefore = new Set(visibility.hidden);
+            const hidden = new Set(visibility.hidden);
+            const hiddenIds = new Set(input.hiddenTurnIds ?? []);
+            const currentIds = new Set([...input.turns.map((turn) => turn.id), ...hiddenIds]);
+            for (const message of existingMessages) {
+              if (message.harness !== input.harness) continue;
+              const key =
+                message.nativeSessionId === input.sessionId && message.nativeId
+                  ? visibilityKey(input.harness, input.sessionId, message.nativeId)
+                  : links.get(message.id);
+              if (!key || !key.startsWith(sessionPrefix)) continue;
+              const nativeId = key.slice(sessionPrefix.length);
+              if (!currentIds.has(nativeId)) continue;
+              if (hiddenIds.has(nativeId)) hidden.add(key);
+              else hidden.delete(key);
+            }
+            const newlyHidden = [...hidden].some((key) => !hiddenBefore.has(key));
+            const bindings = { ...thread.bindings, [input.harness]: binding };
+            if (newlyHidden) {
+              const other = input.harness === "codex" ? "opencode" : "codex";
+              delete bindings[other];
+            }
             const updated: RelayThread = {
               ...thread,
               ...(updateTitle
@@ -817,7 +933,7 @@ export class ThreadStore extends Context.Service<
                   }
                 : {}),
               activeHarness: input.harness,
-              bindings: { ...thread.bindings, [input.harness]: binding },
+              bindings,
               preferredModels: {
                 ...thread.preferredModels,
                 ...(binding.model ? { [input.harness]: binding.model } : {}),
@@ -835,6 +951,20 @@ export class ThreadStore extends Context.Service<
                 { encoding: "utf8", mode: 0o600 },
               );
               await chmod(eventsPath(thread.id), 0o600);
+            }
+            if (
+              hidden.size !== hiddenBefore.size ||
+              [...hidden].some((key) => !hiddenBefore.has(key))
+            ) {
+              await atomicJsonWrite(visibilityPath(thread.id), {
+                hidden: [...hidden],
+                links: [...links].map(([messageId, key]) => ({ messageId, key })),
+              });
+            } else if (links.size !== (visibility.links?.length ?? 0)) {
+              await atomicJsonWrite(visibilityPath(thread.id), {
+                hidden: [...hidden],
+                links: [...links].map(([messageId, key]) => ({ messageId, key })),
+              });
             }
             await atomicJsonWrite(metadataPath(thread.id), updated);
             if (messages.length > 0) await rm(pendingPath(thread.id), { force: true });
@@ -924,7 +1054,10 @@ export class ThreadStore extends Context.Service<
     undoLastTurn: Effect.fn("ThreadStore.undoLastTurn")((thread: RelayThread, harness: Harness) =>
       Effect.tryPromise({
         try: async () => {
-          const messages = await readMessages(thread.id);
+          const [messages, rawMessages] = await Promise.all([
+            readMessages(thread.id),
+            readRawMessages(thread.id),
+          ]);
           const removed = messages.slice(-2);
           if (
             removed.length !== 2 ||
@@ -936,8 +1069,11 @@ export class ThreadStore extends Context.Service<
               message: `There is no latest ${harness} turn to undo safely`,
             });
           }
+          const removedIds = new Set(removed.map((message) => message.id));
           const remaining = messages.slice(0, -2);
-          const lastSeq = remaining.at(-1)?.seq ?? 0;
+          const remainingRaw = rawMessages.filter((message) => !removedIds.has(message.id));
+          const lastSeq = remainingRaw.at(-1)?.seq ?? 0;
+          const lastVisibleSeq = remaining.at(-1)?.seq ?? 0;
           const lastHarnessSeq =
             remaining.findLast(
               (message) => message.role === "assistant" && message.harness === harness,
@@ -952,7 +1088,8 @@ export class ThreadStore extends Context.Service<
             };
           }
           const other = harness === "codex" ? "opencode" : "codex";
-          if (bindings[other] && bindings[other]!.lastSyncedSeq > lastSeq) delete bindings[other];
+          if (bindings[other] && bindings[other]!.lastSyncedSeq > lastVisibleSeq)
+            delete bindings[other];
           const updated: RelayThread = {
             ...thread,
             bindings,
@@ -965,8 +1102,8 @@ export class ThreadStore extends Context.Service<
           });
           await atomicTextWrite(
             eventsPath(thread.id),
-            remaining.map((message) => JSON.stringify(message)).join("\n") +
-              (remaining.length ? "\n" : ""),
+            remainingRaw.map((message) => JSON.stringify(message)).join("\n") +
+              (remainingRaw.length ? "\n" : ""),
           );
           await atomicJsonWrite(metadataPath(thread.id), updated);
           return updated;
@@ -986,13 +1123,33 @@ export class ThreadStore extends Context.Service<
           if (!entry || entry.thread.activeHarness !== harness) {
             throw new NoCurrentThread({ message: "There is no turn to redo" });
           }
-          const messages = await readMessages(thread.id);
-          const restored = [...messages, ...entry.messages];
+          const messages = await readRawMessages(thread.id);
+          const restored = [...messages, ...entry.messages].sort(
+            (left, right) => left.seq - right.seq,
+          );
           await atomicTextWrite(
             eventsPath(thread.id),
             `${restored.map((message) => JSON.stringify(message)).join("\n")}\n`,
           );
           await atomicJsonWrite(metadataPath(thread.id), entry.thread);
+          const visibility = await readVisibility(thread.id);
+          const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
+          const restoredKeys = new Set(
+            entry.messages.flatMap((message) => {
+              const key =
+                message.nativeId && message.nativeSessionId
+                  ? visibilityKey(message.harness, message.nativeSessionId, message.nativeId)
+                  : links.get(message.id);
+              return key ? [key] : [];
+            }),
+          );
+          const hidden = visibility.hidden.filter((key) => !restoredKeys.has(key));
+          if (hidden.length !== visibility.hidden.length) {
+            await atomicJsonWrite(visibilityPath(thread.id), {
+              hidden,
+              ...(visibility.links ? { links: visibility.links } : {}),
+            });
+          }
           const entries = state.entries.slice(0, -1);
           if (entries.length) await atomicJsonWrite(undoPath(thread.id), { entries });
           else await rm(undoPath(thread.id), { force: true });

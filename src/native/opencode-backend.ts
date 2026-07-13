@@ -252,10 +252,18 @@ export class OpenCodeNativeBackend {
       throw new Error(`OpenCode session state failed with HTTP ${sessionResponse.status}`);
     const session = asObject(await sessionResponse.json());
     const revertedMessageId = asObject(session?.revert)?.messageID;
-    return parseOpenCodeNativeTurns(
-      await messagesResponse.json(),
+    const messages: unknown = await messagesResponse.json();
+    const turns = parseOpenCodeNativeTurns(
+      messages,
       typeof revertedMessageId === "string" ? revertedMessageId : undefined,
     );
+    const visible = new Set(turns.map((turn) => turn.id));
+    return {
+      turns,
+      hiddenTurnIds: parseOpenCodeNativeTurns(messages)
+        .map((turn) => turn.id)
+        .filter((id) => !visible.has(id)),
+    };
   }
 
   async isIdle(sessionId: string) {

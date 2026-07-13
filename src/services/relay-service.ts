@@ -89,6 +89,7 @@ export class RelayService extends Context.Service<
       readonly harness: Harness;
       readonly sessionId: string;
       readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+      readonly hiddenTurnIds?: ReadonlyArray<string>;
       readonly model?: string;
     }) => Effect.Effect<RelayThread, unknown>;
     readonly acquireNativeLease: (

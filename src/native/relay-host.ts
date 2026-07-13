@@ -1,4 +1,10 @@
-import type { Harness, NativeTranscriptTurn, RelayMessage, RelayThread } from "../domain.ts";
+import type {
+  Harness,
+  NativeTranscript,
+  NativeTranscriptTurn,
+  RelayMessage,
+  RelayThread,
+} from "../domain.ts";
 import { CodexNativeBackend } from "./codex-backend.ts";
 import type { NativeRelayController } from "./controller.ts";
 import { NativeSessionUnavailable } from "./errors.ts";
@@ -22,7 +28,7 @@ export interface NativeBackend {
     messages: ReadonlyArray<RelayMessage>,
     omittedMessages?: number,
   ) => Promise<void>;
-  readonly read: (sessionId: string) => Promise<ReadonlyArray<NativeTranscriptTurn>>;
+  readonly read: (sessionId: string) => Promise<NativeTranscript>;
   readonly isMaterialized?: (sessionId: string) => Promise<boolean>;
   readonly isIdle: (sessionId: string) => Promise<boolean>;
   readonly resolveSession: (fallbackSessionId?: string) => Promise<string | undefined>;
@@ -127,7 +133,8 @@ const synchronize = async (input: {
 }) => {
   const { controller, backend, harness, sessionId } = input;
   const model = input.thread.bindings[harness]?.model ?? input.thread.preferredModels?.[harness];
-  const turns = await backend.read(sessionId);
+  const transcript = await backend.read(sessionId);
+  const turns = transcript.turns;
 
   if (input.sessionChanged) {
     await controller.bind({
@@ -160,6 +167,7 @@ const synchronize = async (input: {
     harness,
     sessionId,
     turns,
+    hiddenTurnIds: transcript.hiddenTurnIds,
     ...(model ? { model } : {}),
   });
   return thread;
@@ -235,7 +243,8 @@ const runHarness = async (
     try {
       const resolvedSessionId = await backend.resolveSession(sessionId);
       if (resolvedSessionId) {
-        const turns = await backend.read(resolvedSessionId);
+        const transcript = await backend.read(resolvedSessionId);
+        const turns = transcript.turns;
         const materialized =
           turns.length > 0 || (await backend.isMaterialized?.(resolvedSessionId)) === true;
         if (boundSessionId || materialized) {

@@ -13,6 +13,7 @@ export const RelayMessage = Schema.Struct({
   content: Schema.String,
   harness: Harness,
   nativeId: Schema.optional(Schema.String),
+  nativeSessionId: Schema.optional(Schema.String),
   createdAt: Schema.String,
 });
 export type RelayMessage = typeof RelayMessage.Type;
@@ -111,6 +112,11 @@ export interface NativeTranscriptTurn {
   readonly id: string;
   readonly prompt: string;
   readonly response: string;
+}
+
+export interface NativeTranscript {
+  readonly turns: ReadonlyArray<NativeTranscriptTurn>;
+  readonly hiddenTurnIds: ReadonlyArray<string>;
 }
 
 export const isHarness = (value: string): value is Harness =>

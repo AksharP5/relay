@@ -54,4 +54,101 @@ describe("native transcript storage", () => {
       }).pipe(Effect.provide(ThreadStore.layer)),
     );
   });
+
+  it("hides and restores native OpenCode turns without renumbering history", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Native undo",
+          cwd: process.cwd(),
+          harness: "opencode",
+        });
+        const turns = [
+          { id: "native-1", prompt: "keep", response: "kept" },
+          { id: "native-2", prompt: "undo", response: "undone" },
+        ];
+        const imported = yield* store.importNativeTurns(created, {
+          harness: "opencode",
+          sessionId: "opencode-session",
+          turns,
+          hiddenTurnIds: [],
+        });
+        const handedOff = yield* store.bindNativeSession(imported, {
+          harness: "codex",
+          sessionId: "codex-session",
+          lastSyncedSeq: imported.lastSeq,
+        });
+
+        const undone = yield* store.importNativeTurns(handedOff, {
+          harness: "opencode",
+          sessionId: "opencode-session",
+          turns: [turns[0]!],
+          hiddenTurnIds: [turns[1]!.id],
+        });
+        expect(undone.lastSeq).toBe(4);
+        expect(undone.bindings.codex).toBeUndefined();
+        expect((yield* store.messages(created.id)).map((message) => message.content)).toEqual([
+          "keep",
+          "kept",
+        ]);
+        expect(
+          (yield* store.messagesSince(created.id, 0)).messages.map((message) => message.content),
+        ).toEqual(["keep", "kept"]);
+
+        const redone = yield* store.importNativeTurns(undone, {
+          harness: "opencode",
+          sessionId: "opencode-session",
+          turns,
+          hiddenTurnIds: [],
+        });
+        expect(redone.lastSeq).toBe(4);
+        expect((yield* store.messages(created.id)).map((message) => message.content)).toEqual([
+          "keep",
+          "kept",
+          "undo",
+          "undone",
+        ]);
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+  });
+
+  it("links a headless turn to its native id instead of importing it twice", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Headless then native",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        const committed = yield* store.commitTurn(created, {
+          harness: "codex",
+          prompt: "same prompt",
+          response: "same response",
+          sessionId: "codex-session",
+          bindingCreatedAt: created.createdAt,
+        });
+        const linked = yield* store.importNativeTurns(committed.thread, {
+          harness: "codex",
+          sessionId: "codex-session",
+          turns: [{ id: "native-turn", prompt: "same prompt", response: "same response" }],
+          hiddenTurnIds: [],
+        });
+        expect(linked.lastSeq).toBe(2);
+        expect((yield* store.messages(created.id)).map((message) => message.content)).toEqual([
+          "same prompt",
+          "same response",
+        ]);
+
+        yield* store.importNativeTurns(linked, {
+          harness: "codex",
+          sessionId: "codex-session",
+          turns: [],
+          hiddenTurnIds: ["native-turn"],
+        });
+        expect(yield* store.messages(created.id)).toEqual([]);
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+  });
 });

@@ -147,7 +147,7 @@ describe("native Relay host", () => {
       return {
         prepareSession: async () => ({ sessionId, handoffInjected: false }),
         inject: async (_id, delta) => void injected[harness].push(delta),
-        read: async () => transcripts[harness],
+        read: async () => ({ turns: transcripts[harness], hiddenTurnIds: [] }),
         isIdle: async () => {
           statusChecks += 1;
           return true;
@@ -201,7 +201,7 @@ describe("native Relay host", () => {
     const backend: NativeBackend = {
       prepareSession: async () => ({ handoffInjected: false }),
       inject: async () => {},
-      read: async () => turns,
+      read: async () => ({ turns, hiddenTurnIds: [] }),
       isIdle: async () => true,
       resolveSession: async () => "cold-codex-session",
       command: (sessionId) => {
@@ -233,7 +233,7 @@ describe("native Relay host", () => {
     const backend: NativeBackend = {
       prepareSession: async () => ({ handoffInjected: false }),
       inject: async () => {},
-      read: async () => [],
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
       isIdle: async () => true,
       resolveSession: async () => "empty-codex-thread",
       command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
@@ -254,7 +254,7 @@ describe("native Relay host", () => {
     const backend: NativeBackend = {
       prepareSession: async () => ({ handoffInjected: false }),
       inject: async () => {},
-      read: async () => [],
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
       isMaterialized: async () => true,
       isIdle: async () => true,
       resolveSession: async () => "interrupted-codex-thread",
@@ -287,7 +287,7 @@ describe("native Relay host", () => {
         return { sessionId: "codex-session", handoffInjected: false };
       },
       inject: async () => {},
-      read: async () => [],
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
       isIdle: async () => true,
       resolveSession: async (fallback) => fallback,
       command: (_sessionId, model) => {
@@ -333,7 +333,7 @@ describe("native Relay host", () => {
       },
       inject: async (_sessionId, delta) =>
         void injected.push(...delta.map((message) => message.content)),
-      read: async () => [],
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
       isMaterialized: async () => true,
       isIdle: async () => true,
       resolveSession: async (fallback) => fallback,
@@ -364,7 +364,7 @@ describe("native Relay host", () => {
         throw new Error("temporary transport failure");
       },
       inject: async () => {},
-      read: async () => [],
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
       isIdle: async () => true,
       resolveSession: async (fallback) => fallback,
       command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
@@ -418,18 +418,21 @@ describe("native Relay host", () => {
         handoffInjected: false,
       }),
       inject: async (_sessionId, delta) => void injected.push(...delta),
-      read: async () => [
-        {
-          id: "codex-original",
-          prompt: "codex prompt",
-          response: "codex answer",
-        },
-        {
-          id: "codex-out-of-band",
-          prompt: "out of band",
-          response: "out-of-band answer",
-        },
-      ],
+      read: async () => ({
+        turns: [
+          {
+            id: "codex-original",
+            prompt: "codex prompt",
+            response: "codex answer",
+          },
+          {
+            id: "codex-out-of-band",
+            prompt: "out of band",
+            response: "out-of-band answer",
+          },
+        ],
+        hiddenTurnIds: [],
+      }),
       isIdle: async () => true,
       resolveSession: async (fallback) => fallback,
       command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
