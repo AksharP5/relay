@@ -36,6 +36,7 @@
     "relay": "bun src/cli.ts",
     "build": "bun scripts/build.ts",
     "check": "bun run format:check && bun run typecheck && bun run test",
+    "compat:latest": "bun scripts/compat-latest.ts",
     "format": "oxfmt . --write",
     "format:check": "oxfmt . --check",
     "typecheck": "tsc --noEmit",

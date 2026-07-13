@@ -156,7 +156,7 @@ export class HarnessService extends Context.Service<
             const modelsOutput = yield* runner
               .run({
                 command,
-                args: harness === "codex" ? ["debug", "models"] : ["models"],
+                args: harness === "codex" ? ["debug", "models", "--bundled"] : ["models"],
                 cwd,
                 timeoutMs: 30_000,
                 captureLimitChars: 4_000_000,

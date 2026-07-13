@@ -189,19 +189,15 @@ const runHarness = async (
         thread,
         harness,
         sessionId,
-        sessionChanged:
-          !prepared.handoffInjected && (!binding || binding.sessionId !== sessionId),
+        sessionChanged: !prepared.handoffInjected && (!binding || binding.sessionId !== sessionId),
       });
     }
     const boundSessionId = thread.bindings[harness]?.sessionId;
 
-    const exit = await dependencies.runTui(
-      backend.command(sessionId, model),
-      async () => {
-          sessionId = await backend.resolveSession(sessionId);
-          return sessionId ? backend.isIdle(sessionId) : true;
-      },
-    );
+    const exit = await dependencies.runTui(backend.command(sessionId, model), async () => {
+      sessionId = await backend.resolveSession(sessionId);
+      return sessionId ? backend.isIdle(sessionId) : true;
+    });
 
     const resolvedSessionId = await backend.resolveSession(sessionId);
     if (resolvedSessionId) {

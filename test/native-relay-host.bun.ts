@@ -1,17 +1,9 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "bun:test";
 
-import type {
-  Harness,
-  NativeTranscriptTurn,
-  RelayMessage,
-  RelayThread,
-} from "../src/domain.ts";
+import type { Harness, NativeTranscriptTurn, RelayMessage, RelayThread } from "../src/domain.ts";
 import type { NativeRelayController } from "../src/native/controller.ts";
-import {
-  launchNativeRelay,
-  type NativeBackend,
-} from "../src/native/relay-host.ts";
+import { launchNativeRelay, type NativeBackend } from "../src/native/relay-host.ts";
 import { selectHarness } from "../src/native/selector.ts";
 
 const now = "2026-07-13T00:00:00.000Z";
@@ -37,7 +29,11 @@ const makeController = () => {
     },
     delta: async (_threadId, harness) => {
       const after = thread.bindings[harness]?.lastSyncedSeq ?? 0;
-      return { thread, messages: messages.filter((message) => message.seq > after), omittedMessages: 0 };
+      return {
+        thread,
+        messages: messages.filter((message) => message.seq > after),
+        omittedMessages: 0,
+      };
     },
     bind: async (input) => {
       const existing = thread.bindings[input.harness];
@@ -57,7 +53,9 @@ const makeController = () => {
       return thread;
     },
     importTurns: async (input) => {
-      const imported = new Set(messages.flatMap((message) => (message.nativeId ? [message.nativeId] : [])));
+      const imported = new Set(
+        messages.flatMap((message) => (message.nativeId ? [message.nativeId] : [])),
+      );
       for (const turn of input.turns) {
         if (imported.has(turn.id)) continue;
         for (const [role, content] of [

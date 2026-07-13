@@ -1,0 +1,49 @@
+name: Latest harness compatibility
+
+on:
+  schedule:
+    - cron: "17 13 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/compat-latest.yml"
+      - "scripts/compat-latest.ts"
+      - "src/harnesses/**"
+      - "src/native/**"
+
+permissions:
+  contents: read
+
+jobs:
+  latest:
+    name: Latest Codex and OpenCode (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      OPENCODE_DISABLE_AUTOUPDATE: "true"
+      OPENCODE_DISABLE_DEFAULT_PLUGINS: "true"
+      OPENCODE_DISABLE_LSP_DOWNLOAD: "true"
+      RELAY_COMPAT_ARTIFACTS: ${{ runner.temp }}/relay-compat
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - run: bun install --frozen-lockfile
+      - name: Install latest harnesses
+        run: npm install --global @openai/codex@latest opencode-ai@latest
+      - name: Record resolved versions
+        run: |
+          echo "## Latest harnesses" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Codex: $(codex --version)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- OpenCode: $(opencode --version)" >> "$GITHUB_STEP_SUMMARY"
+      - run: bun run compat:latest
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-compat-${{ matrix.os }}
+          path: ${{ runner.temp }}/relay-compat
