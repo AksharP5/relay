@@ -209,6 +209,43 @@ describe("native PTY host", () => {
     expect(await result).toEqual({ reason: "signal", signal: "SIGTERM" });
   });
 
+  it("keeps a just-submitted cold turn attached until backend status can materialize", async () => {
+    const input = new TestInput();
+    const output = new TestOutput();
+    const resize = new EventEmitter();
+    let clock = 100;
+    let statusChecks = 0;
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output, resizeSource: resize },
+      {
+        now: () => clock,
+        onSwitchRequest: () => {
+          statusChecks += 1;
+          return true;
+        },
+      },
+    );
+    running.push(result);
+
+    await Bun.sleep(50);
+    input.emit("data", Buffer.from("first prompt\r"));
+    input.emit("data", Buffer.from("\u001b[104;6u"));
+    await Bun.sleep(25);
+    expect(statusChecks).toBe(0);
+    expect(output.text()).toContain("INPUT:66697273742070726f6d70740d");
+    expect(output.chunks.some((chunk) => chunk.includes(0x07))).toBe(true);
+
+    clock = 1_100;
+    input.emit("data", Buffer.from("\u001b[104;6u"));
+    expect(await result).toEqual({ reason: "switch" });
+    expect(statusChecks).toBe(1);
+  });
+
   it("keeps the native frontend alive when an active turn vetoes switching", async () => {
     const input = new TestInput();
     const output = new TestOutput();

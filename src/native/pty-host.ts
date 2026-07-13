@@ -45,6 +45,9 @@ export interface NativePtyIo {
 
 export interface NativePtyOptions {
   readonly sequenceTimeoutMs?: number;
+  /** Prevent a just-submitted cold turn from being detached before backend status materializes. */
+  readonly submitGraceMs?: number;
+  readonly now?: () => number;
   /** Return false to leave the native TUI running (for example, during an active turn). */
   readonly onSwitchRequest?: () => boolean | Promise<boolean>;
 }
@@ -79,6 +82,8 @@ export const runNativeTui = async (
   let hostFailure: Error | undefined;
   let stopping: Promise<void> | undefined;
   let sequenceTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastSubmitAt: number | undefined;
+  const now = options.now ?? Date.now;
   const pendingSwitchInput: Array<Uint8Array> = [];
   let terminal: Bun.Terminal | undefined;
   let child: ReturnType<typeof Bun.spawn> | undefined;
@@ -145,12 +150,18 @@ export const runNativeTui = async (
     }
     const routed = router.route(bytes);
     writeInput(routed.forward);
+    if (routed.forward.some((byte) => byte === 0x0a || byte === 0x0d)) lastSubmitAt = now();
     if (!routed.switchRequested) {
       if (router.hasPendingSequence)
         sequenceTimer = setTimeout(
           flushSequence,
           router.pendingTimeoutMs(options.sequenceTimeoutMs ?? 500),
         );
+      return;
+    }
+    if (lastSubmitAt !== undefined && now() - lastSubmitAt < (options.submitGraceMs ?? 1_000)) {
+      writeInput(routed.afterSwitch);
+      writeOutput(Uint8Array.of(0x07));
       return;
     }
     pendingSwitchInput.push(routed.afterSwitch);
