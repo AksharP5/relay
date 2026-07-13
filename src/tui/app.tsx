@@ -93,8 +93,7 @@ export const RelayApp = (props: RelayAppProps) => {
   const selectedModel = createMemo(
     () =>
       selectedModels()[selectedHarness()] ??
-      activeCapabilities().models.find((model) => model.isDefault)?.id ??
-      activeCapabilities().models[0]?.id,
+      activeCapabilities().models.find((model) => model.isDefault)?.id,
   );
   const commandQuery = createMemo(() => {
     const parsed = parseSlashCommand(draft());

@@ -116,7 +116,6 @@ describe("Relay TUI", () => {
       {
         prompt: "Inspect the checkout failure",
         harness: "opencode",
-        model: "openai/gpt-5.6-sol",
       },
     ]);
     await renderer.waitForFrame((frame) => frame.includes("The failing branch is isolated."));

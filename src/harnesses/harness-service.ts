@@ -10,6 +10,7 @@ import type {
 import { HarnessError, HarnessUnavailable } from "../errors.ts";
 import { composePrompt } from "../handoff.ts";
 import { ProcessRunner } from "../services/process-runner.ts";
+import { runCodexCommand } from "./codex-app-server.ts";
 import { parseCodexOutput, parseOpenCodeEvent } from "./parsing.ts";
 
 export interface HarnessStatus {
@@ -32,6 +33,11 @@ const relayCommands: ReadonlyArray<HarnessCommand> = [
 ];
 
 const codexCommands: ReadonlyArray<HarnessCommand> = [
+  {
+    name: "compact",
+    description: "Compact the native Codex thread context",
+    source: "native",
+  },
   {
     name: "review",
     description: "Review the working tree with Codex",
@@ -57,6 +63,7 @@ const parseCodexModels = (stdout: string): ReadonlyArray<HarnessModel> => {
       description?: unknown;
       visibility?: unknown;
       priority?: unknown;
+      is_default?: unknown;
     }>;
   };
   return (value.models ?? [])
@@ -65,11 +72,11 @@ const parseCodexModels = (stdout: string): ReadonlyArray<HarnessModel> => {
         typeof model.slug === "string" && model.visibility !== "hide",
     )
     .sort((left, right) => Number(left.priority ?? 1_000) - Number(right.priority ?? 1_000))
-    .map((model, index) => ({
+    .map((model) => ({
       id: model.slug,
       name: typeof model.display_name === "string" ? model.display_name : model.slug,
       ...(typeof model.description === "string" ? { description: model.description } : {}),
-      ...(index === 0 ? { isDefault: true } : {}),
+      ...(model.is_default === true ? { isDefault: true } : {}),
     }));
 };
 
@@ -230,8 +237,28 @@ export class HarnessService extends Context.Service<
             commandPrefix && input.prompt.startsWith(commandPrefix)
               ? input.prompt.slice(commandPrefix.length).trimStart()
               : input.prompt;
-          const prompt = composePrompt(input.handoff, nativePrompt);
+          const prompt = input.command ? nativePrompt : composePrompt(input.handoff, nativePrompt);
           input.onProgress?.({ type: "activity", label: `Starting ${harness}` });
+
+          if (harness === "codex" && (input.command === "compact" || input.command === "review")) {
+            return yield* Effect.tryPromise({
+              try: () =>
+                runCodexCommand(command, {
+                  command: input.command as "compact" | "review",
+                  cwd: input.cwd,
+                  arguments: nativePrompt,
+                  ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+                  ...(input.model ? { model: input.model } : {}),
+                  ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+                }),
+              catch: (cause) =>
+                new HarnessError({
+                  harness,
+                  message: cause instanceof Error ? cause.message : String(cause),
+                  stderr: cause instanceof Error ? cause.stack : String(cause),
+                }),
+            });
+          }
           let parsedSessionId = input.sessionId;
           let parsedText = "";
           let lastPublishedChars = 0;
