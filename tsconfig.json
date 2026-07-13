@@ -4,6 +4,8 @@
     "module": "Preserve",
     "moduleResolution": "Bundler",
     "moduleDetection": "force",
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
     "allowImportingTsExtensions": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -12,5 +14,5 @@
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["src", "test"]
+  "include": ["scripts", "src", "test"]
 }
