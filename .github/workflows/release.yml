@@ -25,6 +25,8 @@ jobs:
           bun-version: 1.3.10
       - run: bun install --frozen-lockfile
       - run: bun run check
+      - run: bun run build
+      - run: test "$(./dist/relay --version)" = "$(jq -r .version package.json)"
 
   compatibility:
     uses: ./.github/workflows/compat-latest.yml
