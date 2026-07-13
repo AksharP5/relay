@@ -397,11 +397,16 @@ const runHarness = async (
             sessionId = await backend.resolveSession(sessionId, true);
             const sessionBecameCold =
               launchSessionId === undefined || sessionId !== launchSessionId;
-            if (recentSubmit && sessionBecameCold) {
-              if (!sessionId) return false;
-              if (backend.isMaterialized && !(await backend.isMaterialized(sessionId)))
-                return false;
-            }
+            if (recentSubmit && sessionBecameCold && !sessionId && harness === "codex")
+              return false;
+            if (
+              recentSubmit &&
+              sessionBecameCold &&
+              sessionId &&
+              backend.isMaterialized &&
+              !(await backend.isMaterialized(sessionId))
+            )
+              return false;
             if (!(await backend.isIdle(sessionId))) return false;
           }
         } catch {

@@ -493,6 +493,43 @@ describe("native Relay host", () => {
     expect(protectionModes).toEqual([true]);
   });
 
+  it("allows an unresolved native selection only when the harness is globally idle", async () => {
+    const { controller } = makeController();
+    await controller.switchHarness("relay-thread", "opencode");
+    let globallyIdle = false;
+    const checkedSessions: Array<string | undefined> = [];
+    const backend: NativeBackend = {
+      prepareSession: async () => ({ handoffInjected: false }),
+      inject: async () => {},
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      isMaterialized: async () => true,
+      isIdle: async (sessionId) => {
+        checkedSessions.push(sessionId);
+        return globallyIdle;
+      },
+      resolveSession: async () => undefined,
+      command: () => ({ executable: "opencode", args: [], cwd: process.cwd() }),
+      close: async () => {},
+    };
+
+    await launchNativeRelay(controller, {
+      startBackend: async () => backend,
+      wait: async () => {},
+      now: (() => {
+        let clock = 0;
+        return () => (clock += 1_001);
+      })(),
+      runTui: async (_command, onSwitchRequest) => {
+        expect(await onSwitchRequest(true)).toBe(false);
+        globallyIdle = true;
+        expect(await onSwitchRequest(true)).toBe(true);
+        return { reason: "exit", exitCode: 0 };
+      },
+    });
+
+    expect(checkedSessions).toEqual(Array(4).fill(undefined));
+  });
+
   it("protects a warm TUI after native /new creates an unmaterialized session", async () => {
     const { controller } = makeController();
     await controller.bind({
