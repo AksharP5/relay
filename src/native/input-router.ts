@@ -1,4 +1,5 @@
 const legacyF6 = Buffer.from("\u001b[17~");
+const legacyCtrlQ = 0x11;
 const bracketedPasteStart = Buffer.from("\u001b[200~");
 const bracketedPasteEnd = Buffer.from("\u001b[201~");
 
@@ -37,15 +38,15 @@ const enhancedToggleLengthAt = (chunk: Uint8Array, offset: number) => {
     const [modifierText = "1", eventText = "1"] = (fields[1] ?? "1").split(":");
     const modifier = Number(modifierText);
     const event = Number(eventText);
-    const ctrlShiftH = (key === 72 || key === 104) && modifier === 6;
+    const ctrlQ = (key === 81 || key === 113) && modifier === 5;
     const f6 = key === 57369 && modifier === 1;
-    return event === 1 && (ctrlShiftH || f6) ? final - offset + 1 : undefined;
+    return event === 1 && (ctrlQ || f6) ? final - offset + 1 : undefined;
   }
 
   if (terminator === "~" && fields[0] === "27") {
     const modifier = Number(fields[1]);
     const key = Number(fields[2]);
-    if (modifier === 6 && (key === 72 || key === 104)) return final - offset + 1;
+    if (modifier === 5 && (key === 81 || key === 113)) return final - offset + 1;
   }
   return undefined;
 };
@@ -86,9 +87,9 @@ export interface RoutedInput {
 }
 
 /**
- * Removes only Relay's F6 / enhanced Ctrl+Shift+H toggle without interpreting any other
- * terminal input. Legacy and CSI-u encodings are recognized. Bracketed paste
- * contents are always passed through literally.
+ * Removes only Relay's Ctrl+Q / F6 toggle without interpreting any other terminal input.
+ * Legacy control-byte, function-key, and enhanced-keyboard encodings are recognized.
+ * Bracketed paste contents are always passed through literally.
  */
 export class NativeInputRouter {
   readonly #recent: Array<number> = [];
@@ -130,9 +131,12 @@ export class NativeInputRouter {
 
       if (enhancedSubmitAt(input, index)) submitObserved = true;
       const enhancedToggleLength = enhancedToggleLengthAt(input, index);
-      const toggleLength = matchesAt(input, index, legacyF6)
-        ? legacyF6.length
-        : enhancedToggleLength;
+      const toggleLength =
+        byte === legacyCtrlQ
+          ? 1
+          : matchesAt(input, index, legacyF6)
+            ? legacyF6.length
+            : enhancedToggleLength;
       if (toggleLength) {
         return {
           forward: Uint8Array.from(forward),

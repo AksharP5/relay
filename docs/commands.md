@@ -12,7 +12,7 @@ Relay selects the most recent task for the current directory or creates one, the
 
 Inside Codex, Codex owns its composer and slash commands. Inside OpenCode, OpenCode owns them. Relay does not translate `/resume` into `/sessions`, replace `/undo`, or focus a second command dialog. Type commands exactly as you would when launching that CLI directly.
 
-Press `F6` to switch directly to the other harness (`Fn+F6` when macOS treats the function row as media keys). An enhanced `Ctrl+Shift+H` report is also accepted, but most terminals need an explicit mapping because the unconfigured chord is either indistinguishable from Backspace or reserved by the terminal. There is no prefix chord or Relay-owned selector. The [README terminal setup](../README.md#terminal-shortcuts) includes a WezTerm mapping.
+Press `Ctrl+Q` to switch directly to the other harness. `F6` remains the fallback (`Fn+F6` when macOS treats the function row as media keys). Zellij reserves `Ctrl+Q` in its default keymap, so use the fallback there or change Zellij's binding. There is no prefix chord or Relay-owned selector. See the [README terminal notes](../README.md#terminal-shortcuts).
 
 `/harness` is intentionally not intercepted. It is ordinary native composer input, just like every other slash command. Relay cannot distinguish the main composer from native dialogs, Vim state, search fields, history edits, or an external editor by reading raw PTY bytes. Adding a fake text parser would make the native interfaces less reliable.
 

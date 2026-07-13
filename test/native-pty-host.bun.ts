@@ -83,16 +83,17 @@ describe("native input routing", () => {
     expect(routed.switchRequested).toBe(false);
   });
 
-  it("recognizes direct toggle keys without stealing legacy Backspace", () => {
+  it("recognizes direct toggle keys without stealing native control keys", () => {
     for (const sequence of [
-      "\u001b[104;6u",
-      "\u001b[72;6:1u",
-      "\u001b[104:72;6u",
-      "\u001b[27;6;72~",
-      "\u001b[17~",
-      "\u001b[57369;1:1u",
+      Buffer.from([0x11]),
+      Buffer.from("\u001b[113;5u"),
+      Buffer.from("\u001b[81;5:1u"),
+      Buffer.from("\u001b[113:81;5u"),
+      Buffer.from("\u001b[27;5;81~"),
+      Buffer.from("\u001b[17~"),
+      Buffer.from("\u001b[57369;1:1u"),
     ]) {
-      const routed = new NativeInputRouter().route(Buffer.from(sequence));
+      const routed = new NativeInputRouter().route(sequence);
       expect(routed.switchRequested).toBe(true);
       expect(routed.forward).toHaveLength(0);
     }
@@ -101,7 +102,12 @@ describe("native input routing", () => {
     expect(Buffer.from(backspace.forward)).toEqual(Buffer.from([0x08]));
     expect(backspace.switchRequested).toBe(false);
 
-    for (const event of ["\u001b[104;6:2u", "\u001b[104;6:3u"]) {
+    const retiredCtrlShiftH = "\u001b[104;6u";
+    const retired = new NativeInputRouter().route(Buffer.from(retiredCtrlShiftH));
+    expect(Buffer.from(retired.forward).toString()).toBe(retiredCtrlShiftH);
+    expect(retired.switchRequested).toBe(false);
+
+    for (const event of ["\u001b[113;5:2u", "\u001b[113;5:3u"]) {
       const routed = new NativeInputRouter().route(Buffer.from(event));
       expect(Buffer.from(routed.forward).toString()).toBe(event);
       expect(routed.switchRequested).toBe(false);
@@ -111,10 +117,10 @@ describe("native input routing", () => {
   it("recognizes fragmented direct toggles and forwards fragmented native CSI input", () => {
     for (const [first, second] of [
       ["\u001b", "[17~"],
-      ["\u001b", "[104;6u"],
+      ["\u001b", "[113;5u"],
       ["\u001b", "[57369;1:1u"],
       ["\u001b[17", "~"],
-      ["\u001b[104;", "6u"],
+      ["\u001b[113;", "5u"],
       ["\u001b[57369;1:", "1u"],
     ] as const) {
       const router = new NativeInputRouter();
@@ -136,7 +142,7 @@ describe("native input routing", () => {
     expect(router.hasPendingSequence).toBe(true);
     expect(Buffer.from(router.flushPendingSequence())).toEqual(Buffer.from("\u001b"));
 
-    const toggle = router.route(Buffer.from("\u001b[104;6u/resume"));
+    const toggle = router.route(Buffer.concat([Buffer.from([0x11]), Buffer.from("/resume")]));
     expect(toggle.switchRequested).toBe(true);
     expect(Buffer.from(toggle.afterSwitch).toString()).toBe("/resume");
   });
@@ -144,7 +150,11 @@ describe("native input routing", () => {
   it("does not treat a pasted direct shortcut as a switch", () => {
     const router = new NativeInputRouter();
     const pastedToggle = new NativeInputRouter().route(
-      Buffer.from("\u001b[200~\u001b[104;6u\u001b[17~\u001b[201~"),
+      Buffer.concat([
+        Buffer.from("\u001b[200~"),
+        Buffer.from([0x11]),
+        Buffer.from("\u001b[113;5u\u001b[17~\u001b[201~"),
+      ]),
     );
     expect(pastedToggle.switchRequested).toBe(false);
   });
@@ -173,7 +183,9 @@ describe("native input routing", () => {
       expect(new NativeInputRouter().route(Buffer.from(input)).submitObserved).toBe(false);
     }
 
-    const sameChunk = new NativeInputRouter().route(Buffer.from("prompt\r\u001b[104;6u"));
+    const sameChunk = new NativeInputRouter().route(
+      Buffer.concat([Buffer.from("prompt\r"), Buffer.from([0x11])]),
+    );
     expect(sameChunk.submitObserved).toBe(true);
     expect(sameChunk.switchRequested).toBe(true);
 
@@ -219,7 +231,7 @@ describe("native PTY host", () => {
     expect(output.text()).toContain("\u001b[2J\u001b[HFAKE_NATIVE_READY:");
     expect(output.text()).toContain(`INPUT:${Buffer.from("/resume").toString("hex")}`);
 
-    input.emit("data", Buffer.from("\u001b[104;6u"));
+    input.emit("data", Buffer.from([0x11]));
     expect(await result).toEqual({ reason: "switch" });
     expect(output.text()).toContain(":TRAILING_OUTPUT");
     expect(input.rawModes).toEqual([true, false]);
@@ -249,7 +261,7 @@ describe("native PTY host", () => {
     );
     running.push(first);
     await Bun.sleep(50);
-    input.emit("data", Buffer.from("\u001b[104;6uafter-switch"));
+    input.emit("data", Buffer.concat([Buffer.from([0x11]), Buffer.from("after-switch")]));
     expect(await first).toEqual({ reason: "switch" });
     expect(input.isRaw).toBe(true);
     expect(input.paused).toBe(false);
@@ -442,14 +454,14 @@ describe("native PTY host", () => {
 
     await Bun.sleep(50);
     input.emit("data", Buffer.from("first prompt\r"));
-    input.emit("data", Buffer.from("\u001b[104;6u"));
+    input.emit("data", Buffer.from([0x11]));
     await Bun.sleep(25);
     expect(statusChecks).toBe(0);
     expect(output.text()).toContain("INPUT:66697273742070726f6d70740d");
     expect(output.chunks.some((chunk) => chunk.includes(0x07))).toBe(true);
 
     clock = 1_100;
-    input.emit("data", Buffer.from("\u001b[104;6u"));
+    input.emit("data", Buffer.from([0x11]));
     expect(await result).toEqual({ reason: "switch" });
     expect(statusChecks).toBe(1);
   });
@@ -482,10 +494,10 @@ describe("native PTY host", () => {
     await Bun.sleep(50);
     input.emit("data", Buffer.from("first prompt\r"));
     clock = 1_100;
-    input.emit("data", Buffer.from("\u001b[104;6u"));
+    input.emit("data", Buffer.from([0x11]));
     await Bun.sleep(25);
     clock = 10_100;
-    input.emit("data", Buffer.from("\u001b[104;6u"));
+    input.emit("data", Buffer.from([0x11]));
 
     expect(await result).toEqual({ reason: "switch" });
     expect(recentSubmits).toEqual([true, false]);
@@ -514,7 +526,7 @@ describe("native PTY host", () => {
 
     await Bun.sleep(50);
     input.emit("data", Buffer.from("warm prompt\r"));
-    input.emit("data", Buffer.from("\u001b[104;6u"));
+    input.emit("data", Buffer.from([0x11]));
 
     expect(await result).toEqual({ reason: "switch" });
     expect(recentSubmits).toEqual([false]);
@@ -537,12 +549,12 @@ describe("native PTY host", () => {
     running.push(result);
 
     await Bun.sleep(50);
-    input.emit("data", Buffer.from("\u001b[104;6u/resume"));
+    input.emit("data", Buffer.concat([Buffer.from([0x11]), Buffer.from("/resume")]));
     await Bun.sleep(25);
     expect(output.text()).toContain(`INPUT:${Buffer.from("/resume").toString("hex")}`);
 
     idle = true;
-    input.emit("data", Buffer.from("\u001b[104;6u"));
+    input.emit("data", Buffer.from([0x11]));
     expect(await result).toEqual({ reason: "switch" });
   });
 
@@ -568,7 +580,7 @@ describe("native PTY host", () => {
     running.push(result);
 
     await Bun.sleep(50);
-    input.emit("data", Buffer.from("\u001b[104;6uabc"));
+    input.emit("data", Buffer.concat([Buffer.from([0x11]), Buffer.from("abc")]));
     input.emit("data", Buffer.from("def"));
     await Bun.sleep(20);
     expect(output.text()).not.toContain(`INPUT:${Buffer.from("def").toString("hex")}`);
@@ -610,7 +622,7 @@ describe("native PTY host", () => {
     running.push(result);
 
     await Bun.sleep(50);
-    input.emit("data", Buffer.from("\u001b[104;6u\u001b[200~"));
+    input.emit("data", Buffer.concat([Buffer.from([0x11]), Buffer.from("\u001b[200~")]));
     input.emit("data", Buffer.alloc(1_000_000, "x"));
     resolveIdle?.(false);
     await Bun.sleep(30);
