@@ -104,7 +104,7 @@ jobs:
 
   build_native:
     needs: release_please
-    if: ${{ needs.release_please.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
+    if: ${{ !cancelled() && needs.release_please.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -178,7 +178,7 @@ jobs:
 
   build_launcher:
     needs: release_please
-    if: ${{ needs.release_please.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
+    if: ${{ !cancelled() && needs.release_please.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -215,7 +215,7 @@ jobs:
 
   verify_release:
     needs: [release_please, build_native, build_launcher]
-    if: ${{ needs.release_please.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
+    if: ${{ !cancelled() && needs.release_please.result == 'success' && needs.build_native.result == 'success' && needs.build_launcher.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -254,7 +254,7 @@ jobs:
 
   publish:
     needs: [release_please, verify_release]
-    if: ${{ needs.release_please.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
+    if: ${{ !cancelled() && needs.release_please.result == 'success' && needs.verify_release.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: npm
@@ -310,7 +310,7 @@ jobs:
 
   finalize_release:
     needs: [release_please, publish]
-    if: ${{ needs.release_please.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
+    if: ${{ !cancelled() && needs.release_please.result == 'success' && needs.publish.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
