@@ -237,24 +237,18 @@ const resolve = (
     override && allowedImplementations.includes(override) ? override : spec.implementation;
   const required = requiredHarness(implementation);
   const available = required === undefined || required === harness;
-  const compatibilityPending = spec.action === "history.undo" || spec.action === "history.redo";
   return {
     ...spec,
     defaultImplementation: spec.implementation,
     allowedImplementations,
     implementation,
     source: implementation === "relay" ? "relay" : "native",
-    available: available && !compatibilityPending,
-    ...(compatibilityPending
+    available,
+    ...(!available
       ? {
-          disabledReason:
-            "Relay is still validating synchronized conversation and file restoration for this command.",
+          disabledReason: `${spec.name} uses ${required === "codex" ? "Codex" : "OpenCode"} native behavior. Switch the underlying harness to use it.`,
         }
-      : !available
-        ? {
-            disabledReason: `${spec.name} uses ${required === "codex" ? "Codex" : "OpenCode"} native behavior. Switch the underlying harness to use it.`,
-          }
-        : {}),
+      : {}),
   };
 };
 

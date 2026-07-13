@@ -72,7 +72,7 @@ export class RelayService extends Context.Service<
       implementation?: CommandImplementation,
     ) => Effect.Effect<RelayPreferences, unknown>;
     readonly control: (input: {
-      readonly action: "compact" | "share" | "unshare";
+      readonly action: "compact" | "share" | "unshare" | "undo" | "redo";
       readonly harness?: Harness;
       readonly threadId?: string;
     }) => Effect.Effect<{ readonly thread: RelayThread; readonly message: string }, unknown>;
@@ -217,7 +217,7 @@ export class RelayService extends Context.Service<
 
       const control = Effect.fn("RelayService.control")(
         (input: {
-          readonly action: "compact" | "share" | "unshare";
+          readonly action: "compact" | "share" | "unshare" | "undo" | "redo";
           readonly harness?: Harness;
           readonly threadId?: string;
         }) =>
@@ -225,20 +225,30 @@ export class RelayService extends Context.Service<
             const thread = input.threadId
               ? yield* store.get(input.threadId)
               : yield* store.current();
-            const harness = input.harness ?? thread.activeHarness;
-            const binding = thread.bindings[harness];
-            if (!binding) {
-              return yield* new CliError({
-                message: `Run a ${harness} turn before using /${input.action}.`,
+            const lock = yield* store.acquireLock(thread.id);
+            return yield* Effect.gen(function* () {
+              const current = yield* store.get(thread.id);
+              const harness = input.harness ?? current.activeHarness;
+              const binding = current.bindings[harness];
+              if (!binding) {
+                return yield* new CliError({
+                  message: `Run a ${harness} turn before using /${input.action}.`,
+                });
+              }
+              const result = yield* harnesses.control(harness, {
+                cwd: current.cwd,
+                sessionId: binding.sessionId,
+                action: input.action,
+                ...(binding.model ? { model: binding.model } : {}),
               });
-            }
-            const result = yield* harnesses.control(harness, {
-              cwd: thread.cwd,
-              sessionId: binding.sessionId,
-              action: input.action,
-              ...(binding.model ? { model: binding.model } : {}),
-            });
-            return { thread, message: result.message };
+              const updated =
+                input.action === "undo"
+                  ? yield* store.undoLastTurn(current, harness)
+                  : input.action === "redo"
+                    ? yield* store.redoLastTurn(current, harness)
+                    : current;
+              return { thread: updated, message: result.message };
+            }).pipe(Effect.ensuring(Effect.promise(lock.release)));
           }),
       );
 

@@ -42,8 +42,20 @@ describe("OpenCode command discovery", () => {
       sessionId: "ses_test",
       action: "unshare",
     });
+    const undo = await runOpenCodeControl(executable, {
+      cwd: process.cwd(),
+      sessionId: "ses_test",
+      action: "undo",
+    });
+    const redo = await runOpenCodeControl(executable, {
+      cwd: process.cwd(),
+      sessionId: "ses_test",
+      action: "redo",
+    });
     expect(compact).toBe("OpenCode compacted its native context.");
     expect(share).toBe("OpenCode shared this session: https://opncd.ai/s/test");
     expect(unshare).toBe("OpenCode stopped sharing this session.");
+    expect(undo).toBe("OpenCode undid the previous turn and file changes.");
+    expect(redo).toBe("OpenCode restored the previously undone turn.");
   });
 });

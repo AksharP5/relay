@@ -104,7 +104,7 @@ export const runOpenCodeControl = async (
   input: {
     readonly cwd: string;
     readonly sessionId: string;
-    readonly action: "compact" | "share" | "unshare";
+    readonly action: "compact" | "share" | "unshare" | "undo" | "redo";
     readonly model?: string;
   },
 ) => {
@@ -145,13 +145,6 @@ export const runOpenCodeControl = async (
         throw new Error("Timed out starting OpenCode");
       }),
     ]);
-    const endpoint = new URL(
-      `/session/${encodeURIComponent(input.sessionId)}/${
-        input.action === "compact" ? "summarize" : "share"
-      }`,
-      baseUrl,
-    );
-    endpoint.searchParams.set("directory", input.cwd);
     const headers = {
       authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
       "content-type": "application/json",
@@ -182,6 +175,47 @@ export const runOpenCodeControl = async (
       if (!providerID || !modelID) throw new Error("Choose an OpenCode model before compacting");
       body = JSON.stringify({ providerID, modelID });
     }
+    let path = input.action === "compact" ? "summarize" : "share";
+    if (input.action === "undo" || input.action === "redo") {
+      const sessionUrl = new URL(`/session/${encodeURIComponent(input.sessionId)}`, baseUrl);
+      sessionUrl.searchParams.set("directory", input.cwd);
+      const messagesUrl = new URL(
+        `/session/${encodeURIComponent(input.sessionId)}/message`,
+        baseUrl,
+      );
+      messagesUrl.searchParams.set("directory", input.cwd);
+      const [sessionResponse, messagesResponse] = await Promise.all([
+        fetch(sessionUrl, { headers }),
+        fetch(messagesUrl, { headers }),
+      ]);
+      if (!sessionResponse.ok || !messagesResponse.ok)
+        throw new Error("Could not read the OpenCode undo state");
+      const session = (await sessionResponse.json()) as { revert?: { messageID?: unknown } };
+      const messages = (await messagesResponse.json()) as Array<{
+        info?: { id?: unknown; role?: unknown };
+      }>;
+      const users = messages
+        .map((item) => item.info)
+        .filter(
+          (info): info is { id: string; role?: unknown } =>
+            typeof info?.id === "string" && info.role === "user",
+        );
+      const current =
+        typeof session.revert?.messageID === "string" ? session.revert.messageID : undefined;
+      if (input.action === "undo") {
+        const target = users.findLast((message) => !current || message.id < current);
+        if (!target) throw new Error("There is no OpenCode turn to undo");
+        path = "revert";
+        body = JSON.stringify({ messageID: target.id });
+      } else {
+        if (!current) throw new Error("There is no OpenCode turn to redo");
+        const target = users.find((message) => message.id > current);
+        path = target ? "revert" : "unrevert";
+        if (target) body = JSON.stringify({ messageID: target.id });
+      }
+    }
+    const endpoint = new URL(`/session/${encodeURIComponent(input.sessionId)}/${path}`, baseUrl);
+    endpoint.searchParams.set("directory", input.cwd);
     const response = await fetch(endpoint, {
       method: input.action === "unshare" ? "DELETE" : "POST",
       headers,
@@ -196,6 +230,8 @@ export const runOpenCodeControl = async (
         ? `OpenCode shared this session: ${session.share.url}`
         : "OpenCode shared this session.";
     }
+    if (input.action === "undo") return "OpenCode undid the previous turn and file changes.";
+    if (input.action === "redo") return "OpenCode restored the previously undone turn.";
     return input.action === "compact"
       ? "OpenCode compacted its native context."
       : "OpenCode stopped sharing this session.";

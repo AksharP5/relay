@@ -100,7 +100,7 @@ export interface HarnessTurnResult {
 export interface HarnessControlInput {
   readonly cwd: string;
   readonly sessionId: string;
-  readonly action: "compact" | "share" | "unshare";
+  readonly action: "compact" | "share" | "unshare" | "undo" | "redo";
   readonly model?: string;
 }
 

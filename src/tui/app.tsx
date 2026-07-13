@@ -304,13 +304,19 @@ export const RelayApp = (props: RelayAppProps) => {
           ? "share"
           : command.action === "session.unshare"
             ? "unshare"
-            : undefined;
+            : command.action === "history.undo"
+              ? "undo"
+              : command.action === "history.redo"
+                ? "redo"
+                : undefined;
     if (!action) return false;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      setNotice(await props.controller.control(action, selectedHarness()));
+      const result = await props.controller.control(action, selectedHarness());
+      setSnapshot((current) => ({ ...current, thread: result.thread, messages: result.messages }));
+      setNotice(result.message);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -350,7 +356,9 @@ export const RelayApp = (props: RelayAppProps) => {
     if (
       command.action === "context.compact" ||
       command.action === "session.share" ||
-      command.action === "session.unshare"
+      command.action === "session.unshare" ||
+      command.action === "history.undo" ||
+      command.action === "history.redo"
     ) {
       composer?.clear();
       setDraft("");
@@ -388,7 +396,9 @@ export const RelayApp = (props: RelayAppProps) => {
       resolvedCommand &&
       (resolvedCommand.action === "context.compact" ||
         resolvedCommand.action === "session.share" ||
-        resolvedCommand.action === "session.unshare")
+        resolvedCommand.action === "session.unshare" ||
+        resolvedCommand.action === "history.undo" ||
+        resolvedCommand.action === "history.redo")
     ) {
       composer?.clear();
       setDraft("");

@@ -72,7 +72,11 @@ const preferenceControls = {
     preferences: initial.preferences,
   }),
   newTask: async (harness: Harness) => makeThread(harness),
-  control: async () => "Control complete",
+  control: async () => ({
+    message: "Control complete",
+    thread: makeThread("codex"),
+    messages: [] as ReadonlyArray<RelayMessage>,
+  }),
 };
 
 afterEach(() => {

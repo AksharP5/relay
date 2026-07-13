@@ -28,6 +28,7 @@ const metadataPath = (id: string) => `${threadDir(id)}/thread.json`;
 const eventsPath = (id: string) => `${threadDir(id)}/events.jsonl`;
 const indexPath = () => `${dataRoot()}/index.json`;
 const pendingPath = (id: string) => `${threadDir(id)}/pending-turn.json`;
+const undoPath = (id: string) => `${threadDir(id)}/undo-stack.json`;
 const lockPath = (id: string) => `${dataRoot()}/locks/${id}`;
 const maxEventLineChars = 4_000_000;
 
@@ -168,6 +169,40 @@ const PendingTurn = Schema.Struct({
   thread: RelayThread,
 });
 type PendingTurn = typeof PendingTurn.Type;
+
+interface UndoEntry {
+  readonly messages: ReadonlyArray<RelayMessage>;
+  readonly thread: RelayThread;
+}
+
+interface UndoState {
+  readonly entries: ReadonlyArray<UndoEntry>;
+}
+
+const readUndoState = async (id: string): Promise<UndoState> => {
+  const file = Bun.file(undoPath(id));
+  if (!(await file.exists())) return { entries: [] };
+  const value = (await file.json()) as { entries?: unknown };
+  if (!Array.isArray(value.entries)) return { entries: [] };
+  const entries = value.entries.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const candidate = entry as { messages?: unknown; thread?: unknown };
+    try {
+      if (!Array.isArray(candidate.messages)) return [];
+      return [
+        {
+          messages: candidate.messages.map((message) =>
+            Schema.decodeUnknownSync(RelayMessage)(message),
+          ),
+          thread: Schema.decodeUnknownSync(RelayThread)(candidate.thread),
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
+  return { entries };
+};
 
 async function liveLockExists(id: string) {
   const path = lockPath(id);
@@ -336,6 +371,14 @@ export class ThreadStore extends Context.Service<
       thread: RelayThread,
       harness: Harness,
     ) => Effect.Effect<RelayThread, StoreError>;
+    readonly undoLastTurn: (
+      thread: RelayThread,
+      harness: Harness,
+    ) => Effect.Effect<RelayThread, StoreError | NoCurrentThread>;
+    readonly redoLastTurn: (
+      thread: RelayThread,
+      harness: Harness,
+    ) => Effect.Effect<RelayThread, StoreError | NoCurrentThread>;
     readonly root: string;
   }
 >()("@relay/ThreadStore") {
@@ -526,6 +569,7 @@ export class ThreadStore extends Context.Service<
           await chmod(eventsPath(thread.id), 0o600);
           await atomicJsonWrite(metadataPath(thread.id), updated);
           await rm(pendingPath(thread.id), { force: true });
+          await rm(undoPath(thread.id), { force: true });
           return { thread: updated, response };
         },
         catch: (cause) =>
@@ -573,6 +617,86 @@ export class ThreadStore extends Context.Service<
         },
         catch: (cause) =>
           new StoreError({ operation: "set harness", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    undoLastTurn: Effect.fn("ThreadStore.undoLastTurn")((thread: RelayThread, harness: Harness) =>
+      Effect.tryPromise({
+        try: async () => {
+          const messages = await readMessages(thread.id);
+          const removed = messages.slice(-2);
+          if (
+            removed.length !== 2 ||
+            removed[0]?.role !== "user" ||
+            removed[1]?.role !== "assistant" ||
+            removed[1].harness !== harness
+          ) {
+            throw new NoCurrentThread({
+              message: `There is no latest ${harness} turn to undo safely`,
+            });
+          }
+          const remaining = messages.slice(0, -2);
+          const lastSeq = remaining.at(-1)?.seq ?? 0;
+          const binding = thread.bindings[harness];
+          const bindings = { ...thread.bindings };
+          if (binding) {
+            bindings[harness] = {
+              ...binding,
+              lastSyncedSeq: Math.min(binding.lastSyncedSeq, lastSeq),
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          const other = harness === "codex" ? "opencode" : "codex";
+          if (bindings[other] && bindings[other]!.lastSyncedSeq > lastSeq) delete bindings[other];
+          const updated: RelayThread = {
+            ...thread,
+            bindings,
+            lastSeq,
+            updatedAt: new Date().toISOString(),
+          };
+          const state = await readUndoState(thread.id);
+          await atomicJsonWrite(undoPath(thread.id), {
+            entries: [...state.entries, { messages: removed, thread }],
+          });
+          await atomicTextWrite(
+            eventsPath(thread.id),
+            remaining.map((message) => JSON.stringify(message)).join("\n") +
+              (remaining.length ? "\n" : ""),
+          );
+          await atomicJsonWrite(metadataPath(thread.id), updated);
+          return updated;
+        },
+        catch: (cause) =>
+          cause instanceof NoCurrentThread
+            ? cause
+            : new StoreError({ operation: "undo turn", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    redoLastTurn: Effect.fn("ThreadStore.redoLastTurn")((thread: RelayThread, harness: Harness) =>
+      Effect.tryPromise({
+        try: async () => {
+          const state = await readUndoState(thread.id);
+          const entry = state.entries.at(-1);
+          if (!entry || entry.thread.activeHarness !== harness) {
+            throw new NoCurrentThread({ message: "There is no turn to redo" });
+          }
+          const messages = await readMessages(thread.id);
+          const restored = [...messages, ...entry.messages];
+          await atomicTextWrite(
+            eventsPath(thread.id),
+            `${restored.map((message) => JSON.stringify(message)).join("\n")}\n`,
+          );
+          await atomicJsonWrite(metadataPath(thread.id), entry.thread);
+          const entries = state.entries.slice(0, -1);
+          if (entries.length) await atomicJsonWrite(undoPath(thread.id), { entries });
+          else await rm(undoPath(thread.id), { force: true });
+          return entry.thread;
+        },
+        catch: (cause) =>
+          cause instanceof NoCurrentThread
+            ? cause
+            : new StoreError({ operation: "redo turn", message: errorMessage(cause), cause }),
       }),
     ),
   });
