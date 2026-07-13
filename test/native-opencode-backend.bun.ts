@@ -34,11 +34,68 @@ describe("OpenCode native backend", () => {
           parts: [{ type: "text", text: "Incomplete" }],
         },
         {
-          info: { id: "assistant-2", role: "assistant", time: { created: 3 } },
+          info: {
+            id: "assistant-2a",
+            role: "assistant",
+            parentID: "user-2",
+            finish: "tool-calls",
+            time: { completed: 3 },
+          },
+          parts: [{ type: "text", text: "checking" }],
+        },
+        {
+          info: { id: "assistant-2", role: "assistant", time: { created: 4 } },
           parts: [{ type: "text", text: "still streaming" }],
         },
       ]),
     ).toEqual([{ id: "user-1", prompt: "Fix checkout", response: "Fixed checkout." }]);
+  });
+
+  it("joins a tool-using OpenCode turn through its terminal assistant message", () => {
+    expect(
+      parseOpenCodeNativeTurns([
+        {
+          info: { id: "user-1", role: "user" },
+          parts: [{ type: "text", text: "Run the suite" }],
+        },
+        {
+          info: {
+            id: "assistant-1",
+            role: "assistant",
+            parentID: "user-1",
+            finish: "tool-calls",
+            time: { completed: 2 },
+          },
+          parts: [{ type: "text", text: "I’ll inspect the change." }],
+        },
+        {
+          info: {
+            id: "assistant-2",
+            role: "assistant",
+            parentID: "user-1",
+            finish: "stop",
+            time: { completed: 3 },
+          },
+          parts: [{ type: "tool", tool: "bash", state: { status: "completed" } }],
+        },
+        {
+          info: {
+            id: "assistant-3",
+            role: "assistant",
+            parentID: "user-1",
+            finish: "stop",
+            time: { completed: 4 },
+          },
+          parts: [{ type: "text", text: "All tests pass.\n\nOPEN_DONE" }],
+        },
+      ]),
+    ).toEqual([
+      {
+        id: "user-1",
+        prompt: "Run the suite",
+        response: "I’ll inspect the change.\n\nAll tests pass.\n\nOPEN_DONE",
+      },
+    ]);
   });
 
   it("does not import turns hidden by native OpenCode undo", () => {

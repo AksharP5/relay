@@ -41,7 +41,9 @@ interface OpenCodeVisibleMessage {
   readonly id: string;
   readonly role: "user" | "assistant";
   readonly text: string;
+  readonly parentId?: string;
   readonly complete: boolean;
+  readonly continues: boolean;
   readonly failed: boolean;
 }
 
@@ -53,12 +55,28 @@ const compactOpenCodeMessages = (value: unknown): ReadonlyArray<OpenCodeVisibleM
         if (typeof info?.id !== "string" || (info.role !== "user" && info.role !== "assistant"))
           return [];
         const time = asObject(info.time);
+        const parentId = typeof info.parentID === "string" ? info.parentID : undefined;
+        const hasPendingToolCall = Array.isArray(message?.parts)
+          ? message.parts.some((candidate) => {
+              const part = asObject(candidate);
+              if (part?.type !== "tool") return false;
+              const metadata = asObject(part.metadata);
+              const state = asObject(part.state);
+              const stateMetadata = asObject(state?.metadata);
+              const interrupted = state?.status === "error" && stateMetadata?.interrupted === true;
+              return metadata?.providerExecuted !== true && !interrupted;
+            })
+          : false;
         return [
           {
             id: info.id,
             role: info.role,
             text: visibleText(message?.parts),
+            ...(parentId ? { parentId } : {}),
             complete: time === undefined || time.completed !== undefined,
+            continues:
+              info.finish === "tool-calls" ||
+              (typeof info.finish === "string" && hasPendingToolCall),
             failed: info.error !== undefined,
           },
         ];
@@ -70,15 +88,29 @@ const parseCompactTurns = (
   revertedMessageId?: string,
 ) => {
   const turns: Array<NativeTranscriptTurn> = [];
-  let pending: { id: string; prompt: string } | undefined;
+  let pending:
+    | { id: string; prompt: string; responses: Array<string>; failed: boolean }
+    | undefined;
   for (const message of messages) {
     if (message.id === revertedMessageId) break;
     if (message.role === "user") {
-      pending = message.text ? { id: message.id, prompt: message.text } : undefined;
+      pending = message.text
+        ? { id: message.id, prompt: message.text, responses: [], failed: false }
+        : undefined;
       continue;
     }
-    if (!pending || message.failed || !message.complete || !message.text) continue;
-    turns.push({ id: pending.id, prompt: pending.prompt, response: message.text });
+    if (!pending || (message.parentId && message.parentId !== pending.id)) continue;
+    if (message.failed) {
+      pending.failed = true;
+      continue;
+    }
+    if (!message.complete) continue;
+    if (message.text) pending.responses.push(message.text);
+    if (message.continues) continue;
+    const response = pending.responses.join("\n\n").trim();
+    if (!pending.failed && response) {
+      turns.push({ id: pending.id, prompt: pending.prompt, response });
+    }
     pending = undefined;
   }
   return turns;
