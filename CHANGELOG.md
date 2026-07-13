@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/AksharP5/relay/compare/v0.1.2...v0.1.3) (2026-07-13)
+
+
+### Bug Fixes
+
+* **release:** propagate recovery context ([c097f04](https://github.com/AksharP5/relay/commit/c097f046f7a389125caf891fc192788228c16daa))
+
 ## [0.1.2](https://github.com/AksharP5/relay/compare/v0.1.1...v0.1.2) (2026-07-13)
 
 
