@@ -45,44 +45,52 @@ const selectDirectoryTask = (relay: typeof RelayService.Service) =>
 
 export const makeTuiController = (
   runtime: ManagedRuntime.ManagedRuntime<RelayService, unknown>,
-): TuiController => ({
-  load: () =>
-    runtime.runPromise(
-      Effect.gen(function* () {
-        const relay = yield* RelayService;
-        const harnesses = yield* relay.doctor();
-        const thread = yield* selectDirectoryTask(relay);
-        const messages = thread ? yield* relay.historyForDisplay(thread.id) : [];
-        return { thread, messages, harnesses };
-      }),
-    ),
-  ask: (input) =>
-    runtime.runPromise(
-      Effect.gen(function* () {
-        const relay = yield* RelayService;
-        const thread = yield* selectDirectoryTask(relay);
-        if (!thread) {
-          yield* relay.newThread({
-            title: titleFromPrompt(input.prompt),
-            cwd: process.cwd(),
-            harness: input.harness,
-          });
-        }
-        const result = yield* relay.ask(input);
-        const messages = yield* relay.historyForDisplay(result.thread.id);
-        return { thread: result.thread, messages };
-      }),
-    ),
-  switchHarness: (harness) =>
-    runtime.runPromise(
-      Effect.gen(function* () {
-        const relay = yield* RelayService;
-        const current = yield* selectDirectoryTask(relay);
-        if (!current) return null;
-        return yield* relay.switchHarness(harness).pipe(
-          Effect.map((thread) => thread as RelayThread | null),
-          Effect.catchIf(isNoCurrentThread, () => Effect.succeed(null)),
-        );
-      }),
-    ),
-});
+): TuiController => {
+  let activeThreadId: string | undefined;
+
+  return {
+    load: () =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          const harnesses = yield* relay.doctor();
+          const thread = yield* selectDirectoryTask(relay);
+          activeThreadId = thread?.id;
+          const messages = thread ? yield* relay.historyForDisplay(thread.id) : [];
+          return { thread, messages, harnesses };
+        }),
+      ),
+    ask: (input) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          if (!activeThreadId) {
+            const existing = yield* selectDirectoryTask(relay);
+            const thread =
+              existing ??
+              (yield* relay.newThread({
+                title: titleFromPrompt(input.prompt),
+                cwd: process.cwd(),
+                harness: input.harness,
+              }));
+            activeThreadId = thread.id;
+          }
+          const result = yield* relay.ask({ ...input, threadId: activeThreadId });
+          const messages = yield* relay.historyForDisplay(result.thread.id);
+          return { thread: result.thread, messages };
+        }),
+      ),
+    switchHarness: (harness) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const relay = yield* RelayService;
+          if (!activeThreadId) activeThreadId = (yield* selectDirectoryTask(relay))?.id;
+          if (!activeThreadId) return null;
+          return yield* relay.switchHarness(harness, activeThreadId).pipe(
+            Effect.map((thread) => thread as RelayThread | null),
+            Effect.catchIf(isNoCurrentThread, () => Effect.succeed(null)),
+          );
+        }),
+      ),
+  };
+};

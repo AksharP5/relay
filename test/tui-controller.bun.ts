@@ -36,6 +36,7 @@ describe("TUI task routing", () => {
     const other = thread("other-project", "/tmp/other-project");
     const local = thread("local-project", process.cwd(), "opencode");
     let selected = other;
+    let askedThreadId: string | undefined;
     const histories = new Map([
       [other.id, [message("other-message", "private other-project context")]],
       [local.id, [message("local-message", "local context")]],
@@ -43,7 +44,16 @@ describe("TUI task routing", () => {
 
     const service: typeof RelayService.Service = {
       newThread: () => Effect.die("not expected"),
-      ask: () => Effect.die("not expected"),
+      ask: (input) =>
+        Effect.sync(() => {
+          askedThreadId = input.threadId;
+          return {
+            thread: local,
+            response: message("response", "stayed pinned"),
+            createdBinding: false,
+            handedOffMessages: 0,
+          };
+        }),
       switchHarness: () => Effect.die("not expected"),
       useThread: (id) =>
         Effect.sync(() => {
@@ -61,9 +71,14 @@ describe("TUI task routing", () => {
     const runtime = ManagedRuntime.make(Layer.succeed(RelayService, service));
     runtimes.push(runtime);
 
-    const snapshot = await makeTuiController(runtime).load();
+    const controller = makeTuiController(runtime);
+    const snapshot = await controller.load();
     expect(snapshot.thread?.id).toBe(local.id);
     expect(snapshot.messages.map((item) => item.content)).toEqual(["local context"]);
+
+    selected = thread("another-local-task", process.cwd());
+    await controller.ask({ prompt: "Stay on the displayed task", harness: "opencode" });
+    expect(askedThreadId).toBe(local.id);
   });
 
   it("creates a local task on first submit instead of mutating another project's task", async () => {

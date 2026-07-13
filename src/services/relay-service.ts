@@ -7,6 +7,7 @@ import { ThreadStore } from "./thread-store.ts";
 
 export interface AskInput {
   readonly prompt: string;
+  readonly threadId?: string;
   readonly harness?: Harness;
   readonly model?: string;
   readonly onProgress?: (progress: HarnessTurnProgress) => void;
@@ -33,7 +34,10 @@ export class RelayService extends Context.Service<
       readonly harness: Harness;
     }) => Effect.Effect<RelayThread, unknown>;
     readonly ask: (input: AskInput) => Effect.Effect<AskResult, unknown>;
-    readonly switchHarness: (harness: Harness) => Effect.Effect<RelayThread, unknown>;
+    readonly switchHarness: (
+      harness: Harness,
+      threadId?: string,
+    ) => Effect.Effect<RelayThread, unknown>;
     readonly useThread: (threadId: string) => Effect.Effect<RelayThread, unknown>;
     readonly current: () => Effect.Effect<RelayThread, unknown>;
     readonly list: () => Effect.Effect<ReadonlyArray<RelayThread>, unknown>;
@@ -58,15 +62,17 @@ export class RelayService extends Context.Service<
       );
 
       const ensureCurrent = (input: AskInput) =>
-        store.current().pipe(
-          Effect.catchTag("NoCurrentThread", () =>
-            store.create({
-              title: titleFromPrompt(input.prompt),
-              cwd: process.cwd(),
-              harness: input.harness ?? "codex",
-            }),
-          ),
-        );
+        input.threadId
+          ? store.get(input.threadId)
+          : store.current().pipe(
+              Effect.catchTag("NoCurrentThread", () =>
+                store.create({
+                  title: titleFromPrompt(input.prompt),
+                  cwd: process.cwd(),
+                  harness: input.harness ?? "codex",
+                }),
+              ),
+            );
 
       const ask = Effect.fn("RelayService.ask")((input: AskInput) =>
         Effect.gen(function* () {
@@ -114,15 +120,16 @@ export class RelayService extends Context.Service<
         }),
       );
 
-      const switchHarness = Effect.fn("RelayService.switchHarness")((harness: Harness) =>
-        Effect.gen(function* () {
-          const current = yield* store.current();
-          const lock = yield* store.acquireLock(current.id);
-          return yield* Effect.gen(function* () {
-            const thread = yield* store.get(current.id);
-            return yield* store.setHarness(thread, harness);
-          }).pipe(Effect.ensuring(Effect.promise(lock.release)));
-        }),
+      const switchHarness = Effect.fn("RelayService.switchHarness")(
+        (harness: Harness, threadId?: string) =>
+          Effect.gen(function* () {
+            const current = yield* threadId ? store.get(threadId) : store.current();
+            const lock = yield* store.acquireLock(current.id);
+            return yield* Effect.gen(function* () {
+              const thread = yield* store.get(current.id);
+              return yield* store.setHarness(thread, harness);
+            }).pipe(Effect.ensuring(Effect.promise(lock.release)));
+          }),
       );
 
       const useThread = Effect.fn("RelayService.useThread")((threadId: string) =>
