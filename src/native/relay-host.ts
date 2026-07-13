@@ -99,6 +99,7 @@ export interface NativeRelayHostDependencies {
     onSwitchRequest: () => Promise<boolean>,
   ) => Promise<NativeTuiExit>;
   readonly selectHarness: (current: Harness) => Promise<Harness | undefined>;
+  readonly signalSource: EventEmitter;
 }
 
 const defaultDependencies: NativeRelayHostDependencies = {
@@ -110,6 +111,7 @@ const defaultDependencies: NativeRelayHostDependencies = {
       { onSwitchRequest },
     ),
   selectHarness,
+  signalSource: process,
 };
 
 const signalExitCode = (signal: "SIGHUP" | "SIGTERM" | "SIGQUIT") =>
@@ -178,10 +180,13 @@ const runHarness = async (
   initialThread: RelayThread,
   harness: Harness,
   dependencies: NativeRelayHostDependencies,
+  getSignal: () => "SIGHUP" | "SIGTERM" | "SIGQUIT" | undefined,
 ): Promise<{ readonly thread: RelayThread; readonly exit: NativeTuiExit }> => {
   let thread = await controller.switchHarness(initialThread.id, harness);
   const backend = await dependencies.startBackend(harness, thread.cwd);
   try {
+    const startupSignal = getSignal();
+    if (startupSignal) return { thread, exit: { reason: "signal", signal: startupSignal } };
     let binding = thread.bindings[harness];
     let storedModel: string | undefined;
     let launchModel: string | undefined;
@@ -233,12 +238,17 @@ const runHarness = async (
         sessionChanged: !prepared.handoffInjected && (!binding || binding.sessionId !== sessionId),
       });
     }
+    const preparedSignal = getSignal();
+    if (preparedSignal) return { thread, exit: { reason: "signal", signal: preparedSignal } };
     const boundSessionId = thread.bindings[harness]?.sessionId;
 
     const exit = await dependencies.runTui(backend.command(sessionId, launchModel), async () => {
       sessionId = await backend.resolveSession(sessionId);
       return sessionId ? backend.isIdle(sessionId) : true;
     });
+
+    const tuiSignal = exit.reason === "signal" ? exit.signal : getSignal();
+    if (tuiSignal) return { thread, exit: { reason: "signal", signal: tuiSignal } };
 
     try {
       const resolvedSessionId = await backend.resolveSession(sessionId);
@@ -274,13 +284,39 @@ export const launchNativeRelay = async (
   overrides: Partial<NativeRelayHostDependencies> = {},
 ) => {
   const dependencies = { ...defaultDependencies, ...overrides };
-  let thread = await controller.loadLocalThread();
-  const lease = await controller.acquireLease(thread.id);
-  let harness = thread.activeHarness;
+  let pendingSignal: "SIGHUP" | "SIGTERM" | "SIGQUIT" | undefined;
+  const onSignal = (signal: "SIGHUP" | "SIGTERM" | "SIGQUIT") => {
+    pendingSignal ??= signal;
+  };
+  const onHangup = () => onSignal("SIGHUP");
+  const onTerminate = () => onSignal("SIGTERM");
+  const onQuit = () => onSignal("SIGQUIT");
+  dependencies.signalSource.on("SIGHUP", onHangup);
+  dependencies.signalSource.on("SIGTERM", onTerminate);
+  dependencies.signalSource.on("SIGQUIT", onQuit);
+
+  let lease: { readonly release: () => Promise<void> } | undefined;
 
   try {
+    let thread = await controller.loadLocalThread();
+    if (pendingSignal) {
+      process.exitCode = signalExitCode(pendingSignal);
+      return;
+    }
+    lease = await controller.acquireLease(thread.id);
+    let harness = thread.activeHarness;
     while (true) {
-      const result = await runHarness(controller, thread, harness, dependencies);
+      if (pendingSignal) {
+        process.exitCode = signalExitCode(pendingSignal);
+        return;
+      }
+      const result = await runHarness(
+        controller,
+        thread,
+        harness,
+        dependencies,
+        () => pendingSignal,
+      );
       thread = result.thread;
       if (result.exit.reason !== "switch") {
         if (result.exit.reason === "exit" && result.exit.exitCode !== 0)
@@ -290,10 +326,17 @@ export const launchNativeRelay = async (
       }
 
       const selected = await dependencies.selectHarness(harness);
-      if (!selected) return;
+      if (!selected) {
+        if (pendingSignal) process.exitCode = signalExitCode(pendingSignal);
+        return;
+      }
       harness = selected;
     }
   } finally {
-    await lease.release();
+    await lease?.release();
+    dependencies.signalSource.off("SIGHUP", onHangup);
+    dependencies.signalSource.off("SIGTERM", onTerminate);
+    dependencies.signalSource.off("SIGQUIT", onQuit);
   }
 };
+import type { EventEmitter } from "node:events";

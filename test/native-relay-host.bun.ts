@@ -126,6 +126,43 @@ describe("native Relay host", () => {
     expect(events).toEqual(["lease acquired", "backend started", "lease released"]);
   });
 
+  it("closes a detached backend when termination arrives before the native TUI", async () => {
+    const { controller } = makeController();
+    const signals = new EventEmitter();
+    let closed = false;
+    let launched = false;
+    const backend: NativeBackend = {
+      prepareSession: async () => {
+        signals.emit("SIGTERM");
+        return { handoffInjected: false };
+      },
+      inject: async () => {},
+      read: async () => ({ turns: [], hiddenTurnIds: [] }),
+      isIdle: async () => true,
+      resolveSession: async () => undefined,
+      command: () => ({ executable: "codex", args: [], cwd: process.cwd() }),
+      close: async () => void (closed = true),
+    };
+
+    const previousExitCode = process.exitCode;
+    try {
+      await launchNativeRelay(controller, {
+        signalSource: signals,
+        startBackend: async () => backend,
+        runTui: async () => {
+          launched = true;
+          return { reason: "exit", exitCode: 0 };
+        },
+      });
+      expect(process.exitCode).toBe(143);
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+    expect(launched).toBe(false);
+    expect(closed).toBe(true);
+    expect(signals.listenerCount("SIGTERM")).toBe(0);
+  });
+
   it("imports a native turn, hands it to the other harness, and keeps one backend alive", async () => {
     const { controller, messages } = makeController();
     const transcripts: Record<Harness, Array<NativeTranscriptTurn>> = {
