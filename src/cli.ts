@@ -6,9 +6,10 @@ import { chmod, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import pc from "picocolors";
 import packageJson from "../package.json" with { type: "json" };
-import { parseArgs } from "./cli-args.ts";
+import { parseArgs, type CliCommand } from "./cli-args.ts";
 import type { Harness, RelayThread } from "./domain.ts";
 import { HarnessService } from "./harnesses/harness-service.ts";
+import { resolveLaunchDirectory } from "./launch-directory.ts";
 import { ProcessRunner } from "./services/process-runner.ts";
 import { cleanupOrphanedProcesses } from "./services/process-registry.ts";
 import { RelayService } from "./services/relay-service.ts";
@@ -28,6 +29,7 @@ ${pc.bold("Relay")} — carry one coding task between Codex and OpenCode
 
 ${pc.bold("Usage")}
   relay
+  relay [directory]
   relay doctor
   relay config
   relay config get switch-key
@@ -45,6 +47,8 @@ ${pc.bold("Usage")}
   relay native [codex|opencode]
 
 ${pc.bold("Examples")}
+  relay .
+  relay ../another-project
   relay config set switch-key ctrl+g
   relay config set switch-key shift+return
   relay new "Fix the checkout flow" --with codex
@@ -86,10 +90,9 @@ const renderError = (error: unknown) => {
   return `${message}\n${pc.dim(detail.split("\n").slice(-6).join("\n"))}`;
 };
 
-export const program = (argv: ReadonlyArray<string>) =>
+export const program = (command: Exclude<CliCommand, { readonly name: "open" }>) =>
   Effect.gen(function* () {
     const relay = yield* RelayService;
-    const command = yield* Effect.try({ try: () => parseArgs(argv), catch: (error) => error });
 
     switch (command.name) {
       case "help":
@@ -271,7 +274,13 @@ export const MainLayer = RelayService.layer.pipe(
 );
 
 if (import.meta.main) {
+  const argv = process.argv.slice(2);
+  let command: CliCommand | undefined;
   try {
+    if (argv.length > 0) {
+      command = parseArgs(argv);
+      if (command.name === "open") process.chdir(await resolveLaunchDirectory(command.directory));
+    }
     const recovery = await cleanupOrphanedProcesses();
     if (recovery.failed > 0) {
       throw new Error(
@@ -289,8 +298,7 @@ if (import.meta.main) {
   }
 
   if (process.exitCode !== 1) {
-    const argv = process.argv.slice(2);
-    if (argv.length === 0) {
+    if (!command || command.name === "open") {
       const runtime = ManagedRuntime.make(MainLayer);
       void loadRelaySettings()
         .then((settings) =>
@@ -309,7 +317,7 @@ if (import.meta.main) {
         .finally(() => runtime.dispose());
     } else {
       pipe(
-        program(argv),
+        program(command),
         Effect.provide(MainLayer),
         Effect.tapError((error) => Console.error(pc.red(renderError(error)))),
         Effect.catch(() => Effect.sync(() => (process.exitCode = 1))),

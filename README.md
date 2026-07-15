@@ -9,6 +9,8 @@ $ cd my-project
 $ relay
 ```
 
+Or launch the workspace directly from another directory with `relay ./my-project`.
+
 Relay opens the selected harness exactly as its own CLI renders it. Codex looks and behaves like Codex; OpenCode looks and behaves like OpenCode. Type `/` and the native command palette owns the input. `Escape` remains owned by that native TUI, including any version-specific behavior.
 
 > **Platform support:** Relay supports macOS 13 or newer and glibc 2.25+ Linux. Native Windows and WSL are outside the current support and test scope.
@@ -123,13 +125,16 @@ Relay does not auto-update tools on startup. That would add latency, network tra
 
 ## Use the native workspace
 
-Run Relay from the directory you want the agents to edit:
+Run Relay from the directory you want the agents to edit, or pass that directory explicitly:
 
 ```bash
 relay
+relay .
+relay ../another-project
+relay /absolute/path/to/project
 ```
 
-Relay uses the most recent task bound to that directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
+All four forms select the same directory-bound workspace behavior. Relative paths resolve from the current shell directory. Relay uses the most recent task bound to the selected directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
 
 | Input                                    | Owner      | Action                                         |
 | ---------------------------------------- | ---------- | ---------------------------------------------- |

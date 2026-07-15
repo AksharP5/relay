@@ -7,6 +7,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   readdir,
   rm,
   stat,
@@ -45,6 +46,26 @@ afterEach(async () => {
 });
 
 describe("Relay CLI storage", () => {
+  it("rejects invalid explicit directories before native startup", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-explicit-directory-"));
+    const workspace = await mkdtemp(join(tmpdir(), "relay-explicit-workspace-"));
+    tempRoots.push(root, workspace);
+    const file = join(workspace, "not-a-directory");
+    await writeFile(file, "file", "utf8");
+    const canonicalWorkspace = await realpath(workspace);
+
+    const missing = await runRelay(root, ["missing"], workspace);
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr).toContain(
+      `Relay directory does not exist: ${join(canonicalWorkspace, "missing")}`,
+    );
+
+    const notDirectory = await runRelay(root, [file], workspace);
+    expect(notDirectory.exitCode).toBe(1);
+    expect(notDirectory.stderr).toContain("Relay path is not a directory:");
+    expect(notDirectory.stderr).toContain("not-a-directory");
+  });
+
   it("persists, reports, and resets any terminal-observable switch key", async () => {
     const root = await mkdtemp(join(tmpdir(), "relay-config-"));
     tempRoots.push(root);
