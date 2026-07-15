@@ -177,6 +177,8 @@ describe("Relay session transitions", () => {
             new HarnessError({
               harness,
               message: "native state may have advanced",
+              exitCode: 1,
+              stderr: "transport closed after request",
               sessionState: "uncertain",
             }),
           );
@@ -197,7 +199,17 @@ describe("Relay session transitions", () => {
           harness: "codex",
         });
         yield* relay.ask({ threadId: thread.id, prompt: "First", model: "gpt-test" });
-        yield* relay.ask({ threadId: thread.id, prompt: "Second" }).pipe(Effect.flip);
+        const error = yield* relay.ask({ threadId: thread.id, prompt: "Second" }).pipe(Effect.flip);
+        expect(error).toBeInstanceOf(HarnessError);
+        expect((error as HarnessError).message).toContain(
+          "Relay retired the uncertain codex session binding",
+        );
+        expect((error as HarnessError).message).toContain(
+          "retrying will create a fresh session from confirmed Relay context",
+        );
+        expect((error as HarnessError).sessionState).toBe("uncertain");
+        expect((error as HarnessError).exitCode).toBe(1);
+        expect((error as HarnessError).stderr).toBe("transport closed after request");
         expect((yield* relay.current()).bindings.codex).toBeUndefined();
         expect((yield* relay.current()).preferredModels?.codex).toBe("gpt-test");
         yield* relay.ask({ threadId: thread.id, prompt: "Second" });

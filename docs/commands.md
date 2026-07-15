@@ -145,6 +145,6 @@ The default is `~/.local/share/relay`. It contains visible conversation text and
 
 Headless commands exit `0` on success and `1` for invalid input, missing state, unavailable harnesses, or failed turns. Bare Relay normally returns the native frontend’s non-zero exit code.
 
-A failed or interrupted harness may have modified files even if Relay could not import a completed response. Inspect the working tree before retrying.
+A failed or interrupted harness may have modified files even if Relay could not import a completed response. Inspect the working tree before retrying. If a warm headless command may have advanced the native session without a confirmed response, Relay retires that uncertain binding to prevent a duplicate prompt. The error reports this recovery explicitly; the native session stays in vendor history, and a retry creates a fresh session from confirmed Relay context.
 
 If Relay itself is force-killed, the next launch checks private process-ownership records and stops surviving Relay-owned process groups only when their OS start identity still matches. Arguments, environment variables, capability tokens, and transcript text are never stored in those records.
