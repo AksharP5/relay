@@ -13,6 +13,13 @@ import { ProcessRunner } from "./services/process-runner.ts";
 import { cleanupOrphanedProcesses } from "./services/process-registry.ts";
 import { RelayService } from "./services/relay-service.ts";
 import { ThreadStore } from "./services/thread-store.ts";
+import {
+  loadRelaySettings,
+  relayConfigPath,
+  resetRelaySettings,
+  saveRelaySettings,
+} from "./services/settings.ts";
+import { parseSwitchKey, switchKeyWarning } from "./switch-key.ts";
 import { makeNativeRelayController } from "./native/controller.ts";
 import { launchNativeRelay } from "./native/relay-host.ts";
 
@@ -22,6 +29,10 @@ ${pc.bold("Relay")} — carry one coding task between Codex and OpenCode
 ${pc.bold("Usage")}
   relay
   relay doctor
+  relay config
+  relay config get switch-key
+  relay config set switch-key <binding>
+  relay config reset switch-key
   relay new [name] [--with codex|opencode]
   relay ask [--with codex|opencode] [--model name] <message>
   relay use codex|opencode
@@ -34,13 +45,16 @@ ${pc.bold("Usage")}
   relay native [codex|opencode]
 
 ${pc.bold("Examples")}
+  relay config set switch-key ctrl+g
+  relay config set switch-key shift+return
   relay new "Fix the checkout flow" --with codex
   relay ask "Find the cause and implement a fix"
   relay ask --with opencode "Review the change and run the tests"
 
 Bare ${pc.cyan("relay")} opens the selected harness's real native TUI.
-Press ${pc.cyan("Ctrl+Q")} to switch between Codex and OpenCode.
+Press the configured switch key (${pc.cyan("Ctrl+Q")} by default) to move between harnesses.
 ${pc.cyan("F6")} is available as a fallback.
+Run ${pc.cyan("relay config set switch-key ctrl+g")} to choose any terminal-observable key chord using OpenCode-style key names.
 Your next harness can also be changed without running a model using ${pc.cyan("relay use")}.
 `.trim();
 
@@ -84,6 +98,37 @@ export const program = (argv: ReadonlyArray<string>) =>
       case "version":
         yield* Console.log(packageJson.version);
         return;
+      case "config": {
+        if (command.action === "get") {
+          const settings = yield* Effect.tryPromise({
+            try: loadRelaySettings,
+            catch: (cause) => cause,
+          });
+          yield* Console.log(`Switch key  ${pc.cyan(settings.switchKey.label)}`);
+          yield* Console.log(`Fallback    ${pc.cyan("F6")}`);
+          yield* Console.log(`Config      ${pc.dim(relayConfigPath())}`);
+          return;
+        }
+        if (command.action === "reset") {
+          yield* Effect.tryPromise({ try: resetRelaySettings, catch: (cause) => cause });
+          yield* Console.log(`${pc.green("Reset")} switch key to ${pc.cyan("Ctrl+Q")}.`);
+          yield* Console.log(pc.dim("F6 remains available. Applies on the next Relay launch."));
+          return;
+        }
+        const switchKey = yield* Effect.try({
+          try: () => parseSwitchKey(command.value),
+          catch: (cause) => cause,
+        });
+        yield* Effect.tryPromise({
+          try: () => saveRelaySettings({ switchKey }),
+          catch: (cause) => cause,
+        });
+        yield* Console.log(`${pc.green("Saved")} switch key ${pc.cyan(switchKey.label)}.`);
+        const warning = switchKeyWarning(switchKey);
+        if (warning) yield* Console.log(pc.yellow(warning));
+        yield* Console.log(pc.dim("F6 remains available. Applies on the next Relay launch."));
+        return;
+      }
       case "doctor": {
         const statuses = yield* relay.doctor();
         yield* Console.log(pc.bold("Relay doctor"));
@@ -247,7 +292,16 @@ if (import.meta.main) {
     const argv = process.argv.slice(2);
     if (argv.length === 0) {
       const runtime = ManagedRuntime.make(MainLayer);
-      void launchNativeRelay(makeNativeRelayController(runtime))
+      void loadRelaySettings()
+        .then((settings) =>
+          launchNativeRelay(
+            makeNativeRelayController(runtime),
+            {},
+            {
+              switchKey: settings.switchKey,
+            },
+          ),
+        )
         .catch((error) => {
           process.stderr.write(`${pc.red(renderError(error))}\n`);
           process.exitCode = 1;

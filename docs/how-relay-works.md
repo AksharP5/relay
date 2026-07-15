@@ -20,9 +20,9 @@ Native sessions are persisted by their own harnesses, so stopping the temporary 
 
 ## Why switching uses distinct keys
 
-Relay does not intercept `/`, `Escape`, `Ctrl+C`, or ordinary text. `Ctrl+Q` is the primary direct switch and `F6` is the fallback. Relay has no prefix chord or selector.
+By default, Relay does not intercept `/`, `Escape`, `Ctrl+C`, or ordinary text. `Ctrl+Q` is the default primary switch, but the user may replace it with any terminal-observable single key chord. `F6` is the fixed fallback. Relay has no prefix chord or selector.
 
-The input router recognizes the legacy `Ctrl+Q` control byte, function-key sequences, CSI-u and Kitty enhanced keyboard encodings, and xterm's modified-key form. It consumes only a key press, not a repeat or release. Relay also understands bracketed-paste boundaries, including markers split across input chunks, so pasted shortcut bytes cannot accidentally switch harnesses. Every other key sequence is forwarded to the native application.
+The input router compiles the configured OpenCode-style key name into every applicable legacy terminal sequence and also matches CSI-u/Kitty enhanced keyboard encodings and xterm's modified-key form. This allows arbitrary modifier combinations, named functional keys, Unicode characters, and raw enhanced key codes without a Relay-owned allowlist. Some chords remain dependent on the outer terminal reporting them distinctly. The router consumes only a key press, not a repeat or release. Relay also understands bracketed-paste boundaries, including markers split across input chunks, so pasted shortcut bytes cannot accidentally switch harnesses. Every other key sequence is forwarded to the native application.
 
 Relay does not implement `/harness` by watching for those characters. At the PTY boundary, the same bytes could belong to a native composer, dialog, search field, Vim command, recalled history entry, or external editor. Only the upstream TUI knows that state. OpenCode can register a local plugin command, but stock Codex currently has no equivalent host-command extension point, so a clean command cannot be offered consistently across both native TUIs.
 
@@ -112,6 +112,7 @@ By default:
 
 ```text
 ~/.local/share/relay/
+  config.json                # versioned user settings, including switch key
   index.json                 # versioned task index
   processes/                 # secret-free child ownership records
   deletions/                 # crash-recovery journals, normally empty

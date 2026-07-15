@@ -13,7 +13,7 @@ Relay opens the selected harness exactly as its own CLI renders it. Codex looks 
 
 > **Platform support:** Relay supports macOS 13 or newer and glibc 2.25+ Linux. Native Windows and WSL are outside the current support and test scope.
 
-To switch harnesses while the current session is idle, press `Ctrl+Q`. Relay carries the completed conversation forward and opens the other real TUI. `F6` remains available as a fallback (`Fn+F6` when macOS treats the function row as media keys). See [Terminal shortcuts](#terminal-shortcuts) for the Zellij caveat.
+To switch harnesses while the current session is idle, press `Ctrl+Q` by default. Relay carries the completed conversation forward and opens the other real TUI. The binding is fully customizable, and `F6` remains available as a fallback (`Fn+F6` when macOS treats the function row as media keys). See [Terminal shortcuts](#terminal-shortcuts).
 
 ## Why use Relay?
 
@@ -40,7 +40,7 @@ your terminal
           └── native OpenCode TUI ── Relay-owned OpenCode server
 ```
 
-Only one branch runs at a time. Relay forwards terminal bytes unchanged, including colors, alternate-screen behavior, mouse input, enhanced keyboard sequences, bracketed paste, and resize events. It reserves `Ctrl+Q` and `F6` for direct switching.
+Only one branch runs at a time. Relay forwards terminal bytes unchanged, including colors, alternate-screen behavior, mouse input, enhanced keyboard sequences, bracketed paste, and resize events. It reserves the configured switch binding and `F6` for direct switching.
 
 The current release pairs each interface with its own engine: Codex TUI with Codex, and OpenCode TUI with OpenCode. Running the literal OpenCode TUI against the Codex engine would require a complete, bidirectional translation between their live protocols, approvals, tools, streaming events, session semantics, and commands. Relay does not claim that adapter exists yet.
 
@@ -131,13 +131,13 @@ relay
 
 Relay uses the most recent task bound to that directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
 
-| Input                              | Owner      | Action                                         |
-| ---------------------------------- | ---------- | ---------------------------------------------- |
-| `/`, letters, `Enter`              | Native TUI | Type and run native slash commands normally    |
-| `Escape`                           | Native TUI | Handle according to that TUI's native behavior |
-| `Ctrl+C`                           | Native TUI | Interrupt or exit according to native behavior |
-| `Ctrl+Q`                           | Relay      | Switch directly to the other harness when idle |
-| `F6` (`Fn+F6` with Mac media keys) | Relay      | Fallback switch key                            |
+| Input                                    | Owner      | Action                                         |
+| ---------------------------------------- | ---------- | ---------------------------------------------- |
+| `/`, letters, `Enter`                    | Native TUI | Type and run native slash commands normally    |
+| `Escape`                                 | Native TUI | Handle according to that TUI's native behavior |
+| `Ctrl+C`                                 | Native TUI | Interrupt or exit according to native behavior |
+| Configured key (`Ctrl+Q` by default)     | Relay      | Switch directly to the other harness when idle |
+| `F6` (`Fn+F6` with macOS media-key mode) | Relay      | Fixed fallback switch key                      |
 
 Relay refuses to detach while a turn is active. The terminal bell sounds and the current TUI stays visible until its response, tool call, retry, approval, or question reaches a safe idle state. Wait for it to finish, then use the switch key again. The completed turn is imported before the other harness opens.
 
@@ -147,13 +147,27 @@ Relay cannot safely add `/harness` to both stock native command palettes today. 
 
 ### Terminal shortcuts
 
+Relay uses OpenCode-style key names and does not restrict the primary binding to a curated list. Change it with:
+
+```bash
+relay config
+relay config set switch-key ctrl+g
+relay config set switch-key shift+return
+relay config set switch-key super+k
+relay config reset switch-key
+```
+
+Bindings are case-insensitive single key chords. Combine any of `ctrl`, `alt`/`option`, `shift`, `super`/`cmd`, `hyper`, or `meta` with a printable Unicode key or a named key such as `return`, `escape`, `space`, `left`, `pageup`, `f1` through `f35`, keypad keys, or media keys. `KeyCode:<number>` covers any additional CSI-u/Kitty key code a terminal reports. Set the binding to `none` to disable the primary shortcut. Changes apply the next time bare `relay` launches.
+
+Relay accepts unusual bindings instead of rejecting them. A plain character or editing key is consumed by Relay while a native TUI is open. Modifier combinations such as `super+k`, some media keys, and raw key codes require a terminal that reports those keys through CSI-u/Kitty keyboard events. Your terminal emulator or multiplexer can still capture a shortcut before Relay receives it.
+
 `Ctrl+Q` works without configuration in a direct WezTerm session and in tmux. Relay runs its PTY in raw mode, so it receives the control byte instead of treating it as terminal flow control. Codex and OpenCode do not assign `Ctrl+Q` in their current default keymaps.
 
-Zellij's default keymap reserves `Ctrl+Q` for quitting. Use `F6` while inside Zellij, or change Zellij's binding if you want `Ctrl+Q` to reach Relay. Relay intentionally keeps `F6` as the unambiguous fallback.
+Zellij's default keymap reserves `Ctrl+Q` for quitting. Choose another Relay binding or use `F6` inside Zellij. Relay intentionally keeps `F6` as the recovery shortcut regardless of the configured primary binding.
 
 ### Bring an existing session into Relay
 
-Existing sessions remain in their native harness. To adopt one, run Relay from the same workspace, open Codex's `/resume` or OpenCode's `/sessions`, and select it normally. Once that session is idle, `Ctrl+Q` or `F6` imports its completed visible turns and opens the other harness with that context. On a cold launch, wait two seconds after the selection `Enter`; on a warm session, Relay conservatively treats a recent `Enter` as a model request until it observes a completed native turn. If a non-model command leaves the session unchanged and the switch rings the bell, wait briefly and retry. OpenCode can then be adopted without sending it a new prompt because Relay reads the exact native continuation ID from its graceful exit rather than guessing from screen content.
+Existing sessions remain in their native harness. To adopt one, run Relay from the same workspace, open Codex's `/resume` or OpenCode's `/sessions`, and select it normally. Once that session is idle, use the configured switch binding or `F6` to import its completed visible turns and open the other harness with that context. On a cold launch, wait two seconds after the selection `Enter`; on a warm session, Relay conservatively treats a recent `Enter` as a model request until it observes a completed native turn. If a non-model command leaves the session unchanged and the switch rings the bell, wait briefly and retry. OpenCode can then be adopted without sending it a new prompt because Relay reads the exact native continuation ID from its graceful exit rather than guessing from screen content.
 
 The other harness binding is lazy. If it does not exist yet, Relay creates and seeds it only when you first switch there. Returning later resumes the same two native bindings.
 
@@ -165,6 +179,8 @@ The native TUI is the primary interface. Relay also keeps a headless surface for
 
 ```bash
 relay doctor
+relay config
+relay config set switch-key ctrl+g
 relay new "Improve the parser" --with codex
 relay ask "Find the edge case and add a focused test"
 relay ask --with opencode "Review the implementation"
@@ -181,7 +197,7 @@ See the [command guide](docs/commands.md) for full examples.
 
 ## Storage and performance
 
-Relay stores canonical visible message text and task metadata under `~/.local/share/relay` by default. Metadata includes the task ID, directory, active harness, active-context boundary, native session IDs, synchronization cursors, native undo visibility, and timestamps.
+Relay stores its versioned `config.json`, canonical visible message text, and task metadata under `~/.local/share/relay` by default. Metadata includes the task ID, directory, active harness, active-context boundary, native session IDs, synchronization cursors, native undo visibility, and timestamps.
 
 It does not copy credential files, vendor session databases, raw terminal output, or tool traces. Canonical messages use append-only JSON Lines within the active conversation. When you adopt a different native conversation, Relay compacts the superseded canonical prefix; the vendor's own session remains the source of truth if you select it again. Switch handoffs scan only the active log with a bounded message and character window; OpenCode recovery reads vendor history in cursor pages and immediately discards non-visible tool payloads. Submission safety checks do not reread full conversations: Codex returns at most five turn summaries and OpenCode returns at most 20 recent message records. While a TUI is active, Relay otherwise keeps only small routing queues, the handoff delta needed for a switch, and—for OpenCode only—an in-memory exit tail capped at 8 KiB so it can recognize the selected continuation ID. That tail is discarded when the native process exits and is never written to Relay storage.
 

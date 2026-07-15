@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { stopProcessTree } from "../services/process-runner.ts";
 import { trackManagedProcess, untrackManagedProcess } from "../services/process-registry.ts";
 import { NativeInputRouter } from "./input-router.ts";
+import type { SwitchKeyBinding } from "../switch-key.ts";
 
 export interface NativeTuiCommand {
   readonly executable: string;
@@ -48,6 +49,8 @@ export interface NativePtyIo {
 }
 
 export interface NativePtyOptions {
+  /** Primary Relay switch binding. F6 remains available as a fixed fallback. */
+  readonly switchKey?: SwitchKeyBinding;
   readonly sequenceTimeoutMs?: number;
   /** Prevent a just-submitted cold turn from being detached before backend status materializes. */
   readonly submitGraceMs?: number;
@@ -154,7 +157,7 @@ export const releaseNativeTuiInput = (input: NativePtyIo["input"] = process.stdi
 
 /**
  * Hosts an upstream TUI in a real PTY. Output is forwarded unchanged and all
- * input except Relay's Ctrl+Q / F6 toggle is written unchanged to the child.
+ * input except Relay's configured toggle and F6 fallback is written unchanged to the child.
  */
 export const runNativeTui = async (
   command: NativeTuiCommand,
@@ -164,7 +167,7 @@ export const runNativeTui = async (
   if (!io.input.isTTY) throw new Error("Relay's native interface needs an interactive terminal");
 
   const preservedPump = nativeInputPumps.get(io.input);
-  const router = new NativeInputRouter();
+  const router = new NativeInputRouter(options.switchKey);
   const initialRawMode = preservedPump?.initialRawMode ?? io.input.isRaw === true;
   let inputPump: NativeInputPump | undefined;
   let switchRequested = false;
@@ -276,29 +279,7 @@ export const runNativeTui = async (
     }
   };
 
-  const onInput = (chunk: Buffer | Uint8Array | string) => {
-    if (sequenceTimer) {
-      clearTimeout(sequenceTimer);
-      sequenceTimer = undefined;
-    }
-    const bytes = bytesFrom(chunk);
-    if (switchRequested) {
-      if (inputPump) bufferStandbyInput(inputPump, bytes);
-      return;
-    }
-    if (parentSignal) return;
-    if (switchCheckPending) {
-      let sawInterrupt = false;
-      const filtered = bytes.filter((byte) => {
-        if (byte !== 0x03) return true;
-        sawInterrupt = true;
-        return false;
-      });
-      if (sawInterrupt) io.resizeSource.emit("SIGINT");
-      bufferBoundedInput(pendingSwitchInput, filtered, handoffInputLimitBytes);
-      return;
-    }
-    const routed = router.route(bytes);
+  const processRoutedInput = (routed: ReturnType<NativeInputRouter["route"]>) => {
     if (routed.submitObserved) {
       lastSubmitAt = now();
       try {
@@ -360,7 +341,31 @@ export const runNativeTui = async (
   };
   const flushSequence = () => {
     sequenceTimer = undefined;
-    writeInput(router.flushPendingSequence());
+    processRoutedInput(router.flushPendingRoute());
+  };
+  const onInput = (chunk: Buffer | Uint8Array | string) => {
+    if (sequenceTimer) {
+      clearTimeout(sequenceTimer);
+      sequenceTimer = undefined;
+    }
+    const bytes = bytesFrom(chunk);
+    if (switchRequested) {
+      if (inputPump) bufferStandbyInput(inputPump, bytes);
+      return;
+    }
+    if (parentSignal) return;
+    if (switchCheckPending) {
+      let sawInterrupt = false;
+      const filtered = bytes.filter((byte) => {
+        if (byte !== 0x03) return true;
+        sawInterrupt = true;
+        return false;
+      });
+      if (sawInterrupt) io.resizeSource.emit("SIGINT");
+      bufferBoundedInput(pendingSwitchInput, filtered, handoffInputLimitBytes);
+      return;
+    }
+    processRoutedInput(router.route(bytes));
   };
   const onResize = () => {
     const next = dimensions(io.output);

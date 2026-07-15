@@ -30,6 +30,24 @@ describe("parseArgs", () => {
     expect(parseArgs(["native", "opencode"])).toEqual({ name: "native", harness: "opencode" });
   });
 
+  it("parses switch-key configuration commands without constraining the binding", () => {
+    expect(parseArgs(["config"])).toEqual({ name: "config", action: "get" });
+    expect(parseArgs(["config", "get", "switch-key"])).toEqual({
+      name: "config",
+      action: "get",
+    });
+    expect(parseArgs(["config", "set", "switch-key", "Super+Hyper+KeyCode:60000"])).toEqual({
+      name: "config",
+      action: "set",
+      value: "Super+Hyper+KeyCode:60000",
+    });
+    expect(parseArgs(["config", "reset", "switch-key"])).toEqual({
+      name: "config",
+      action: "reset",
+    });
+    expect(() => parseArgs(["config", "set", "switch-key"])).toThrow("Usage: relay config");
+  });
+
   it("parses task export and explicit deletion", () => {
     expect(parseArgs(["export", "abc123", "--out", "task.json"])).toEqual({
       name: "export",

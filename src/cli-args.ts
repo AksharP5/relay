@@ -9,6 +9,9 @@ export type CliCommand =
   | { readonly name: "status" }
   | { readonly name: "list" }
   | { readonly name: "history" }
+  | { readonly name: "config"; readonly action: "get" }
+  | { readonly name: "config"; readonly action: "set"; readonly value: string }
+  | { readonly name: "config"; readonly action: "reset" }
   | { readonly name: "new"; readonly title: string; readonly harness: Harness }
   | { readonly name: "use"; readonly harness: Harness }
   | { readonly name: "thread"; readonly threadId: string }
@@ -88,6 +91,21 @@ const parseTaskFileCommand = (
   return { name: "delete", ...(threadId ? { threadId } : {}), force };
 };
 
+const parseConfig = (args: ReadonlyArray<string>): CliCommand => {
+  if (args.length === 0 || (args.length === 2 && args[0] === "get" && args[1] === "switch-key")) {
+    return { name: "config", action: "get" };
+  }
+  if (args.length === 3 && args[0] === "set" && args[1] === "switch-key") {
+    return { name: "config", action: "set", value: args[2]! };
+  }
+  if (args.length === 2 && args[0] === "reset" && args[1] === "switch-key") {
+    return { name: "config", action: "reset" };
+  }
+  throw new CliError({
+    message: "Usage: relay config [get switch-key | set switch-key <binding> | reset switch-key]",
+  });
+};
+
 export const parseArgs = (args: ReadonlyArray<string>): CliCommand => {
   const [command, ...rest] = args;
   if (!command || command === "help" || command === "--help" || command === "-h")
@@ -98,6 +116,7 @@ export const parseArgs = (args: ReadonlyArray<string>): CliCommand => {
     return { name: command };
   }
   if (command === "ask") return parseAsk(rest);
+  if (command === "config") return parseConfig(rest);
   if (command === "export" || command === "delete") return parseTaskFileCommand(command, rest);
   if (command === "native") {
     const harness = rest[0];

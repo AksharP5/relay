@@ -12,7 +12,7 @@ Relay selects the most recent task for the current directory or creates one, the
 
 Inside Codex, Codex owns its composer and slash commands. Inside OpenCode, OpenCode owns them. Relay does not translate `/resume` into `/sessions`, replace `/undo`, or focus a second command dialog. Type commands exactly as you would when launching that CLI directly.
 
-Press `Ctrl+Q` to switch directly to the other harness. `F6` remains the fallback (`Fn+F6` when macOS treats the function row as media keys). Zellij reserves `Ctrl+Q` in its default keymap, so use the fallback there or change Zellij's binding. There is no prefix chord or Relay-owned selector. See the [README terminal notes](../README.md#terminal-shortcuts).
+Press the configured switch key (`Ctrl+Q` by default) to switch directly to the other harness. `F6` remains the fixed fallback (`Fn+F6` when macOS treats the function row as media keys). There is no prefix chord or Relay-owned selector. See the [README terminal notes](../README.md#terminal-shortcuts).
 
 `/harness` is intentionally not intercepted. It is ordinary native composer input, just like every other slash command. Relay cannot distinguish the main composer from native dialogs, Vim state, search fields, history edits, or an external editor by reading raw PTY bytes. Adding a fake text parser would make the native interfaces less reliable.
 
@@ -25,7 +25,7 @@ Start Relay from the workspace that owns the session, then use the selected harn
 1. In Codex, run `/resume`. In OpenCode, run `/sessions`.
 2. Select an existing session from the current workspace.
 3. Let any active turn finish. On a cold launch, also wait two seconds after the selection `Enter`. On a warm session, Relay must conservatively treat a recent `Enter` as a possible model request unless a completed native turn proves it has finished.
-4. Press `Ctrl+Q` or `F6` to cross into the other harness. If you press too early, Relay rings the bell and leaves the native TUI untouched; wait, then retry.
+4. Press the configured switch key or `F6` to cross into the other harness. If you press too early, Relay rings the bell and leaves the native TUI untouched; wait, then retry.
 
 Relay rebinds the current task to the selected native session and imports its completed visible turns. If the destination harness has no binding yet, Relay creates and seeds one at this first switch; merely opening the source session does not create both sessions in advance.
 
@@ -46,6 +46,24 @@ The project’s scheduled compatibility workflow installs the latest stable Code
 ```bash
 bun run compat:latest
 ```
+
+## Configure the switch key
+
+Relay accepts the same familiar key naming style used by OpenCode:
+
+```bash
+relay config
+relay config get switch-key
+relay config set switch-key ctrl+g
+relay config set switch-key shift+return
+relay config set switch-key alt+space
+relay config set switch-key none
+relay config reset switch-key
+```
+
+The binding is a case-insensitive single key chord, not a restricted preset. Modifiers can be combined freely with printable Unicode keys, named navigation/editing keys, function keys, keypad keys, media keys, or a raw `KeyCode:<number>` from a CSI-u/Kitty terminal report. `none` disables the primary shortcut. Relay warns about a binding that a legacy terminal cannot distinguish or that will consume normal typing, but it still saves the user's choice.
+
+The setting lives in `config.json` under Relay's data directory and applies on the next bare `relay` launch. `F6` cannot be removed and remains available if the chosen binding is intercepted by a terminal, multiplexer, or native TUI.
 
 ## Start and select tasks
 

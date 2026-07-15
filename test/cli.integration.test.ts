@@ -45,6 +45,55 @@ afterEach(async () => {
 });
 
 describe("Relay CLI storage", () => {
+  it("persists, reports, and resets any terminal-observable switch key", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-config-"));
+    tempRoots.push(root);
+
+    const initial = await runRelay(root, ["config"]);
+    expect(initial.exitCode).toBe(0);
+    expect(initial.stdout).toContain("Ctrl+Q");
+    expect(initial.stdout).toContain("F6");
+
+    const configured = await runRelay(root, [
+      "config",
+      "set",
+      "switch-key",
+      "Super+Hyper+Meta+KeyCode:60000",
+    ]);
+    expect(configured.exitCode).toBe(0);
+    expect(configured.stdout).toContain("Super+Hyper+Meta+KeyCode:60000");
+    expect(configured.stdout).toContain("CSI-u/Kitty");
+
+    const configPath = join(root, "config.json");
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
+      version: 1,
+      switchKey: "Super+Hyper+Meta+KeyCode:60000",
+    });
+    expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+    expect((await stat(root)).mode & 0o777).toBe(0o700);
+
+    const reported = await runRelay(root, ["config", "get", "switch-key"]);
+    expect(reported.stdout).toContain("Super+Hyper+Meta+KeyCode:60000");
+
+    const invalid = await runRelay(root, ["config", "set", "switch-key", "Ctrl+K+P"]);
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.stderr).toContain("Unsupported switch key");
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
+      switchKey: "Super+Hyper+Meta+KeyCode:60000",
+    });
+
+    const reset = await runRelay(root, ["config", "reset", "switch-key"]);
+    expect(reset.exitCode).toBe(0);
+    expect((await runRelay(root, ["config"])).stdout).toContain("Ctrl+Q");
+
+    const futureConfig = '{"version":2,"switchKey":"ctrl+g"}\n';
+    await writeFile(configPath, futureConfig);
+    const future = await runRelay(root, ["config"]);
+    expect(future.exitCode).toBe(1);
+    expect(future.stderr).toContain("unsupported settings version 2");
+    expect(await readFile(configPath, "utf8")).toBe(futureConfig);
+  });
+
   it("hands off only unseen context across a real Codex → OpenCode → Codex process flow", async () => {
     const root = await mkdtemp(join(tmpdir(), "relay-handoff-"));
     const bin = join(root, "bin");

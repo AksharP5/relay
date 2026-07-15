@@ -7,6 +7,7 @@ import type {
 } from "../domain.ts";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { SwitchKeyBinding } from "../switch-key.ts";
 import { CodexNativeBackend } from "./codex-backend.ts";
 import type { NativeRelayController } from "./controller.ts";
 import { NativeSessionUnavailable } from "./errors.ts";
@@ -154,13 +155,18 @@ export interface NativeRelayHostDependencies {
   readonly now: () => number;
 }
 
-const defaultDependencies: NativeRelayHostDependencies = {
+export interface NativeRelayHostOptions {
+  readonly switchKey?: SwitchKeyBinding;
+}
+
+const defaultDependencies = (options: NativeRelayHostOptions): NativeRelayHostDependencies => ({
   startBackend,
   runTui: (command, onSwitchRequest, onSubmitObserved, coldLaunch, harness) =>
     runNativeTui(
       command,
       { input: process.stdin, output: process.stdout, resizeSource: process },
       {
+        ...(options.switchKey ? { switchKey: options.switchKey } : {}),
         onSwitchRequest,
         onSubmitObserved,
         submitGraceMs: coldLaunch ? 2_000 : 0,
@@ -174,7 +180,7 @@ const defaultDependencies: NativeRelayHostDependencies = {
   signalSource: process,
   wait: Bun.sleep,
   now: Date.now,
-};
+});
 
 const signalExitCode = (signal: NativeParentSignal) =>
   ({ SIGHUP: 129, SIGINT: 130, SIGTERM: 143, SIGQUIT: 131 })[signal];
@@ -557,8 +563,9 @@ const runHarness = async (
 export const launchNativeRelay = async (
   controller: NativeRelayController,
   overrides: Partial<NativeRelayHostDependencies> = {},
+  options: NativeRelayHostOptions = {},
 ) => {
-  const dependencies = { ...defaultDependencies, ...overrides };
+  const dependencies = { ...defaultDependencies(options), ...overrides };
   let pendingSignal: NativeParentSignal | undefined;
   const signalSubscribers = new Set<(signal: NativeParentSignal) => void>();
   const onSignal = (signal: NativeParentSignal) => {

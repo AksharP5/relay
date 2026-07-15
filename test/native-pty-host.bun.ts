@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 
 import { NativeInputRouter } from "../src/native/input-router.ts";
 import { releaseNativeTuiInput, runNativeTui } from "../src/native/pty-host.ts";
+import { legacySwitchSequences, parseSwitchKey } from "../src/switch-key.ts";
 
 class TestInput extends EventEmitter {
   isTTY = true;
@@ -216,9 +217,164 @@ describe("native input routing", () => {
     expect(split.route(Buffer.from("\u001b[93;")).forward).toHaveLength(0);
     expect(Buffer.from(split.route(Buffer.from("5ur")).forward).toString()).toBe("\u001b[93;5ur");
   });
+
+  it("routes user-selected keys while preserving the former default", () => {
+    const ctrlG = new NativeInputRouter(parseSwitchKey("Ctrl+G"));
+    expect(ctrlG.route(Buffer.from([0x11])).switchRequested).toBe(false);
+    expect(ctrlG.route(Buffer.from([0x07])).switchRequested).toBe(true);
+
+    const ctrlShiftK = new NativeInputRouter(parseSwitchKey("Ctrl+Shift+K"));
+    expect(ctrlShiftK.route(Buffer.from("\u001b[107;6u")).switchRequested).toBe(true);
+    for (const event of ["\u001b[107;6:2u", "\u001b[107;6:3u"]) {
+      expect(
+        new NativeInputRouter(parseSwitchKey("Ctrl+Shift+K")).route(Buffer.from(event))
+          .switchRequested,
+      ).toBe(false);
+    }
+
+    const alternateKey = new NativeInputRouter(parseSwitchKey("Ctrl+Shift+Plus"));
+    expect(alternateKey.route(Buffer.from("\u001b[61:43;6u")).switchRequested).toBe(true);
+
+    const altShiftK = new NativeInputRouter(parseSwitchKey("Alt+Shift+K"));
+    expect(altShiftK.route(Buffer.from("\u001b")).forward).toHaveLength(0);
+    expect(altShiftK.route(Buffer.from("K")).switchRequested).toBe(true);
+
+    const altShiftTabBinding = parseSwitchKey("Alt+Shift+Tab");
+    const [altShiftTabSequence] = legacySwitchSequences(altShiftTabBinding);
+    expect(Buffer.from(altShiftTabSequence!).toString("hex")).toBe("1b1b5b5a");
+    expect(
+      new NativeInputRouter(altShiftTabBinding).route(altShiftTabSequence!).switchRequested,
+    ).toBe(true);
+
+    const ambiguousAlt = new NativeInputRouter(parseSwitchKey("Alt+["));
+    expect(ambiguousAlt.route(Buffer.from("\u001b[")).switchRequested).toBe(false);
+    expect(ambiguousAlt.pendingTimeoutMs(500)).toBe(25);
+    expect(ambiguousAlt.flushPendingRoute().switchRequested).toBe(true);
+
+    const f1 = new NativeInputRouter(parseSwitchKey("F1"));
+    expect(f1.route(Buffer.from("\u001bO")).forward).toHaveLength(0);
+    expect(f1.route(Buffer.from("P")).switchRequested).toBe(true);
+  });
+
+  it("matches only whole terminal tokens, never characters inside an escape sequence", () => {
+    for (const [binding, sequence] of [
+      ["Escape", "\u001b[A"],
+      ["[", "\u001b[B"],
+      ["Shift+A", "\u001b[A"],
+      ["1", "\u001b[1;2A"],
+    ] as const) {
+      const routed = new NativeInputRouter(parseSwitchKey(binding)).route(Buffer.from(sequence));
+      expect(routed.switchRequested, binding).toBe(false);
+      expect(Buffer.from(routed.forward).toString(), binding).toBe(sequence);
+    }
+
+    expect(
+      new NativeInputRouter(parseSwitchKey("Super+Left")).route(Buffer.from("\u001b[57350;9u"))
+        .switchRequested,
+    ).toBe(true);
+    expect(
+      new NativeInputRouter(parseSwitchKey("Super+Left")).route(Buffer.from("\u001b[1;9D"))
+        .switchRequested,
+    ).toBe(true);
+  });
+
+  it("requires enhanced reports for modified control keys that legacy input collapses", () => {
+    for (const [binding, legacy, enhanced] of [
+      ["Shift+Return", "\r", "\u001b[13;2u"],
+      ["Ctrl+Return", "\r", "\u001b[13;5u"],
+      ["Ctrl+Tab", "\t", "\u001b[9;5u"],
+      ["Shift+Escape", "\u001b", "\u001b[27;2u"],
+      ["Shift+Backspace", "\u007f", "\u001b[127;2u"],
+    ] as const) {
+      const legacyResult = new NativeInputRouter(parseSwitchKey(binding)).route(
+        Buffer.from(legacy),
+      );
+      expect(legacyResult.switchRequested, binding).toBe(false);
+      const resolvedLegacy = new NativeInputRouter(parseSwitchKey(binding));
+      resolvedLegacy.route(Buffer.from(legacy));
+      expect(resolvedLegacy.flushPendingRoute().switchRequested, binding).toBe(false);
+
+      expect(
+        new NativeInputRouter(parseSwitchKey(binding)).route(Buffer.from(enhanced)).switchRequested,
+        binding,
+      ).toBe(true);
+    }
+  });
+
+  it("allows ordinary characters, raw enhanced key codes, and disabling the primary key", () => {
+    const plain = new NativeInputRouter(parseSwitchKey("x")).route(Buffer.from("axb"));
+    expect(Buffer.from(plain.forward).toString()).toBe("a");
+    expect(Buffer.from(plain.afterSwitch).toString()).toBe("b");
+    expect(plain.switchRequested).toBe(true);
+
+    const raw = new NativeInputRouter(parseSwitchKey("Super+Hyper+Meta+KeyCode:60000"));
+    expect(raw.route(Buffer.from("\u001b[60000;57u")).switchRequested).toBe(true);
+
+    const disabled = new NativeInputRouter(parseSwitchKey("none"));
+    expect(disabled.route(Buffer.from([0x11])).switchRequested).toBe(false);
+    expect(disabled.route(Buffer.from("\u001b[17~")).switchRequested).toBe(true);
+  });
+
+  it("protects bracketed paste even when its wrapper contains the configured key", () => {
+    for (const binding of ["Escape", "[", "2", "0", "~"]) {
+      const whole = new NativeInputRouter(parseSwitchKey(binding)).route(
+        Buffer.from("\u001b[200~[20~\u001b[201~"),
+      );
+      expect(whole.switchRequested, binding).toBe(false);
+
+      const fragmented = new NativeInputRouter(parseSwitchKey(binding));
+      expect(fragmented.route(Buffer.from("\u001b[20")).switchRequested).toBe(false);
+      expect(fragmented.route(Buffer.from("0~[20~\u001b[201~")).switchRequested).toBe(false);
+    }
+
+    const escape = new NativeInputRouter(parseSwitchKey("Escape"));
+    expect(escape.route(Buffer.from("\u001b")).switchRequested).toBe(false);
+    expect(escape.flushPendingRoute().switchRequested).toBe(true);
+  });
 });
 
 describe("native PTY host", () => {
+  it("uses the configured switch key for a real hosted TUI", async () => {
+    const input = new TestInput();
+    const output = new TestOutput();
+    const resize = new EventEmitter();
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output, resizeSource: resize },
+      { switchKey: parseSwitchKey("Ctrl+G") },
+    );
+    running.push(result);
+
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
+    input.emit("data", Buffer.from([0x11]));
+    await waitForOutput(output, "INPUT:11");
+    input.emit("data", Buffer.from([0x07]));
+    expect(await result).toEqual({ reason: "switch" });
+  });
+
+  it("switches on a configured Escape after paste-sequence disambiguation", async () => {
+    const input = new TestInput();
+    const output = new TestOutput();
+    const result = runNativeTui(
+      {
+        executable: process.execPath,
+        args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
+        cwd: process.cwd(),
+      },
+      { input, output, resizeSource: new EventEmitter() },
+      { switchKey: parseSwitchKey("Escape") },
+    );
+    running.push(result);
+
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
+    input.emit("data", Buffer.from("\u001b"));
+    expect(await result).toEqual({ reason: "switch" });
+  });
+
   it("forwards native ANSI output and slash-command input without re-rendering", async () => {
     const input = new TestInput();
     const output = new TestOutput();
