@@ -63,6 +63,14 @@ class BlockedOutput extends TestOutput {
 
 const running: Array<Promise<unknown>> = [];
 
+const waitForOutput = async (output: TestOutput, expected: string, timeoutMs = 1_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (!output.text().includes(expected)) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for native output: ${expected}`);
+    await Bun.sleep(5);
+  }
+};
+
 afterEach(async () => {
   await Promise.allSettled(running.splice(0));
 });
@@ -446,10 +454,9 @@ describe("native PTY host", () => {
     );
     running.push(result);
 
-    await Bun.sleep(50);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.from("\u001b"));
-    await Bun.sleep(60);
-    expect(output.text()).toContain("INPUT:1b");
+    await waitForOutput(output, "INPUT:1b");
 
     resize.emit("SIGTERM");
     expect(await result).toEqual({ reason: "signal", signal: "SIGTERM" });

@@ -23,3 +23,6 @@ coverage/
 *.termctrl
 .termctrl/
 .termctrl-artifacts/
+
+# Product video sources, captures, review frames, and renders stay local-only
+marketing/launch-video/
