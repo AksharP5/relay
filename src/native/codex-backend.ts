@@ -212,7 +212,7 @@ export class CodexNativeBackend {
     this.#cwd = input.cwd;
   }
 
-  static async start(executable: string, cwd: string, signal?: AbortSignal, dataRoot?: string) {
+  static async start(executable: string, cwd: string, dataRoot: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const runtimeDirectory = await mkdtemp(join(tmpdir(), "relay-codex-"));
     await chmod(runtimeDirectory, 0o700);
@@ -240,7 +240,7 @@ export class CodexNativeBackend {
         detached: process.platform !== "win32",
       },
     );
-    if (dataRoot) await trackManagedProcess(dataRoot, child, "codex-native-backend");
+    await trackManagedProcess(dataRoot, child, "codex-native-backend");
     let stderr = "";
     if (child.stdout instanceof ReadableStream) void readStream(child.stdout, { limit: 128_000 });
     if (child.stderr instanceof ReadableStream) {

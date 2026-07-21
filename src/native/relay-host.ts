@@ -84,12 +84,12 @@ export const nativeSubmitProtectionMs = (coldLaunch: boolean, harness: Harness) 
 const startBackend = async (
   harness: Harness,
   cwd: string,
+  dataRoot: string,
   signal?: AbortSignal,
-  dataRoot?: string,
 ): Promise<NativeBackend> => {
   const executable = executableFor(harness);
   if (harness === "codex") {
-    const backend = await CodexNativeBackend.start(executable, cwd, signal, dataRoot);
+    const backend = await CodexNativeBackend.start(executable, cwd, dataRoot, signal);
     return {
       preparesColdHandoff: true,
       prepareSession: ({ sessionId, model, handoff, handoffOmittedMessages }) =>
@@ -112,7 +112,7 @@ const startBackend = async (
     };
   }
 
-  const backend = await OpenCodeNativeBackend.start(executable, cwd, signal, dataRoot);
+  const backend = await OpenCodeNativeBackend.start(executable, cwd, dataRoot, signal);
   return {
     prepareSession: async ({ sessionId, title, handoff }) =>
       !sessionId && handoff.length === 0
@@ -158,23 +158,17 @@ export interface NativeRelayHostDependencies {
 
 export interface NativeRelayHostOptions {
   readonly switchKey?: SwitchKeyBinding;
-  readonly dataRoot?: string;
+  readonly dataRoot: string;
 }
 
-const requiredDataRoot = (options: NativeRelayHostOptions) => {
-  if (!options.dataRoot) throw new Error("Relay data root is unavailable");
-  return options.dataRoot;
-};
-
 const defaultDependencies = (options: NativeRelayHostOptions): NativeRelayHostDependencies => ({
-  startBackend: (harness, cwd, signal) =>
-    startBackend(harness, cwd, signal, requiredDataRoot(options)),
+  startBackend: (harness, cwd, signal) => startBackend(harness, cwd, options.dataRoot, signal),
   runTui: (command, onSwitchRequest, onSubmitObserved, coldLaunch, harness) =>
     runNativeTui(
       command,
       { input: process.stdin, output: process.stdout, resizeSource: process },
       {
-        dataRoot: requiredDataRoot(options),
+        dataRoot: options.dataRoot,
         ...(options.switchKey ? { switchKey: options.switchKey } : {}),
         onSwitchRequest,
         onSubmitObserved,
@@ -572,7 +566,7 @@ const runHarness = async (
 export const launchNativeRelay = async (
   controller: NativeRelayController,
   overrides: Partial<NativeRelayHostDependencies> = {},
-  options: NativeRelayHostOptions = {},
+  options: NativeRelayHostOptions,
 ) => {
   const dependencies = { ...defaultDependencies(options), ...overrides };
   let pendingSignal: NativeParentSignal | undefined;

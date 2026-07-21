@@ -808,1051 +808,1044 @@ export class ThreadStore extends Context.Service<
     readonly root: string;
   }
 >()("@relay/ThreadStore") {
+  static readonly make = (paths: RelayPathsShape) => ({
+    root: paths.root,
+
+    create: Effect.fn("ThreadStore.create")((input: CreateThreadInput) =>
+      Effect.tryPromise({
+        try: async () => {
+          const now = new Date().toISOString();
+          const thread: RelayThread = {
+            id: crypto.randomUUID(),
+            title: input.title,
+            cwd: input.cwd,
+            activeHarness: input.harness,
+            bindings: {},
+            lastSeq: 0,
+            createdAt: now,
+            updatedAt: now,
+          };
+          const indexLock = await acquireIndexLock(paths);
+          try {
+            try {
+              await writeThread(paths, thread);
+              await secureDirectory(threadDir(paths, thread.id));
+              await writeFile(eventsPath(paths, thread.id), "", {
+                encoding: "utf8",
+                mode: 0o600,
+              });
+              const index = await loadIndex(paths, { lockHeld: true });
+              await writeIndex(paths, {
+                currentThreadId: thread.id,
+                threadIds: [thread.id, ...index.threadIds.filter((id) => id !== thread.id)],
+              } satisfies RelayIndex);
+            } catch (cause) {
+              await rm(threadDir(paths, thread.id), { recursive: true, force: true });
+              throw cause;
+            }
+          } finally {
+            await indexLock.release();
+          }
+          return thread;
+        },
+        catch: (cause) =>
+          new StoreError({ operation: "create thread", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    current: Effect.fn("ThreadStore.current")(function* () {
+      const index = yield* Effect.tryPromise({
+        try: () => loadIndex(paths),
+        catch: (cause) =>
+          new StoreError({ operation: "read index", message: errorMessage(cause), cause }),
+      });
+      if (index.currentThreadId === null) {
+        return yield* new NoCurrentThread({
+          message: "No Relay task is selected. Run relay new first.",
+        });
+      }
+
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const thread = await readThread(paths, index.currentThreadId!);
+          if (!thread) {
+            throw new ThreadNotFound({
+              threadId: index.currentThreadId!,
+              message: `Relay task ${index.currentThreadId!} was not found`,
+            });
+          }
+          return thread;
+        },
+        catch: (cause) =>
+          cause instanceof ThreadNotFound
+            ? cause
+            : new StoreError({
+                operation: "read current thread",
+                message: errorMessage(cause),
+                cause,
+              }),
+      });
+    }),
+
+    currentMetadata: Effect.fn("ThreadStore.currentMetadata")(function* () {
+      const index = yield* Effect.tryPromise({
+        try: () => loadIndex(paths),
+        catch: (cause) =>
+          new StoreError({ operation: "read index", message: errorMessage(cause), cause }),
+      });
+      if (index.currentThreadId === null) {
+        return yield* new NoCurrentThread({
+          message: "No Relay task is selected. Run relay new first.",
+        });
+      }
+
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const thread = await readThreadMetadata(paths, index.currentThreadId!);
+          if (!thread) {
+            throw new ThreadNotFound({
+              threadId: index.currentThreadId!,
+              message: `Relay task ${index.currentThreadId!} was not found`,
+            });
+          }
+          return thread;
+        },
+        catch: (cause) =>
+          cause instanceof ThreadNotFound
+            ? cause
+            : new StoreError({
+                operation: "read current thread metadata",
+                message: errorMessage(cause),
+                cause,
+              }),
+      });
+    }),
+
+    get: Effect.fn("ThreadStore.get")((id: string) =>
+      Effect.tryPromise({
+        try: async () => {
+          const thread = await readThread(paths, id);
+          if (!thread)
+            throw new ThreadNotFound({
+              threadId: id,
+              message: `Relay task ${id} was not found`,
+            });
+          return thread;
+        },
+        catch: (cause) =>
+          cause instanceof ThreadNotFound
+            ? cause
+            : new StoreError({ operation: "read thread", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    list: Effect.fn("ThreadStore.list")(() =>
+      Effect.tryPromise({
+        try: async () => {
+          const index = await loadIndex(paths);
+          const threads = await Promise.all(
+            index.threadIds.map((id) => readThreadMetadata(paths, id)),
+          );
+          return threads.filter((thread): thread is RelayThread => thread !== undefined);
+        },
+        catch: (cause) =>
+          new StoreError({ operation: "list threads", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    messages: Effect.fn("ThreadStore.messages")((id: string) =>
+      Effect.tryPromise({
+        try: () => readMessages(paths, id),
+        catch: (cause) =>
+          new StoreError({ operation: "read messages", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    messagesSince: Effect.fn("ThreadStore.messagesSince")((id: string, afterSeq: number) =>
+      Effect.tryPromise({
+        try: () => readMessagesSince(paths, id, afterSeq, { maxMessages: 200, maxChars: 120_000 }),
+        catch: (cause) =>
+          new StoreError({
+            operation: "read message delta",
+            message: errorMessage(cause),
+            cause,
+          }),
+      }),
+    ),
+
+    recentMessages: Effect.fn("ThreadStore.recentMessages")(
+      (id: string, options: { readonly maxMessages: number; readonly maxChars: number }) =>
+        Effect.tryPromise({
+          try: () => readRecentMessages(paths, id, options),
+          catch: (cause) =>
+            new StoreError({
+              operation: "read recent messages",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    exportTask: Effect.fn("ThreadStore.exportTask")((thread: RelayThread) =>
+      Effect.tryPromise({
+        try: async () => {
+          const runLease = await acquireTaskRunLease(paths, thread.id);
+          try {
+            const lock = await acquireThreadLock(paths, thread.id);
+            try {
+              const current = await readThreadFile(paths, thread.id);
+              if (!current) throw new Error(`Relay task ${thread.id} no longer exists`);
+              const recovered = await recoverThreadLocked(paths, current.value);
+              const contextStartSeq = recovered.thread.contextStartSeq ?? 0;
+              const messages = visibleMessages(
+                recovered.messages,
+                await readVisibility(paths, thread.id),
+              ).filter((message) => message.seq > contextStartSeq);
+              return {
+                formatVersion: 1 as const,
+                exportedAt: new Date().toISOString(),
+                task: {
+                  id: recovered.thread.id,
+                  title: recovered.thread.title,
+                  cwd: recovered.thread.cwd,
+                  activeHarness: recovered.thread.activeHarness,
+                  createdAt: recovered.thread.createdAt,
+                  updatedAt: recovered.thread.updatedAt,
+                },
+                messages: messages.map((message) => ({
+                  seq: message.seq,
+                  role: message.role,
+                  content: message.content,
+                  harness: message.harness,
+                  createdAt: message.createdAt,
+                })),
+              };
+            } finally {
+              await lock.release();
+            }
+          } finally {
+            await runLease.release();
+          }
+        },
+        catch: (cause) =>
+          new StoreError({ operation: "export task", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    deleteTask: Effect.fn("ThreadStore.deleteTask")((thread: RelayThread) =>
+      Effect.tryPromise({
+        try: async () => {
+          const runLease = await acquireTaskRunLease(paths, thread.id);
+          try {
+            const lock = await acquireThreadLock(paths, thread.id);
+            try {
+              const indexLock = await acquireIndexLock(paths);
+              try {
+                const index = await loadIndex(paths, { lockHeld: true });
+                const remaining = index.threadIds.filter((id) => id !== thread.id);
+                await atomicJsonWrite(paths, deletionPath(paths, thread.id), {
+                  version: 1,
+                  threadId: thread.id,
+                  createdAt: new Date().toISOString(),
+                });
+                await writeIndex(paths, {
+                  currentThreadId:
+                    index.currentThreadId === thread.id
+                      ? (remaining[0] ?? null)
+                      : index.currentThreadId,
+                  threadIds: remaining,
+                } satisfies RelayIndex);
+                await rm(threadDir(paths, thread.id), { recursive: true, force: true });
+                await rm(deletionPath(paths, thread.id), { force: true });
+              } finally {
+                await indexLock.release();
+              }
+            } finally {
+              await lock.release();
+            }
+          } finally {
+            await runLease.release();
+          }
+          return thread;
+        },
+        catch: (cause) =>
+          cause instanceof ThreadBusy
+            ? cause
+            : new StoreError({ operation: "delete task", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    acquireLock: Effect.fn("ThreadStore.acquireLock")((id: string) =>
+      Effect.tryPromise({
+        try: () => acquireThreadLock(paths, id),
+        catch: (cause) =>
+          cause instanceof ThreadBusy
+            ? cause
+            : new StoreError({ operation: "lock thread", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    acquireRunLease: Effect.fn("ThreadStore.acquireRunLease")((id: string) =>
+      Effect.tryPromise({
+        try: () => acquireTaskRunLease(paths, id),
+        catch: (cause) =>
+          cause instanceof ThreadBusy
+            ? cause
+            : new StoreError({
+                operation: "own task run",
+                message: errorMessage(cause),
+                cause,
+              }),
+      }),
+    ),
+
+    acquireExecutionLease: Effect.fn("ThreadStore.acquireExecutionLease")((thread: RelayThread) =>
+      Effect.tryPromise({
+        try: () => acquireExecutionLease(paths, thread),
+        catch: (cause) =>
+          cause instanceof ThreadBusy
+            ? cause
+            : new StoreError({
+                operation: "own checkout run",
+                message: errorMessage(cause),
+                cause,
+              }),
+      }),
+    ),
+
+    canUndoLastTurn: Effect.fn("ThreadStore.canUndoLastTurn")(
+      (thread: RelayThread, harness: Harness) =>
+        Effect.tryPromise({
+          try: async () => {
+            const messages = (await readMessages(paths, thread.id)).filter(
+              (message) => message.seq > (thread.contextStartSeq ?? 0),
+            );
+            const latest = messages.slice(-2);
+            return (
+              latest.length === 2 &&
+              latest[0]?.role === "user" &&
+              latest[1]?.role === "assistant" &&
+              latest[1].harness === harness
+            );
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "check undo state",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    canRedoLastTurn: Effect.fn("ThreadStore.canRedoLastTurn")(
+      (thread: RelayThread, harness: Harness) =>
+        Effect.tryPromise({
+          try: async () => {
+            const entry = (await readUndoState(paths, thread.id)).entries.at(-1);
+            return entry?.thread.activeHarness === harness;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "check redo state",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    commitTurn: Effect.fn("ThreadStore.commitTurn")((thread: RelayThread, input: CommitTurnInput) =>
+      Effect.tryPromise({
+        try: async () => {
+          const now = new Date().toISOString();
+          const user: RelayMessage = {
+            id: crypto.randomUUID(),
+            seq: thread.lastSeq + 1,
+            role: "user",
+            content: input.prompt,
+            harness: input.harness,
+            nativeSessionId: input.sessionId,
+            createdAt: now,
+          };
+          const response: RelayMessage = {
+            id: crypto.randomUUID(),
+            seq: thread.lastSeq + 2,
+            role: "assistant",
+            content: input.response,
+            harness: input.harness,
+            nativeSessionId: input.sessionId,
+            createdAt: now,
+          };
+          const binding: HarnessBinding = {
+            harness: input.harness,
+            sessionId: input.sessionId,
+            ...(input.model ? { model: input.model } : {}),
+            lastSyncedSeq: response.seq,
+            createdAt: input.bindingCreatedAt,
+            updatedAt: now,
+          };
+          const updated: RelayThread = {
+            ...thread,
+            activeHarness: input.harness,
+            bindings: { ...thread.bindings, [input.harness]: binding },
+            preferredModels: {
+              ...thread.preferredModels,
+              ...(input.model ? { [input.harness]: input.model } : {}),
+            },
+            lastSeq: response.seq,
+            updatedAt: now,
+          };
+          const pending: PendingTurn = {
+            version: 1,
+            messages: [user, response],
+            thread: updated,
+          };
+
+          await atomicJsonWrite(paths, pendingPath(paths, thread.id), pending);
+          await appendFile(
+            eventsPath(paths, thread.id),
+            `${JSON.stringify(user)}\n${JSON.stringify(response)}\n`,
+            {
+              encoding: "utf8",
+              mode: 0o600,
+            },
+          );
+          await chmod(eventsPath(paths, thread.id), 0o600);
+          await writeThread(paths, updated);
+          await rm(pendingPath(paths, thread.id), { force: true });
+          await rm(undoPath(paths, thread.id), { force: true });
+          return { thread: updated, response };
+        },
+        catch: (cause) =>
+          new StoreError({ operation: "commit turn", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    bindNativeSession: Effect.fn("ThreadStore.bindNativeSession")(
+      (thread: RelayThread, input: BindNativeSessionInput) =>
+        Effect.tryPromise({
+          try: async () => {
+            const now = new Date().toISOString();
+            const existing = thread.bindings[input.harness];
+            const binding: HarnessBinding = {
+              harness: input.harness,
+              sessionId: input.sessionId,
+              ...(input.model
+                ? { model: input.model }
+                : existing?.model
+                  ? { model: existing.model }
+                  : {}),
+              lastSyncedSeq: input.lastSyncedSeq,
+              ...(input.nativeCursor
+                ? { nativeCursor: input.nativeCursor }
+                : existing?.nativeCursor
+                  ? { nativeCursor: existing.nativeCursor }
+                  : {}),
+              createdAt: existing?.createdAt ?? now,
+              updatedAt: now,
+            };
+            const updated: RelayThread = {
+              ...thread,
+              activeHarness: input.harness,
+              bindings: { ...thread.bindings, [input.harness]: binding },
+              preferredModels: {
+                ...thread.preferredModels,
+                ...(binding.model ? { [input.harness]: binding.model } : {}),
+              },
+              pendingHandoffs: {
+                ...thread.pendingHandoffs,
+                [input.harness]: undefined,
+              },
+              updatedAt: now,
+            };
+            await writeThread(paths, updated);
+            return updated;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "bind native session",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    resetNativeContext: Effect.fn("ThreadStore.resetNativeContext")(
+      (thread: RelayThread, input: ResetNativeContextInput) =>
+        Effect.tryPromise({
+          try: async () => {
+            const now = new Date().toISOString();
+            let nextSeq = thread.lastSeq;
+            const messages = input.turns.flatMap((turn): ReadonlyArray<RelayMessage> => {
+              const user: RelayMessage = {
+                id: crypto.randomUUID(),
+                seq: ++nextSeq,
+                role: "user",
+                content: turn.prompt,
+                harness: input.harness,
+                nativeId: turn.id,
+                nativeSessionId: input.sessionId,
+                createdAt: now,
+              };
+              const assistant: RelayMessage = {
+                id: crypto.randomUUID(),
+                seq: ++nextSeq,
+                role: "assistant",
+                content: turn.response,
+                harness: input.harness,
+                nativeId: turn.id,
+                nativeSessionId: input.sessionId,
+                createdAt: now,
+              };
+              return [user, assistant];
+            });
+            const binding: HarnessBinding = {
+              harness: input.harness,
+              sessionId: input.sessionId,
+              ...(input.model ? { model: input.model } : {}),
+              lastSyncedSeq: nextSeq,
+              ...(input.nativeCursor ? { nativeCursor: input.nativeCursor } : {}),
+              createdAt: now,
+              updatedAt: now,
+            };
+            const bindings: RelayThread["bindings"] =
+              input.harness === "codex" ? { codex: binding } : { opencode: binding };
+            const updated: RelayThread = {
+              ...thread,
+              activeHarness: input.harness,
+              bindings,
+              pendingHandoffs: {},
+              contextStartSeq: thread.lastSeq,
+              preferredModels: {
+                ...thread.preferredModels,
+                ...(binding.model ? { [input.harness]: binding.model } : {}),
+              },
+              lastSeq: nextSeq,
+              ...(input.turns.length > 0 &&
+              (thread.title === "New Relay task" || thread.title === "Untitled task")
+                ? {
+                    title:
+                      input.turns[0]!.prompt.length <= 64
+                        ? input.turns[0]!.prompt
+                        : `${input.turns[0]!.prompt.slice(0, 61)}...`,
+                  }
+                : {}),
+              updatedAt: now,
+            };
+            const visibility: NativeVisibility = {
+              hidden: (input.hiddenTurnIds ?? []).map((nativeId) =>
+                visibilityKey(input.harness, input.sessionId, nativeId),
+              ),
+              links: [],
+            };
+            const pending: PendingTurn = {
+              version: 1,
+              messages: [...messages],
+              thread: updated,
+              replaceEvents: true,
+              visibility,
+            };
+            // The replacement journal is written before any part of the old
+            // context is removed. Recovery replays this exact event set and
+            // metadata, so a crash cannot let a newer turn overtake adoption.
+            await atomicJsonWrite(paths, pendingPath(paths, thread.id), pending);
+            await rm(undoPath(paths, thread.id), { force: true });
+            await atomicTextWrite(
+              paths,
+              eventsPath(paths, thread.id),
+              messages.length > 0
+                ? `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`
+                : "",
+            );
+            await atomicJsonWrite(paths, visibilityPath(paths, thread.id), visibility);
+            await writeThread(paths, updated);
+            await rm(pendingPath(paths, thread.id), { force: true });
+            return updated;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "reset native context",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    beginNativeHandoff: Effect.fn("ThreadStore.beginNativeHandoff")(
+      (thread: RelayThread, input: BeginNativeHandoffInput) =>
+        Effect.tryPromise({
+          try: async () => {
+            const now = new Date().toISOString();
+            const updated: RelayThread = {
+              ...thread,
+              pendingHandoffs: {
+                ...thread.pendingHandoffs,
+                [input.harness]: {
+                  id: crypto.randomUUID(),
+                  harness: input.harness,
+                  ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+                  fromSeq: input.fromSeq,
+                  throughSeq: input.throughSeq,
+                  createdAt: now,
+                },
+              },
+              updatedAt: now,
+            };
+            await writeThread(paths, updated);
+            return updated;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "journal native handoff",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    abandonNativeHandoff: Effect.fn("ThreadStore.abandonNativeHandoff")(
+      (thread: RelayThread, harness: Harness) =>
+        Effect.tryPromise({
+          try: async () => {
+            const bindings = { ...thread.bindings };
+            delete bindings[harness];
+            const updated: RelayThread = {
+              ...thread,
+              bindings,
+              preferredModels: {
+                ...thread.preferredModels,
+                ...(thread.bindings[harness]?.model
+                  ? { [harness]: thread.bindings[harness].model }
+                  : {}),
+              },
+              pendingHandoffs: {
+                ...thread.pendingHandoffs,
+                [harness]: undefined,
+              },
+              updatedAt: new Date().toISOString(),
+            };
+            await writeThread(paths, updated);
+            return updated;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "recover uncertain native handoff",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    importNativeTurns: Effect.fn("ThreadStore.importNativeTurns")(
+      (thread: RelayThread, input: ImportNativeTurnsInput) =>
+        Effect.tryPromise({
+          try: async () => {
+            const existingMessages = await readRawMessages(paths, thread.id);
+            const contextMessages = existingMessages.filter(
+              (message) => message.seq > (thread.contextStartSeq ?? 0),
+            );
+            const visibility = await readVisibility(paths, thread.id);
+            const links = new Map(
+              (visibility.links ?? []).map((link) => [link.messageId, link.key]),
+            );
+            const sessionPrefix = `${input.harness}:${input.sessionId}:`;
+            const contextMessageIds = new Set(contextMessages.map((message) => message.id));
+            const importedIds = new Set([
+              ...contextMessages.flatMap((message) =>
+                message.harness === input.harness &&
+                message.nativeSessionId === input.sessionId &&
+                message.nativeId
+                  ? [message.nativeId]
+                  : [],
+              ),
+              ...(visibility.links ?? []).flatMap((link) =>
+                contextMessageIds.has(link.messageId) && link.key.startsWith(sessionPrefix)
+                  ? [link.key.slice(sessionPrefix.length)]
+                  : [],
+              ),
+            ]);
+            const linkedMessageIds = new Set(
+              [...links.keys()].filter((messageId) => contextMessageIds.has(messageId)),
+            );
+            const linkablePairs = contextMessages.flatMap((user, index) => {
+              const assistant = contextMessages[index + 1];
+              return user.role === "user" &&
+                assistant?.role === "assistant" &&
+                user.harness === input.harness &&
+                assistant.harness === input.harness &&
+                user.nativeSessionId === input.sessionId &&
+                assistant.nativeSessionId === input.sessionId &&
+                !user.nativeId &&
+                !assistant.nativeId &&
+                !linkedMessageIds.has(user.id) &&
+                !linkedMessageIds.has(assistant.id)
+                ? [{ user, assistant, used: false }]
+                : [];
+            });
+            const fresh: Array<NativeTranscriptTurn> = [];
+            for (const turn of input.turns) {
+              if (importedIds.has(turn.id)) continue;
+              const pair = linkablePairs.find(
+                (candidate) =>
+                  !candidate.used &&
+                  candidate.user.content === turn.prompt &&
+                  candidate.assistant.content === turn.response,
+              );
+              if (!pair) {
+                fresh.push(turn);
+                continue;
+              }
+              pair.used = true;
+              const key = visibilityKey(input.harness, input.sessionId, turn.id);
+              links.set(pair.user.id, key);
+              links.set(pair.assistant.id, key);
+            }
+            const now = new Date().toISOString();
+            let nextSeq = thread.lastSeq;
+            const messages = fresh.flatMap((turn): ReadonlyArray<RelayMessage> => {
+              const user: RelayMessage = {
+                id: crypto.randomUUID(),
+                seq: ++nextSeq,
+                role: "user",
+                content: turn.prompt,
+                harness: input.harness,
+                nativeId: turn.id,
+                nativeSessionId: input.sessionId,
+                createdAt: now,
+              };
+              const assistant: RelayMessage = {
+                id: crypto.randomUUID(),
+                seq: ++nextSeq,
+                role: "assistant",
+                content: turn.response,
+                harness: input.harness,
+                nativeId: turn.id,
+                nativeSessionId: input.sessionId,
+                createdAt: now,
+              };
+              return [user, assistant];
+            });
+            const existingBinding = thread.bindings[input.harness];
+            const binding: HarnessBinding = {
+              harness: input.harness,
+              sessionId: input.sessionId,
+              ...(input.model
+                ? { model: input.model }
+                : existingBinding?.model
+                  ? { model: existingBinding.model }
+                  : {}),
+              lastSyncedSeq: messages.length > 0 ? nextSeq : (existingBinding?.lastSyncedSeq ?? 0),
+              ...(input.turns.at(-1)?.id
+                ? { nativeCursor: input.turns.at(-1)!.id }
+                : existingBinding?.nativeCursor
+                  ? { nativeCursor: existingBinding.nativeCursor }
+                  : {}),
+              createdAt: existingBinding?.createdAt ?? now,
+              updatedAt: now,
+            };
+            const updateTitle =
+              fresh.length > 0 &&
+              (thread.title === "New Relay task" || thread.title === "Untitled task");
+            const hiddenBefore = new Set(visibility.hidden);
+            const hidden = new Set(visibility.hidden);
+            const hiddenIds = new Set(input.hiddenTurnIds ?? []);
+            const currentIds = new Set([...input.turns.map((turn) => turn.id), ...hiddenIds]);
+            // Reconcile the native transcript itself, not only messages that
+            // were already present in the current Relay context. Otherwise a
+            // tombstone from an older adopted context can hide a freshly
+            // re-imported OpenCode turn after native redo.
+            for (const nativeId of currentIds) {
+              const key = visibilityKey(input.harness, input.sessionId, nativeId);
+              if (hiddenIds.has(nativeId)) hidden.add(key);
+              else hidden.delete(key);
+            }
+            for (const message of contextMessages) {
+              if (message.harness !== input.harness) continue;
+              const key =
+                message.nativeSessionId === input.sessionId && message.nativeId
+                  ? visibilityKey(input.harness, input.sessionId, message.nativeId)
+                  : links.get(message.id);
+              if (!key || !key.startsWith(sessionPrefix)) continue;
+              const nativeId = key.slice(sessionPrefix.length);
+              if (!currentIds.has(nativeId)) continue;
+              if (hiddenIds.has(nativeId)) hidden.add(key);
+              else hidden.delete(key);
+            }
+            const visibilityChanged =
+              hidden.size !== hiddenBefore.size ||
+              [...hidden].some((key) => !hiddenBefore.has(key));
+            const bindings = { ...thread.bindings, [input.harness]: binding };
+            if (visibilityChanged) {
+              const other = input.harness === "codex" ? "opencode" : "codex";
+              delete bindings[other];
+            }
+            const updated: RelayThread = {
+              ...thread,
+              ...(updateTitle
+                ? {
+                    title:
+                      fresh[0]!.prompt.length <= 64
+                        ? fresh[0]!.prompt
+                        : `${fresh[0]!.prompt.slice(0, 61)}...`,
+                  }
+                : {}),
+              activeHarness: input.harness,
+              bindings,
+              preferredModels: {
+                ...thread.preferredModels,
+                ...(binding.model ? { [input.harness]: binding.model } : {}),
+              },
+              lastSeq: nextSeq,
+              updatedAt: now,
+            };
+
+            if (messages.length > 0) {
+              const pending: PendingTurn = {
+                version: 1,
+                messages: [...messages],
+                thread: updated,
+              };
+              await atomicJsonWrite(paths, pendingPath(paths, thread.id), pending);
+              await appendFile(
+                eventsPath(paths, thread.id),
+                `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
+                { encoding: "utf8", mode: 0o600 },
+              );
+              await chmod(eventsPath(paths, thread.id), 0o600);
+            }
+            if (
+              hidden.size !== hiddenBefore.size ||
+              [...hidden].some((key) => !hiddenBefore.has(key))
+            ) {
+              await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
+                hidden: [...hidden],
+                links: [...links].map(([messageId, key]) => ({ messageId, key })),
+              });
+            } else if (links.size !== (visibility.links?.length ?? 0)) {
+              await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
+                hidden: [...hidden],
+                links: [...links].map(([messageId, key]) => ({ messageId, key })),
+              });
+            }
+            await writeThread(paths, updated);
+            if (messages.length > 0) await rm(pendingPath(paths, thread.id), { force: true });
+            await rm(undoPath(paths, thread.id), { force: true });
+            return updated;
+          },
+          catch: (cause) =>
+            new StoreError({
+              operation: "import native turns",
+              message: errorMessage(cause),
+              cause,
+            }),
+        }),
+    ),
+
+    setCurrent: Effect.fn("ThreadStore.setCurrent")((id: string) =>
+      Effect.tryPromise({
+        try: async () => {
+          const indexLock = await acquireIndexLock(paths);
+          try {
+            if (!(await Bun.file(metadataPath(paths, id)).exists())) {
+              throw new ThreadNotFound({
+                threadId: id,
+                message: `Relay task ${id} was not found`,
+              });
+            }
+            const index = await loadIndex(paths, { lockHeld: true });
+            await writeIndex(paths, {
+              currentThreadId: id,
+              threadIds: [id, ...index.threadIds.filter((threadId) => threadId !== id)],
+            } satisfies RelayIndex);
+          } finally {
+            await indexLock.release();
+          }
+        },
+        catch: (cause) =>
+          cause instanceof ThreadNotFound
+            ? cause
+            : new StoreError({
+                operation: "set current thread",
+                message: errorMessage(cause),
+                cause,
+              }),
+      }),
+    ),
+
+    setHarness: Effect.fn("ThreadStore.setHarness")((thread: RelayThread, harness: Harness) =>
+      Effect.tryPromise({
+        try: async () => {
+          const updated: RelayThread = {
+            ...thread,
+            activeHarness: harness,
+            updatedAt: new Date().toISOString(),
+          };
+          await writeThread(paths, updated);
+          return updated;
+        },
+        catch: (cause) =>
+          new StoreError({ operation: "set harness", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    dropBinding: Effect.fn("ThreadStore.dropBinding")((thread: RelayThread, harness: Harness) =>
+      Effect.tryPromise({
+        try: async () => {
+          const bindings = { ...thread.bindings };
+          delete bindings[harness];
+          const updated: RelayThread = {
+            ...thread,
+            bindings,
+            preferredModels: {
+              ...thread.preferredModels,
+              ...(thread.bindings[harness]?.model
+                ? { [harness]: thread.bindings[harness].model }
+                : {}),
+            },
+            pendingHandoffs: {
+              ...thread.pendingHandoffs,
+              [harness]: undefined,
+            },
+            updatedAt: new Date().toISOString(),
+          };
+          await writeThread(paths, updated);
+          return updated;
+        },
+        catch: (cause) =>
+          new StoreError({
+            operation: "drop uncertain binding",
+            message: errorMessage(cause),
+            cause,
+          }),
+      }),
+    ),
+
+    undoLastTurn: Effect.fn("ThreadStore.undoLastTurn")((thread: RelayThread, harness: Harness) =>
+      Effect.tryPromise({
+        try: async () => {
+          const [messages, rawMessages] = await Promise.all([
+            readMessages(paths, thread.id),
+            readRawMessages(paths, thread.id),
+          ]);
+          const contextMessages = messages.filter(
+            (message) => message.seq > (thread.contextStartSeq ?? 0),
+          );
+          const removed = contextMessages.slice(-2);
+          if (
+            removed.length !== 2 ||
+            removed[0]?.role !== "user" ||
+            removed[1]?.role !== "assistant" ||
+            removed[1].harness !== harness
+          ) {
+            throw new NoCurrentThread({
+              message: `There is no latest ${harness} turn to undo safely`,
+            });
+          }
+          const removedIds = new Set(removed.map((message) => message.id));
+          const remaining = messages.filter((message) => !removedIds.has(message.id));
+          const remainingRaw = rawMessages.filter((message) => !removedIds.has(message.id));
+          const lastSeq = remainingRaw.at(-1)?.seq ?? 0;
+          const lastVisibleSeq = remaining.at(-1)?.seq ?? 0;
+          const lastHarnessSeq =
+            remaining.findLast(
+              (message) =>
+                message.seq > (thread.contextStartSeq ?? 0) &&
+                message.role === "assistant" &&
+                message.harness === harness,
+            )?.seq ??
+            thread.contextStartSeq ??
+            0;
+          const binding = thread.bindings[harness];
+          const bindings = { ...thread.bindings };
+          if (binding) {
+            bindings[harness] = {
+              ...binding,
+              lastSyncedSeq: Math.min(binding.lastSyncedSeq, lastHarnessSeq),
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          const other = harness === "codex" ? "opencode" : "codex";
+          if (bindings[other] && bindings[other]!.lastSyncedSeq > lastVisibleSeq)
+            delete bindings[other];
+          const updated: RelayThread = {
+            ...thread,
+            bindings,
+            lastSeq,
+            updatedAt: new Date().toISOString(),
+          };
+          const state = await readUndoState(paths, thread.id);
+          await atomicJsonWrite(paths, undoPath(paths, thread.id), {
+            entries: [...state.entries, { messages: removed, thread }],
+          });
+          await atomicTextWrite(
+            paths,
+            eventsPath(paths, thread.id),
+            remainingRaw.map((message) => JSON.stringify(message)).join("\n") +
+              (remainingRaw.length ? "\n" : ""),
+          );
+          await writeThread(paths, updated);
+          return updated;
+        },
+        catch: (cause) =>
+          cause instanceof NoCurrentThread
+            ? cause
+            : new StoreError({ operation: "undo turn", message: errorMessage(cause), cause }),
+      }),
+    ),
+
+    redoLastTurn: Effect.fn("ThreadStore.redoLastTurn")((thread: RelayThread, harness: Harness) =>
+      Effect.tryPromise({
+        try: async () => {
+          const state = await readUndoState(paths, thread.id);
+          const entry = state.entries.at(-1);
+          if (!entry || entry.thread.activeHarness !== harness) {
+            throw new NoCurrentThread({ message: "There is no turn to redo" });
+          }
+          const messages = await readRawMessages(paths, thread.id);
+          const restored = [...messages, ...entry.messages].sort(
+            (left, right) => left.seq - right.seq,
+          );
+          await atomicTextWrite(
+            paths,
+            eventsPath(paths, thread.id),
+            `${restored.map((message) => JSON.stringify(message)).join("\n")}\n`,
+          );
+          await writeThread(paths, entry.thread);
+          const visibility = await readVisibility(paths, thread.id);
+          const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
+          const restoredKeys = new Set(
+            entry.messages.flatMap((message) => {
+              const key =
+                message.nativeId && message.nativeSessionId
+                  ? visibilityKey(message.harness, message.nativeSessionId, message.nativeId)
+                  : links.get(message.id);
+              return key ? [key] : [];
+            }),
+          );
+          const hidden = visibility.hidden.filter((key) => !restoredKeys.has(key));
+          if (hidden.length !== visibility.hidden.length) {
+            await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
+              hidden,
+              ...(visibility.links ? { links: visibility.links } : {}),
+            });
+          }
+          const entries = state.entries.slice(0, -1);
+          if (entries.length) await atomicJsonWrite(paths, undoPath(paths, thread.id), { entries });
+          else await rm(undoPath(paths, thread.id), { force: true });
+          return entry.thread;
+        },
+        catch: (cause) =>
+          cause instanceof NoCurrentThread
+            ? cause
+            : new StoreError({ operation: "redo turn", message: errorMessage(cause), cause }),
+      }),
+    ),
+  });
+
   static readonly configuredLayer = Layer.effect(
     ThreadStore,
     Effect.gen(function* () {
       const paths = yield* RelayPaths;
-      return ThreadStore.of({
-        root: paths.root,
-
-        create: Effect.fn("ThreadStore.create")((input: CreateThreadInput) =>
-          Effect.tryPromise({
-            try: async () => {
-              const now = new Date().toISOString();
-              const thread: RelayThread = {
-                id: crypto.randomUUID(),
-                title: input.title,
-                cwd: input.cwd,
-                activeHarness: input.harness,
-                bindings: {},
-                lastSeq: 0,
-                createdAt: now,
-                updatedAt: now,
-              };
-              const indexLock = await acquireIndexLock(paths);
-              try {
-                try {
-                  await writeThread(paths, thread);
-                  await secureDirectory(threadDir(paths, thread.id));
-                  await writeFile(eventsPath(paths, thread.id), "", {
-                    encoding: "utf8",
-                    mode: 0o600,
-                  });
-                  const index = await loadIndex(paths, { lockHeld: true });
-                  await writeIndex(paths, {
-                    currentThreadId: thread.id,
-                    threadIds: [thread.id, ...index.threadIds.filter((id) => id !== thread.id)],
-                  } satisfies RelayIndex);
-                } catch (cause) {
-                  await rm(threadDir(paths, thread.id), { recursive: true, force: true });
-                  throw cause;
-                }
-              } finally {
-                await indexLock.release();
-              }
-              return thread;
-            },
-            catch: (cause) =>
-              new StoreError({ operation: "create thread", message: errorMessage(cause), cause }),
-          }),
-        ),
-
-        current: Effect.fn("ThreadStore.current")(function* () {
-          const index = yield* Effect.tryPromise({
-            try: () => loadIndex(paths),
-            catch: (cause) =>
-              new StoreError({ operation: "read index", message: errorMessage(cause), cause }),
-          });
-          if (index.currentThreadId === null) {
-            return yield* new NoCurrentThread({
-              message: "No Relay task is selected. Run relay new first.",
-            });
-          }
-
-          return yield* Effect.tryPromise({
-            try: async () => {
-              const thread = await readThread(paths, index.currentThreadId!);
-              if (!thread) {
-                throw new ThreadNotFound({
-                  threadId: index.currentThreadId!,
-                  message: `Relay task ${index.currentThreadId!} was not found`,
-                });
-              }
-              return thread;
-            },
-            catch: (cause) =>
-              cause instanceof ThreadNotFound
-                ? cause
-                : new StoreError({
-                    operation: "read current thread",
-                    message: errorMessage(cause),
-                    cause,
-                  }),
-          });
-        }),
-
-        currentMetadata: Effect.fn("ThreadStore.currentMetadata")(function* () {
-          const index = yield* Effect.tryPromise({
-            try: () => loadIndex(paths),
-            catch: (cause) =>
-              new StoreError({ operation: "read index", message: errorMessage(cause), cause }),
-          });
-          if (index.currentThreadId === null) {
-            return yield* new NoCurrentThread({
-              message: "No Relay task is selected. Run relay new first.",
-            });
-          }
-
-          return yield* Effect.tryPromise({
-            try: async () => {
-              const thread = await readThreadMetadata(paths, index.currentThreadId!);
-              if (!thread) {
-                throw new ThreadNotFound({
-                  threadId: index.currentThreadId!,
-                  message: `Relay task ${index.currentThreadId!} was not found`,
-                });
-              }
-              return thread;
-            },
-            catch: (cause) =>
-              cause instanceof ThreadNotFound
-                ? cause
-                : new StoreError({
-                    operation: "read current thread metadata",
-                    message: errorMessage(cause),
-                    cause,
-                  }),
-          });
-        }),
-
-        get: Effect.fn("ThreadStore.get")((id: string) =>
-          Effect.tryPromise({
-            try: async () => {
-              const thread = await readThread(paths, id);
-              if (!thread)
-                throw new ThreadNotFound({
-                  threadId: id,
-                  message: `Relay task ${id} was not found`,
-                });
-              return thread;
-            },
-            catch: (cause) =>
-              cause instanceof ThreadNotFound
-                ? cause
-                : new StoreError({ operation: "read thread", message: errorMessage(cause), cause }),
-          }),
-        ),
-
-        list: Effect.fn("ThreadStore.list")(() =>
-          Effect.tryPromise({
-            try: async () => {
-              const index = await loadIndex(paths);
-              const threads = await Promise.all(
-                index.threadIds.map((id) => readThreadMetadata(paths, id)),
-              );
-              return threads.filter((thread): thread is RelayThread => thread !== undefined);
-            },
-            catch: (cause) =>
-              new StoreError({ operation: "list threads", message: errorMessage(cause), cause }),
-          }),
-        ),
-
-        messages: Effect.fn("ThreadStore.messages")((id: string) =>
-          Effect.tryPromise({
-            try: () => readMessages(paths, id),
-            catch: (cause) =>
-              new StoreError({ operation: "read messages", message: errorMessage(cause), cause }),
-          }),
-        ),
-
-        messagesSince: Effect.fn("ThreadStore.messagesSince")((id: string, afterSeq: number) =>
-          Effect.tryPromise({
-            try: () =>
-              readMessagesSince(paths, id, afterSeq, { maxMessages: 200, maxChars: 120_000 }),
-            catch: (cause) =>
-              new StoreError({
-                operation: "read message delta",
-                message: errorMessage(cause),
-                cause,
-              }),
-          }),
-        ),
-
-        recentMessages: Effect.fn("ThreadStore.recentMessages")(
-          (id: string, options: { readonly maxMessages: number; readonly maxChars: number }) =>
-            Effect.tryPromise({
-              try: () => readRecentMessages(paths, id, options),
-              catch: (cause) =>
-                new StoreError({
-                  operation: "read recent messages",
-                  message: errorMessage(cause),
-                  cause,
-                }),
-            }),
-        ),
-
-        exportTask: Effect.fn("ThreadStore.exportTask")((thread: RelayThread) =>
-          Effect.tryPromise({
-            try: async () => {
-              const runLease = await acquireTaskRunLease(paths, thread.id);
-              try {
-                const lock = await acquireThreadLock(paths, thread.id);
-                try {
-                  const current = await readThreadFile(paths, thread.id);
-                  if (!current) throw new Error(`Relay task ${thread.id} no longer exists`);
-                  const recovered = await recoverThreadLocked(paths, current.value);
-                  const contextStartSeq = recovered.thread.contextStartSeq ?? 0;
-                  const messages = visibleMessages(
-                    recovered.messages,
-                    await readVisibility(paths, thread.id),
-                  ).filter((message) => message.seq > contextStartSeq);
-                  return {
-                    formatVersion: 1 as const,
-                    exportedAt: new Date().toISOString(),
-                    task: {
-                      id: recovered.thread.id,
-                      title: recovered.thread.title,
-                      cwd: recovered.thread.cwd,
-                      activeHarness: recovered.thread.activeHarness,
-                      createdAt: recovered.thread.createdAt,
-                      updatedAt: recovered.thread.updatedAt,
-                    },
-                    messages: messages.map((message) => ({
-                      seq: message.seq,
-                      role: message.role,
-                      content: message.content,
-                      harness: message.harness,
-                      createdAt: message.createdAt,
-                    })),
-                  };
-                } finally {
-                  await lock.release();
-                }
-              } finally {
-                await runLease.release();
-              }
-            },
-            catch: (cause) =>
-              new StoreError({ operation: "export task", message: errorMessage(cause), cause }),
-          }),
-        ),
-
-        deleteTask: Effect.fn("ThreadStore.deleteTask")((thread: RelayThread) =>
-          Effect.tryPromise({
-            try: async () => {
-              const runLease = await acquireTaskRunLease(paths, thread.id);
-              try {
-                const lock = await acquireThreadLock(paths, thread.id);
-                try {
-                  const indexLock = await acquireIndexLock(paths);
-                  try {
-                    const index = await loadIndex(paths, { lockHeld: true });
-                    const remaining = index.threadIds.filter((id) => id !== thread.id);
-                    await atomicJsonWrite(paths, deletionPath(paths, thread.id), {
-                      version: 1,
-                      threadId: thread.id,
-                      createdAt: new Date().toISOString(),
-                    });
-                    await writeIndex(paths, {
-                      currentThreadId:
-                        index.currentThreadId === thread.id
-                          ? (remaining[0] ?? null)
-                          : index.currentThreadId,
-                      threadIds: remaining,
-                    } satisfies RelayIndex);
-                    await rm(threadDir(paths, thread.id), { recursive: true, force: true });
-                    await rm(deletionPath(paths, thread.id), { force: true });
-                  } finally {
-                    await indexLock.release();
-                  }
-                } finally {
-                  await lock.release();
-                }
-              } finally {
-                await runLease.release();
-              }
-              return thread;
-            },
-            catch: (cause) =>
-              cause instanceof ThreadBusy
-                ? cause
-                : new StoreError({ operation: "delete task", message: errorMessage(cause), cause }),
-          }),
-        ),
-
-        acquireLock: Effect.fn("ThreadStore.acquireLock")((id: string) =>
-          Effect.tryPromise({
-            try: () => acquireThreadLock(paths, id),
-            catch: (cause) =>
-              cause instanceof ThreadBusy
-                ? cause
-                : new StoreError({ operation: "lock thread", message: errorMessage(cause), cause }),
-          }),
-        ),
-
-        acquireRunLease: Effect.fn("ThreadStore.acquireRunLease")((id: string) =>
-          Effect.tryPromise({
-            try: () => acquireTaskRunLease(paths, id),
-            catch: (cause) =>
-              cause instanceof ThreadBusy
-                ? cause
-                : new StoreError({
-                    operation: "own task run",
-                    message: errorMessage(cause),
-                    cause,
-                  }),
-          }),
-        ),
-
-        acquireExecutionLease: Effect.fn("ThreadStore.acquireExecutionLease")(
-          (thread: RelayThread) =>
-            Effect.tryPromise({
-              try: () => acquireExecutionLease(paths, thread),
-              catch: (cause) =>
-                cause instanceof ThreadBusy
-                  ? cause
-                  : new StoreError({
-                      operation: "own checkout run",
-                      message: errorMessage(cause),
-                      cause,
-                    }),
-            }),
-        ),
-
-        canUndoLastTurn: Effect.fn("ThreadStore.canUndoLastTurn")(
-          (thread: RelayThread, harness: Harness) =>
-            Effect.tryPromise({
-              try: async () => {
-                const messages = (await readMessages(paths, thread.id)).filter(
-                  (message) => message.seq > (thread.contextStartSeq ?? 0),
-                );
-                const latest = messages.slice(-2);
-                return (
-                  latest.length === 2 &&
-                  latest[0]?.role === "user" &&
-                  latest[1]?.role === "assistant" &&
-                  latest[1].harness === harness
-                );
-              },
-              catch: (cause) =>
-                new StoreError({
-                  operation: "check undo state",
-                  message: errorMessage(cause),
-                  cause,
-                }),
-            }),
-        ),
-
-        canRedoLastTurn: Effect.fn("ThreadStore.canRedoLastTurn")(
-          (thread: RelayThread, harness: Harness) =>
-            Effect.tryPromise({
-              try: async () => {
-                const entry = (await readUndoState(paths, thread.id)).entries.at(-1);
-                return entry?.thread.activeHarness === harness;
-              },
-              catch: (cause) =>
-                new StoreError({
-                  operation: "check redo state",
-                  message: errorMessage(cause),
-                  cause,
-                }),
-            }),
-        ),
-
-        commitTurn: Effect.fn("ThreadStore.commitTurn")(
-          (thread: RelayThread, input: CommitTurnInput) =>
-            Effect.tryPromise({
-              try: async () => {
-                const now = new Date().toISOString();
-                const user: RelayMessage = {
-                  id: crypto.randomUUID(),
-                  seq: thread.lastSeq + 1,
-                  role: "user",
-                  content: input.prompt,
-                  harness: input.harness,
-                  nativeSessionId: input.sessionId,
-                  createdAt: now,
-                };
-                const response: RelayMessage = {
-                  id: crypto.randomUUID(),
-                  seq: thread.lastSeq + 2,
-                  role: "assistant",
-                  content: input.response,
-                  harness: input.harness,
-                  nativeSessionId: input.sessionId,
-                  createdAt: now,
-                };
-                const binding: HarnessBinding = {
-                  harness: input.harness,
-                  sessionId: input.sessionId,
-                  ...(input.model ? { model: input.model } : {}),
-                  lastSyncedSeq: response.seq,
-                  createdAt: input.bindingCreatedAt,
-                  updatedAt: now,
-                };
-                const updated: RelayThread = {
-                  ...thread,
-                  activeHarness: input.harness,
-                  bindings: { ...thread.bindings, [input.harness]: binding },
-                  preferredModels: {
-                    ...thread.preferredModels,
-                    ...(input.model ? { [input.harness]: input.model } : {}),
-                  },
-                  lastSeq: response.seq,
-                  updatedAt: now,
-                };
-                const pending: PendingTurn = {
-                  version: 1,
-                  messages: [user, response],
-                  thread: updated,
-                };
-
-                await atomicJsonWrite(paths, pendingPath(paths, thread.id), pending);
-                await appendFile(
-                  eventsPath(paths, thread.id),
-                  `${JSON.stringify(user)}\n${JSON.stringify(response)}\n`,
-                  {
-                    encoding: "utf8",
-                    mode: 0o600,
-                  },
-                );
-                await chmod(eventsPath(paths, thread.id), 0o600);
-                await writeThread(paths, updated);
-                await rm(pendingPath(paths, thread.id), { force: true });
-                await rm(undoPath(paths, thread.id), { force: true });
-                return { thread: updated, response };
-              },
-              catch: (cause) =>
-                new StoreError({ operation: "commit turn", message: errorMessage(cause), cause }),
-            }),
-        ),
-
-        bindNativeSession: Effect.fn("ThreadStore.bindNativeSession")(
-          (thread: RelayThread, input: BindNativeSessionInput) =>
-            Effect.tryPromise({
-              try: async () => {
-                const now = new Date().toISOString();
-                const existing = thread.bindings[input.harness];
-                const binding: HarnessBinding = {
-                  harness: input.harness,
-                  sessionId: input.sessionId,
-                  ...(input.model
-                    ? { model: input.model }
-                    : existing?.model
-                      ? { model: existing.model }
-                      : {}),
-                  lastSyncedSeq: input.lastSyncedSeq,
-                  ...(input.nativeCursor
-                    ? { nativeCursor: input.nativeCursor }
-                    : existing?.nativeCursor
-                      ? { nativeCursor: existing.nativeCursor }
-                      : {}),
-                  createdAt: existing?.createdAt ?? now,
-                  updatedAt: now,
-                };
-                const updated: RelayThread = {
-                  ...thread,
-                  activeHarness: input.harness,
-                  bindings: { ...thread.bindings, [input.harness]: binding },
-                  preferredModels: {
-                    ...thread.preferredModels,
-                    ...(binding.model ? { [input.harness]: binding.model } : {}),
-                  },
-                  pendingHandoffs: {
-                    ...thread.pendingHandoffs,
-                    [input.harness]: undefined,
-                  },
-                  updatedAt: now,
-                };
-                await writeThread(paths, updated);
-                return updated;
-              },
-              catch: (cause) =>
-                new StoreError({
-                  operation: "bind native session",
-                  message: errorMessage(cause),
-                  cause,
-                }),
-            }),
-        ),
-
-        resetNativeContext: Effect.fn("ThreadStore.resetNativeContext")(
-          (thread: RelayThread, input: ResetNativeContextInput) =>
-            Effect.tryPromise({
-              try: async () => {
-                const now = new Date().toISOString();
-                let nextSeq = thread.lastSeq;
-                const messages = input.turns.flatMap((turn): ReadonlyArray<RelayMessage> => {
-                  const user: RelayMessage = {
-                    id: crypto.randomUUID(),
-                    seq: ++nextSeq,
-                    role: "user",
-                    content: turn.prompt,
-                    harness: input.harness,
-                    nativeId: turn.id,
-                    nativeSessionId: input.sessionId,
-                    createdAt: now,
-                  };
-                  const assistant: RelayMessage = {
-                    id: crypto.randomUUID(),
-                    seq: ++nextSeq,
-                    role: "assistant",
-                    content: turn.response,
-                    harness: input.harness,
-                    nativeId: turn.id,
-                    nativeSessionId: input.sessionId,
-                    createdAt: now,
-                  };
-                  return [user, assistant];
-                });
-                const binding: HarnessBinding = {
-                  harness: input.harness,
-                  sessionId: input.sessionId,
-                  ...(input.model ? { model: input.model } : {}),
-                  lastSyncedSeq: nextSeq,
-                  ...(input.nativeCursor ? { nativeCursor: input.nativeCursor } : {}),
-                  createdAt: now,
-                  updatedAt: now,
-                };
-                const bindings: RelayThread["bindings"] =
-                  input.harness === "codex" ? { codex: binding } : { opencode: binding };
-                const updated: RelayThread = {
-                  ...thread,
-                  activeHarness: input.harness,
-                  bindings,
-                  pendingHandoffs: {},
-                  contextStartSeq: thread.lastSeq,
-                  preferredModels: {
-                    ...thread.preferredModels,
-                    ...(binding.model ? { [input.harness]: binding.model } : {}),
-                  },
-                  lastSeq: nextSeq,
-                  ...(input.turns.length > 0 &&
-                  (thread.title === "New Relay task" || thread.title === "Untitled task")
-                    ? {
-                        title:
-                          input.turns[0]!.prompt.length <= 64
-                            ? input.turns[0]!.prompt
-                            : `${input.turns[0]!.prompt.slice(0, 61)}...`,
-                      }
-                    : {}),
-                  updatedAt: now,
-                };
-                const visibility: NativeVisibility = {
-                  hidden: (input.hiddenTurnIds ?? []).map((nativeId) =>
-                    visibilityKey(input.harness, input.sessionId, nativeId),
-                  ),
-                  links: [],
-                };
-                const pending: PendingTurn = {
-                  version: 1,
-                  messages: [...messages],
-                  thread: updated,
-                  replaceEvents: true,
-                  visibility,
-                };
-                // The replacement journal is written before any part of the old
-                // context is removed. Recovery replays this exact event set and
-                // metadata, so a crash cannot let a newer turn overtake adoption.
-                await atomicJsonWrite(paths, pendingPath(paths, thread.id), pending);
-                await rm(undoPath(paths, thread.id), { force: true });
-                await atomicTextWrite(
-                  paths,
-                  eventsPath(paths, thread.id),
-                  messages.length > 0
-                    ? `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`
-                    : "",
-                );
-                await atomicJsonWrite(paths, visibilityPath(paths, thread.id), visibility);
-                await writeThread(paths, updated);
-                await rm(pendingPath(paths, thread.id), { force: true });
-                return updated;
-              },
-              catch: (cause) =>
-                new StoreError({
-                  operation: "reset native context",
-                  message: errorMessage(cause),
-                  cause,
-                }),
-            }),
-        ),
-
-        beginNativeHandoff: Effect.fn("ThreadStore.beginNativeHandoff")(
-          (thread: RelayThread, input: BeginNativeHandoffInput) =>
-            Effect.tryPromise({
-              try: async () => {
-                const now = new Date().toISOString();
-                const updated: RelayThread = {
-                  ...thread,
-                  pendingHandoffs: {
-                    ...thread.pendingHandoffs,
-                    [input.harness]: {
-                      id: crypto.randomUUID(),
-                      harness: input.harness,
-                      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-                      fromSeq: input.fromSeq,
-                      throughSeq: input.throughSeq,
-                      createdAt: now,
-                    },
-                  },
-                  updatedAt: now,
-                };
-                await writeThread(paths, updated);
-                return updated;
-              },
-              catch: (cause) =>
-                new StoreError({
-                  operation: "journal native handoff",
-                  message: errorMessage(cause),
-                  cause,
-                }),
-            }),
-        ),
-
-        abandonNativeHandoff: Effect.fn("ThreadStore.abandonNativeHandoff")(
-          (thread: RelayThread, harness: Harness) =>
-            Effect.tryPromise({
-              try: async () => {
-                const bindings = { ...thread.bindings };
-                delete bindings[harness];
-                const updated: RelayThread = {
-                  ...thread,
-                  bindings,
-                  preferredModels: {
-                    ...thread.preferredModels,
-                    ...(thread.bindings[harness]?.model
-                      ? { [harness]: thread.bindings[harness].model }
-                      : {}),
-                  },
-                  pendingHandoffs: {
-                    ...thread.pendingHandoffs,
-                    [harness]: undefined,
-                  },
-                  updatedAt: new Date().toISOString(),
-                };
-                await writeThread(paths, updated);
-                return updated;
-              },
-              catch: (cause) =>
-                new StoreError({
-                  operation: "recover uncertain native handoff",
-                  message: errorMessage(cause),
-                  cause,
-                }),
-            }),
-        ),
-
-        importNativeTurns: Effect.fn("ThreadStore.importNativeTurns")(
-          (thread: RelayThread, input: ImportNativeTurnsInput) =>
-            Effect.tryPromise({
-              try: async () => {
-                const existingMessages = await readRawMessages(paths, thread.id);
-                const contextMessages = existingMessages.filter(
-                  (message) => message.seq > (thread.contextStartSeq ?? 0),
-                );
-                const visibility = await readVisibility(paths, thread.id);
-                const links = new Map(
-                  (visibility.links ?? []).map((link) => [link.messageId, link.key]),
-                );
-                const sessionPrefix = `${input.harness}:${input.sessionId}:`;
-                const contextMessageIds = new Set(contextMessages.map((message) => message.id));
-                const importedIds = new Set([
-                  ...contextMessages.flatMap((message) =>
-                    message.harness === input.harness &&
-                    message.nativeSessionId === input.sessionId &&
-                    message.nativeId
-                      ? [message.nativeId]
-                      : [],
-                  ),
-                  ...(visibility.links ?? []).flatMap((link) =>
-                    contextMessageIds.has(link.messageId) && link.key.startsWith(sessionPrefix)
-                      ? [link.key.slice(sessionPrefix.length)]
-                      : [],
-                  ),
-                ]);
-                const linkedMessageIds = new Set(
-                  [...links.keys()].filter((messageId) => contextMessageIds.has(messageId)),
-                );
-                const linkablePairs = contextMessages.flatMap((user, index) => {
-                  const assistant = contextMessages[index + 1];
-                  return user.role === "user" &&
-                    assistant?.role === "assistant" &&
-                    user.harness === input.harness &&
-                    assistant.harness === input.harness &&
-                    user.nativeSessionId === input.sessionId &&
-                    assistant.nativeSessionId === input.sessionId &&
-                    !user.nativeId &&
-                    !assistant.nativeId &&
-                    !linkedMessageIds.has(user.id) &&
-                    !linkedMessageIds.has(assistant.id)
-                    ? [{ user, assistant, used: false }]
-                    : [];
-                });
-                const fresh: Array<NativeTranscriptTurn> = [];
-                for (const turn of input.turns) {
-                  if (importedIds.has(turn.id)) continue;
-                  const pair = linkablePairs.find(
-                    (candidate) =>
-                      !candidate.used &&
-                      candidate.user.content === turn.prompt &&
-                      candidate.assistant.content === turn.response,
-                  );
-                  if (!pair) {
-                    fresh.push(turn);
-                    continue;
-                  }
-                  pair.used = true;
-                  const key = visibilityKey(input.harness, input.sessionId, turn.id);
-                  links.set(pair.user.id, key);
-                  links.set(pair.assistant.id, key);
-                }
-                const now = new Date().toISOString();
-                let nextSeq = thread.lastSeq;
-                const messages = fresh.flatMap((turn): ReadonlyArray<RelayMessage> => {
-                  const user: RelayMessage = {
-                    id: crypto.randomUUID(),
-                    seq: ++nextSeq,
-                    role: "user",
-                    content: turn.prompt,
-                    harness: input.harness,
-                    nativeId: turn.id,
-                    nativeSessionId: input.sessionId,
-                    createdAt: now,
-                  };
-                  const assistant: RelayMessage = {
-                    id: crypto.randomUUID(),
-                    seq: ++nextSeq,
-                    role: "assistant",
-                    content: turn.response,
-                    harness: input.harness,
-                    nativeId: turn.id,
-                    nativeSessionId: input.sessionId,
-                    createdAt: now,
-                  };
-                  return [user, assistant];
-                });
-                const existingBinding = thread.bindings[input.harness];
-                const binding: HarnessBinding = {
-                  harness: input.harness,
-                  sessionId: input.sessionId,
-                  ...(input.model
-                    ? { model: input.model }
-                    : existingBinding?.model
-                      ? { model: existingBinding.model }
-                      : {}),
-                  lastSyncedSeq:
-                    messages.length > 0 ? nextSeq : (existingBinding?.lastSyncedSeq ?? 0),
-                  ...(input.turns.at(-1)?.id
-                    ? { nativeCursor: input.turns.at(-1)!.id }
-                    : existingBinding?.nativeCursor
-                      ? { nativeCursor: existingBinding.nativeCursor }
-                      : {}),
-                  createdAt: existingBinding?.createdAt ?? now,
-                  updatedAt: now,
-                };
-                const updateTitle =
-                  fresh.length > 0 &&
-                  (thread.title === "New Relay task" || thread.title === "Untitled task");
-                const hiddenBefore = new Set(visibility.hidden);
-                const hidden = new Set(visibility.hidden);
-                const hiddenIds = new Set(input.hiddenTurnIds ?? []);
-                const currentIds = new Set([...input.turns.map((turn) => turn.id), ...hiddenIds]);
-                // Reconcile the native transcript itself, not only messages that
-                // were already present in the current Relay context. Otherwise a
-                // tombstone from an older adopted context can hide a freshly
-                // re-imported OpenCode turn after native redo.
-                for (const nativeId of currentIds) {
-                  const key = visibilityKey(input.harness, input.sessionId, nativeId);
-                  if (hiddenIds.has(nativeId)) hidden.add(key);
-                  else hidden.delete(key);
-                }
-                for (const message of contextMessages) {
-                  if (message.harness !== input.harness) continue;
-                  const key =
-                    message.nativeSessionId === input.sessionId && message.nativeId
-                      ? visibilityKey(input.harness, input.sessionId, message.nativeId)
-                      : links.get(message.id);
-                  if (!key || !key.startsWith(sessionPrefix)) continue;
-                  const nativeId = key.slice(sessionPrefix.length);
-                  if (!currentIds.has(nativeId)) continue;
-                  if (hiddenIds.has(nativeId)) hidden.add(key);
-                  else hidden.delete(key);
-                }
-                const visibilityChanged =
-                  hidden.size !== hiddenBefore.size ||
-                  [...hidden].some((key) => !hiddenBefore.has(key));
-                const bindings = { ...thread.bindings, [input.harness]: binding };
-                if (visibilityChanged) {
-                  const other = input.harness === "codex" ? "opencode" : "codex";
-                  delete bindings[other];
-                }
-                const updated: RelayThread = {
-                  ...thread,
-                  ...(updateTitle
-                    ? {
-                        title:
-                          fresh[0]!.prompt.length <= 64
-                            ? fresh[0]!.prompt
-                            : `${fresh[0]!.prompt.slice(0, 61)}...`,
-                      }
-                    : {}),
-                  activeHarness: input.harness,
-                  bindings,
-                  preferredModels: {
-                    ...thread.preferredModels,
-                    ...(binding.model ? { [input.harness]: binding.model } : {}),
-                  },
-                  lastSeq: nextSeq,
-                  updatedAt: now,
-                };
-
-                if (messages.length > 0) {
-                  const pending: PendingTurn = {
-                    version: 1,
-                    messages: [...messages],
-                    thread: updated,
-                  };
-                  await atomicJsonWrite(paths, pendingPath(paths, thread.id), pending);
-                  await appendFile(
-                    eventsPath(paths, thread.id),
-                    `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
-                    { encoding: "utf8", mode: 0o600 },
-                  );
-                  await chmod(eventsPath(paths, thread.id), 0o600);
-                }
-                if (
-                  hidden.size !== hiddenBefore.size ||
-                  [...hidden].some((key) => !hiddenBefore.has(key))
-                ) {
-                  await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
-                    hidden: [...hidden],
-                    links: [...links].map(([messageId, key]) => ({ messageId, key })),
-                  });
-                } else if (links.size !== (visibility.links?.length ?? 0)) {
-                  await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
-                    hidden: [...hidden],
-                    links: [...links].map(([messageId, key]) => ({ messageId, key })),
-                  });
-                }
-                await writeThread(paths, updated);
-                if (messages.length > 0) await rm(pendingPath(paths, thread.id), { force: true });
-                await rm(undoPath(paths, thread.id), { force: true });
-                return updated;
-              },
-              catch: (cause) =>
-                new StoreError({
-                  operation: "import native turns",
-                  message: errorMessage(cause),
-                  cause,
-                }),
-            }),
-        ),
-
-        setCurrent: Effect.fn("ThreadStore.setCurrent")((id: string) =>
-          Effect.tryPromise({
-            try: async () => {
-              const indexLock = await acquireIndexLock(paths);
-              try {
-                if (!(await Bun.file(metadataPath(paths, id)).exists())) {
-                  throw new ThreadNotFound({
-                    threadId: id,
-                    message: `Relay task ${id} was not found`,
-                  });
-                }
-                const index = await loadIndex(paths, { lockHeld: true });
-                await writeIndex(paths, {
-                  currentThreadId: id,
-                  threadIds: [id, ...index.threadIds.filter((threadId) => threadId !== id)],
-                } satisfies RelayIndex);
-              } finally {
-                await indexLock.release();
-              }
-            },
-            catch: (cause) =>
-              cause instanceof ThreadNotFound
-                ? cause
-                : new StoreError({
-                    operation: "set current thread",
-                    message: errorMessage(cause),
-                    cause,
-                  }),
-          }),
-        ),
-
-        setHarness: Effect.fn("ThreadStore.setHarness")((thread: RelayThread, harness: Harness) =>
-          Effect.tryPromise({
-            try: async () => {
-              const updated: RelayThread = {
-                ...thread,
-                activeHarness: harness,
-                updatedAt: new Date().toISOString(),
-              };
-              await writeThread(paths, updated);
-              return updated;
-            },
-            catch: (cause) =>
-              new StoreError({ operation: "set harness", message: errorMessage(cause), cause }),
-          }),
-        ),
-
-        dropBinding: Effect.fn("ThreadStore.dropBinding")((thread: RelayThread, harness: Harness) =>
-          Effect.tryPromise({
-            try: async () => {
-              const bindings = { ...thread.bindings };
-              delete bindings[harness];
-              const updated: RelayThread = {
-                ...thread,
-                bindings,
-                preferredModels: {
-                  ...thread.preferredModels,
-                  ...(thread.bindings[harness]?.model
-                    ? { [harness]: thread.bindings[harness].model }
-                    : {}),
-                },
-                pendingHandoffs: {
-                  ...thread.pendingHandoffs,
-                  [harness]: undefined,
-                },
-                updatedAt: new Date().toISOString(),
-              };
-              await writeThread(paths, updated);
-              return updated;
-            },
-            catch: (cause) =>
-              new StoreError({
-                operation: "drop uncertain binding",
-                message: errorMessage(cause),
-                cause,
-              }),
-          }),
-        ),
-
-        undoLastTurn: Effect.fn("ThreadStore.undoLastTurn")(
-          (thread: RelayThread, harness: Harness) =>
-            Effect.tryPromise({
-              try: async () => {
-                const [messages, rawMessages] = await Promise.all([
-                  readMessages(paths, thread.id),
-                  readRawMessages(paths, thread.id),
-                ]);
-                const contextMessages = messages.filter(
-                  (message) => message.seq > (thread.contextStartSeq ?? 0),
-                );
-                const removed = contextMessages.slice(-2);
-                if (
-                  removed.length !== 2 ||
-                  removed[0]?.role !== "user" ||
-                  removed[1]?.role !== "assistant" ||
-                  removed[1].harness !== harness
-                ) {
-                  throw new NoCurrentThread({
-                    message: `There is no latest ${harness} turn to undo safely`,
-                  });
-                }
-                const removedIds = new Set(removed.map((message) => message.id));
-                const remaining = messages.filter((message) => !removedIds.has(message.id));
-                const remainingRaw = rawMessages.filter((message) => !removedIds.has(message.id));
-                const lastSeq = remainingRaw.at(-1)?.seq ?? 0;
-                const lastVisibleSeq = remaining.at(-1)?.seq ?? 0;
-                const lastHarnessSeq =
-                  remaining.findLast(
-                    (message) =>
-                      message.seq > (thread.contextStartSeq ?? 0) &&
-                      message.role === "assistant" &&
-                      message.harness === harness,
-                  )?.seq ??
-                  thread.contextStartSeq ??
-                  0;
-                const binding = thread.bindings[harness];
-                const bindings = { ...thread.bindings };
-                if (binding) {
-                  bindings[harness] = {
-                    ...binding,
-                    lastSyncedSeq: Math.min(binding.lastSyncedSeq, lastHarnessSeq),
-                    updatedAt: new Date().toISOString(),
-                  };
-                }
-                const other = harness === "codex" ? "opencode" : "codex";
-                if (bindings[other] && bindings[other]!.lastSyncedSeq > lastVisibleSeq)
-                  delete bindings[other];
-                const updated: RelayThread = {
-                  ...thread,
-                  bindings,
-                  lastSeq,
-                  updatedAt: new Date().toISOString(),
-                };
-                const state = await readUndoState(paths, thread.id);
-                await atomicJsonWrite(paths, undoPath(paths, thread.id), {
-                  entries: [...state.entries, { messages: removed, thread }],
-                });
-                await atomicTextWrite(
-                  paths,
-                  eventsPath(paths, thread.id),
-                  remainingRaw.map((message) => JSON.stringify(message)).join("\n") +
-                    (remainingRaw.length ? "\n" : ""),
-                );
-                await writeThread(paths, updated);
-                return updated;
-              },
-              catch: (cause) =>
-                cause instanceof NoCurrentThread
-                  ? cause
-                  : new StoreError({ operation: "undo turn", message: errorMessage(cause), cause }),
-            }),
-        ),
-
-        redoLastTurn: Effect.fn("ThreadStore.redoLastTurn")(
-          (thread: RelayThread, harness: Harness) =>
-            Effect.tryPromise({
-              try: async () => {
-                const state = await readUndoState(paths, thread.id);
-                const entry = state.entries.at(-1);
-                if (!entry || entry.thread.activeHarness !== harness) {
-                  throw new NoCurrentThread({ message: "There is no turn to redo" });
-                }
-                const messages = await readRawMessages(paths, thread.id);
-                const restored = [...messages, ...entry.messages].sort(
-                  (left, right) => left.seq - right.seq,
-                );
-                await atomicTextWrite(
-                  paths,
-                  eventsPath(paths, thread.id),
-                  `${restored.map((message) => JSON.stringify(message)).join("\n")}\n`,
-                );
-                await writeThread(paths, entry.thread);
-                const visibility = await readVisibility(paths, thread.id);
-                const links = new Map(
-                  (visibility.links ?? []).map((link) => [link.messageId, link.key]),
-                );
-                const restoredKeys = new Set(
-                  entry.messages.flatMap((message) => {
-                    const key =
-                      message.nativeId && message.nativeSessionId
-                        ? visibilityKey(message.harness, message.nativeSessionId, message.nativeId)
-                        : links.get(message.id);
-                    return key ? [key] : [];
-                  }),
-                );
-                const hidden = visibility.hidden.filter((key) => !restoredKeys.has(key));
-                if (hidden.length !== visibility.hidden.length) {
-                  await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
-                    hidden,
-                    ...(visibility.links ? { links: visibility.links } : {}),
-                  });
-                }
-                const entries = state.entries.slice(0, -1);
-                if (entries.length)
-                  await atomicJsonWrite(paths, undoPath(paths, thread.id), { entries });
-                else await rm(undoPath(paths, thread.id), { force: true });
-                return entry.thread;
-              },
-              catch: (cause) =>
-                cause instanceof NoCurrentThread
-                  ? cause
-                  : new StoreError({ operation: "redo turn", message: errorMessage(cause), cause }),
-            }),
-        ),
-      });
+      return ThreadStore.of(ThreadStore.make(paths));
     }),
   );
 

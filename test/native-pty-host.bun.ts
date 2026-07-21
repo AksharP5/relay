@@ -1,9 +1,24 @@
 import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 
 import { NativeInputRouter } from "../src/native/input-router.ts";
-import { releaseNativeTuiInput, runNativeTui } from "../src/native/pty-host.ts";
+import {
+  releaseNativeTuiInput,
+  runNativeTui as runNativeTuiWithRoot,
+} from "../src/native/pty-host.ts";
 import { legacySwitchSequences, parseSwitchKey } from "../src/switch-key.ts";
+
+const dataRoot = await mkdtemp(join(tmpdir(), "relay-native-pty-root-"));
+const runNativeTui = (
+  command: Parameters<typeof runNativeTuiWithRoot>[0],
+  io: Parameters<typeof runNativeTuiWithRoot>[1],
+  options: Omit<Parameters<typeof runNativeTuiWithRoot>[2], "dataRoot"> = {},
+) => runNativeTuiWithRoot(command, io, { ...options, dataRoot });
+
+afterAll(() => rm(dataRoot, { recursive: true, force: true }));
 
 class TestInput extends EventEmitter {
   isTTY = true;

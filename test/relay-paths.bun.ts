@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { ConfigProvider, Effect } from "effect";
 import { access, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MainLayer } from "../src/cli.ts";
 import { RelayPaths } from "../src/services/data-root.ts";
 import { cleanupOrphanedProcesses } from "../src/services/process-registry.ts";
+import { RelayService } from "../src/services/relay-service.ts";
 import { saveRelaySettings } from "../src/services/settings.ts";
-import { ThreadStore } from "../src/services/thread-store.ts";
 import { parseSwitchKey } from "../src/switch-key.ts";
 
 const temporaryDirectories: Array<string> = [];
@@ -53,22 +54,16 @@ describe("RelayPaths", () => {
     const capturedRoot = await temporaryDirectory("relay-paths-captured-");
     const laterEnvironmentRoot = await temporaryDirectory("relay-paths-later-");
     const previousRoot = Bun.env.RELAY_DATA_DIR;
-    const PathsLayer = RelayPaths.layer;
-    const AppLayer = Layer.merge(
-      PathsLayer,
-      ThreadStore.configuredLayer.pipe(Layer.provide(PathsLayer)),
-    );
-
     try {
       await Effect.runPromise(
         Effect.gen(function* () {
           const paths = yield* RelayPaths;
-          const store = yield* ThreadStore;
+          const relay = yield* RelayService;
           expect(paths.root).toBe(capturedRoot);
-          expect(store.root).toBe(capturedRoot);
+          expect(relay.dataRoot).toBe(capturedRoot);
 
           Bun.env.RELAY_DATA_DIR = laterEnvironmentRoot;
-          yield* store.create({
+          yield* relay.newThread({
             title: "Stable root regression",
             cwd: process.cwd(),
             harness: "codex",
@@ -78,7 +73,7 @@ describe("RelayPaths", () => {
           );
           yield* Effect.promise(() => cleanupOrphanedProcesses(paths.root));
         }).pipe(
-          Effect.provide(AppLayer),
+          Effect.provide(MainLayer),
           Effect.provide(
             ConfigProvider.layer(
               ConfigProvider.fromUnknown({ RELAY_DATA_DIR: capturedRoot, HOME: "/unused" }),

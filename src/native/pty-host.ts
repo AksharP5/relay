@@ -50,7 +50,7 @@ export interface NativePtyIo {
 
 export interface NativePtyOptions {
   /** Stable Relay process-ownership root supplied by the production paths layer. */
-  readonly dataRoot?: string;
+  readonly dataRoot: string;
   /** Primary Relay switch binding. F6 remains available as a fixed fallback. */
   readonly switchKey?: SwitchKeyBinding;
   readonly sequenceTimeoutMs?: number;
@@ -78,12 +78,6 @@ export interface NativePtyOptions {
     readonly maxBytes?: number;
   };
 }
-
-const defaultIo = (): NativePtyIo => ({
-  input: process.stdin,
-  output: process.stdout,
-  resizeSource: process,
-});
 
 const dimensions = (output: HostOutput) => ({
   cols: Math.max(1, output.columns ?? 80),
@@ -163,8 +157,8 @@ export const releaseNativeTuiInput = (input: NativePtyIo["input"] = process.stdi
  */
 export const runNativeTui = async (
   command: NativeTuiCommand,
-  io: NativePtyIo = defaultIo(),
-  options: NativePtyOptions = {},
+  io: NativePtyIo,
+  options: NativePtyOptions,
 ): Promise<NativeTuiExit> => {
   if (!io.input.isTTY) throw new Error("Relay's native interface needs an interactive terminal");
 
@@ -423,14 +417,12 @@ export const runNativeTui = async (
             env: {},
           });
           if (inputProxy.pid === undefined) throw new Error("Relay input reader did not start");
-          if (options.dataRoot) {
-            await trackManagedProcess(
-              options.dataRoot,
-              inputProxy as typeof inputProxy & { readonly pid: number },
-              "terminal-input-reader",
-              { processOnly: true },
-            );
-          }
+          await trackManagedProcess(
+            options.dataRoot,
+            inputProxy as typeof inputProxy & { readonly pid: number },
+            "terminal-input-reader",
+            { processOnly: true },
+          );
           let reading = true;
           let proxyFailed = false;
           let proxyClosed = false;
@@ -504,8 +496,7 @@ export const runNativeTui = async (
       },
       detached: process.platform !== "win32",
     });
-    if (options.dataRoot)
-      await trackManagedProcess(options.dataRoot, child, `${command.executable}-native-tui`);
+    await trackManagedProcess(options.dataRoot, child, `${command.executable}-native-tui`);
     terminal = child.terminal;
     if (!terminal) throw new Error("Relay could not create a native pseudo-terminal");
     flushInput();

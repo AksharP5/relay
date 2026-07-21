@@ -30,9 +30,9 @@ export interface RunningOpenCodeServer {
 export const startOpenCodeServer = async (
   executable: string,
   cwd: string,
+  dataRoot: string,
   signal?: AbortSignal,
   options: { readonly pure?: boolean } = {},
-  dataRoot?: string,
 ): Promise<RunningOpenCodeServer> => {
   signal?.throwIfAborted();
   const password = `${crypto.randomUUID()}${crypto.randomUUID()}`;
@@ -77,7 +77,7 @@ export const startOpenCodeServer = async (
   signal?.addEventListener("abort", onAbort, { once: true });
 
   try {
-    if (dataRoot) await trackManagedProcess(dataRoot, child, "opencode-server");
+    await trackManagedProcess(dataRoot, child, "opencode-server");
     tracked = true;
     signal?.throwIfAborted();
     if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream))
@@ -115,7 +115,7 @@ export const startOpenCodeServer = async (
 export const discoverOpenCodeCommands = async (
   executable: string,
   cwd: string,
-  dataRoot?: string,
+  dataRoot: string,
 ): Promise<ReadonlyArray<HarnessCommand>> => {
   const password = crypto.randomUUID();
   const child = Bun.spawn([executable, "serve", "--hostname", "127.0.0.1", "--port", "0"], {
@@ -126,7 +126,7 @@ export const discoverOpenCodeCommands = async (
     stderr: "pipe",
     detached: process.platform !== "win32",
   });
-  if (dataRoot) await trackManagedProcess(dataRoot, child, "opencode-command-server");
+  await trackManagedProcess(dataRoot, child, "opencode-command-server");
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
     await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
@@ -191,7 +191,7 @@ export const runOpenCodeControl = async (
     readonly model?: string;
     readonly expectedPrompt?: string;
   },
-  dataRoot?: string,
+  dataRoot: string,
 ) => {
   const password = crypto.randomUUID();
   const child = Bun.spawn([executable, "serve", "--hostname", "127.0.0.1", "--port", "0"], {
@@ -202,7 +202,7 @@ export const runOpenCodeControl = async (
     stderr: "pipe",
     detached: process.platform !== "win32",
   });
-  if (dataRoot) await trackManagedProcess(dataRoot, child, "opencode-control-server");
+  await trackManagedProcess(dataRoot, child, "opencode-control-server");
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
     await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
@@ -348,7 +348,7 @@ export const runOpenCodeCommand = async (
     readonly sessionId?: string;
     readonly model?: string;
   },
-  dataRoot?: string,
+  dataRoot: string,
 ) => {
   const password = crypto.randomUUID();
   const child = Bun.spawn([executable, "serve", "--hostname", "127.0.0.1", "--port", "0"], {
@@ -359,7 +359,7 @@ export const runOpenCodeCommand = async (
     stderr: "pipe",
     detached: process.platform !== "win32",
   });
-  if (dataRoot) await trackManagedProcess(dataRoot, child, "opencode-session-server");
+  await trackManagedProcess(dataRoot, child, "opencode-session-server");
   if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
     await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");

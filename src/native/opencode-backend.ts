@@ -147,7 +147,7 @@ export class OpenCodeNativeBackend {
   readonly #server: RunningOpenCodeServer;
   readonly #executable: string;
   readonly #cwd: string;
-  readonly #dataRoot: string | undefined;
+  readonly #dataRoot: string;
   readonly #eventAbort = new AbortController();
   readonly #requestAbort = new AbortController();
   readonly #sessionParents = new Map<string, string>();
@@ -161,7 +161,7 @@ export class OpenCodeNativeBackend {
     server: RunningOpenCodeServer,
     executable: string,
     cwd: string,
-    dataRoot?: string,
+    dataRoot: string,
   ) {
     this.#server = server;
     this.#executable = executable;
@@ -169,9 +169,9 @@ export class OpenCodeNativeBackend {
     this.#dataRoot = dataRoot;
   }
 
-  static async start(executable: string, cwd: string, signal?: AbortSignal, dataRoot?: string) {
+  static async start(executable: string, cwd: string, dataRoot: string, signal?: AbortSignal) {
     const backend = new OpenCodeNativeBackend(
-      await startOpenCodeServer(executable, cwd, signal, {}, dataRoot),
+      await startOpenCodeServer(executable, cwd, dataRoot, signal),
       executable,
       cwd,
       dataRoot,
@@ -458,9 +458,9 @@ export class OpenCodeNativeBackend {
       const recovery = await startOpenCodeServer(
         this.#executable,
         this.#cwd,
+        this.#dataRoot,
         this.#requestAbort.signal,
         { pure: true },
-        this.#dataRoot,
       );
       try {
         return await this.#readFrom(recovery, sessionId);
