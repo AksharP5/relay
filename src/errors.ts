@@ -3,7 +3,7 @@ import { Schema } from "effect";
 export class StoreError extends Schema.TaggedErrorClass<StoreError>()("StoreError", {
   operation: Schema.String,
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 export class ThreadNotFound extends Schema.TaggedErrorClass<ThreadNotFound>()("ThreadNotFound", {
@@ -41,14 +41,14 @@ export class ProcessError extends Schema.TaggedErrorClass<ProcessError>()("Proce
   operation: Schema.Literal("run"),
   command: Schema.String,
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 export class SettingsError extends Schema.TaggedErrorClass<SettingsError>()("SettingsError", {
   operation: Schema.Literals(["load", "save", "reset"]),
   path: Schema.String,
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 export class CliError extends Schema.TaggedErrorClass<CliError>()("CliError", {
