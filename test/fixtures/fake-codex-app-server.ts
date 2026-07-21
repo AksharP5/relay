@@ -13,8 +13,8 @@ for await (const line of lines) {
   };
   if (message.id === undefined) continue;
   if (message.method === "initialize") {
-    if (Bun.env.RELAY_TEST_CODEX_INVALID_JSON === "1") {
-      send(null);
+    if (Bun.env.RELAY_TEST_CODEX_INVALID_JSON) {
+      send(Bun.env.RELAY_TEST_CODEX_INVALID_JSON === "field" ? { id: [] } : null);
       continue;
     }
     send({ id: message.id, result: { userAgent: "fake" } });

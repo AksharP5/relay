@@ -62,7 +62,7 @@ const runWithFake = async (harness: "codex" | "opencode", sessionId?: string, mo
 
 describe("HarnessService", () => {
   it("schema-decodes the Codex model catalog", () => {
-    for (const payload of ["null", '{"models":null}']) {
+    for (const payload of ["null", '{"models":null}', '{"models":[{"slug":42}]}']) {
       try {
         parseCodexModels(payload);
         throw new Error("expected malformed catalog to fail");

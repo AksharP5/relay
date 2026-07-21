@@ -103,6 +103,18 @@ describe("OpenCode command discovery", () => {
     }
   });
 
+  it("rejects an OpenCode command catalog with an invalid consumed field", async () => {
+    Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS = "field";
+    try {
+      await expect(discoverOpenCodeCommands(executable, process.cwd())).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "command catalog",
+      });
+    } finally {
+      delete Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS;
+    }
+  });
+
   it("runs session controls without turning them into prompts", async () => {
     const compact = await runOpenCodeControl(executable, {
       cwd: process.cwd(),
@@ -160,6 +172,25 @@ describe("OpenCode command discovery", () => {
 
   it("rejects a valid but malformed OpenCode command response", async () => {
     Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE = "1";
+    try {
+      await expect(
+        runOpenCodeCommand(executable, {
+          cwd: process.cwd(),
+          command: "commit",
+          arguments: "release-ready",
+          handoffText: "prior Relay conversation",
+        }),
+      ).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "command response",
+      });
+    } finally {
+      delete Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE;
+    }
+  });
+
+  it("rejects an OpenCode command response with an invalid consumed field", async () => {
+    Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE = "field";
     try {
       await expect(
         runOpenCodeCommand(executable, {

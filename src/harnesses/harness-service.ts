@@ -73,12 +73,12 @@ const CodexModelCatalog = Schema.Struct({
   models: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({
-        slug: Schema.optionalKey(Schema.Unknown),
-        display_name: Schema.optionalKey(Schema.Unknown),
-        description: Schema.optionalKey(Schema.Unknown),
-        visibility: Schema.optionalKey(Schema.Unknown),
-        priority: Schema.optionalKey(Schema.Unknown),
-        is_default: Schema.optionalKey(Schema.Unknown),
+        slug: Schema.optionalKey(Schema.String),
+        display_name: Schema.optionalKey(Schema.String),
+        description: Schema.optionalKey(Schema.String),
+        visibility: Schema.optionalKey(Schema.String),
+        priority: Schema.optionalKey(Schema.Number),
+        is_default: Schema.optionalKey(Schema.Boolean),
       }),
     ),
   ),
@@ -104,15 +104,14 @@ export const parseCodexModels = (stdout: string): ReadonlyArray<HarnessModel> =>
     });
   }
   return (value.models ?? [])
-    .filter(
-      (model): model is typeof model & { slug: string } =>
-        typeof model.slug === "string" && model.visibility !== "hide",
+    .filter((model): model is typeof model & { slug: string } =>
+      Boolean(model.slug !== undefined && model.visibility !== "hide"),
     )
     .sort((left, right) => Number(left.priority ?? 1_000) - Number(right.priority ?? 1_000))
     .map((model) => ({
       id: model.slug,
-      name: typeof model.display_name === "string" ? model.display_name : model.slug,
-      ...(typeof model.description === "string" ? { description: model.description } : {}),
+      name: model.display_name ?? model.slug,
+      ...(model.description !== undefined ? { description: model.description } : {}),
       ...(model.is_default === true ? { isDefault: true } : {}),
     }));
 };

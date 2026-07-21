@@ -48,6 +48,8 @@ const server = Bun.serve({
       return new Response("unauthorized", { status: 401 });
     if (url.pathname === "/command") {
       if (Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS === "1") return Response.json(null);
+      if (Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS === "field")
+        return Response.json([{ name: 42 }]);
       return Response.json([
         { name: "commit", description: "Create a conventional commit", source: "command" },
         { name: "skill-command", source: "skill" },
@@ -102,6 +104,7 @@ const server = Bun.serve({
       createdSessions += 1;
       const body = (await request.json()) as { parentID?: unknown; title?: unknown };
       if (body.title === "invalid-shape") return Response.json(null);
+      if (body.title === "invalid-fields") return Response.json({ id: 42 });
       const id = createdSessions === 1 ? "ses_created" : `ses_native_${createdSessions}`;
       latestSessionId = id;
       emitEvent({
@@ -134,6 +137,8 @@ const server = Bun.serve({
       return Response.json({ revert: { messageID: "undo-user-2" } });
     if (url.pathname.endsWith("/ses_invalid_session") && request.method === "GET")
       return Response.json(null);
+    if (url.pathname.endsWith("/ses_invalid_session_fields") && request.method === "GET")
+      return Response.json({ directory: 42 });
     if (
       url.pathname.includes("/ses_missing") &&
       request.method === "GET" &&
@@ -165,6 +170,8 @@ const server = Bun.serve({
     }
     if (url.pathname.endsWith("/message") && request.method === "GET") {
       if (url.pathname.includes("/ses_invalid_history/")) return Response.json(null);
+      if (url.pathname.includes("/ses_invalid_history_fields/"))
+        return Response.json([{ info: { id: 42, role: "user" } }]);
       if (url.pathname.includes("/ses_grouped_undo/")) {
         return Response.json([
           {
@@ -271,6 +278,8 @@ const server = Bun.serve({
         return new Response("command ran before its handoff", { status: 409 });
       }
       if (Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE === "1") return Response.json(null);
+      if (Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE === "field")
+        return Response.json({ parts: [{ type: "text", text: 42 }] });
       return Response.json({ parts: [{ type: "text", text: "Command response" }] });
     }
     if (url.pathname.endsWith("/summarize") && request.method === "POST")

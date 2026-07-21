@@ -4,52 +4,55 @@ import { readStream, stopProcessTree } from "../services/process-runner.ts";
 import { trackManagedProcess } from "../services/process-registry.ts";
 
 const OpenCodeCommand = Schema.Struct({
-  name: Schema.optionalKey(Schema.Unknown),
-  description: Schema.optionalKey(Schema.Unknown),
+  name: Schema.optionalKey(Schema.String),
+  description: Schema.optionalKey(Schema.String),
 });
 const OpenCodeCommands = Schema.Array(OpenCodeCommand);
 const OpenCodeModelMessages = Schema.Array(
   Schema.Struct({
     info: Schema.optionalKey(
       Schema.Struct({
-        role: Schema.optionalKey(Schema.Unknown),
-        providerID: Schema.optionalKey(Schema.Unknown),
-        modelID: Schema.optionalKey(Schema.Unknown),
+        providerID: Schema.optionalKey(Schema.String),
+        modelID: Schema.optionalKey(Schema.String),
       }),
     ),
   }),
 );
 const OpenCodeUndoSession = Schema.Struct({
-  revert: Schema.optionalKey(Schema.Struct({ messageID: Schema.optionalKey(Schema.Unknown) })),
+  revert: Schema.optionalKey(
+    Schema.NullOr(Schema.Struct({ messageID: Schema.optionalKey(Schema.String) })),
+  ),
 });
 const OpenCodeUndoMessages = Schema.Array(
   Schema.Struct({
     info: Schema.optionalKey(
       Schema.Struct({
-        id: Schema.optionalKey(Schema.Unknown),
-        role: Schema.optionalKey(Schema.Unknown),
+        id: Schema.optionalKey(Schema.String),
+        role: Schema.optionalKey(Schema.String),
       }),
     ),
     parts: Schema.optionalKey(
       Schema.Array(
         Schema.Struct({
-          type: Schema.optionalKey(Schema.Unknown),
-          text: Schema.optionalKey(Schema.Unknown),
+          type: Schema.optionalKey(Schema.String),
+          text: Schema.optionalKey(Schema.String),
         }),
       ),
     ),
   }),
 );
 const OpenCodeSharedSession = Schema.Struct({
-  share: Schema.optionalKey(Schema.Struct({ url: Schema.optionalKey(Schema.Unknown) })),
+  share: Schema.optionalKey(
+    Schema.NullOr(Schema.Struct({ url: Schema.optionalKey(Schema.String) })),
+  ),
 });
 const OpenCodeCreatedSession = Schema.Struct({ id: Schema.String });
 const OpenCodeCommandMessage = Schema.Struct({
   parts: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({
-        type: Schema.optionalKey(Schema.Unknown),
-        text: Schema.optionalKey(Schema.Unknown),
+        type: Schema.optionalKey(Schema.String),
+        text: Schema.optionalKey(Schema.String),
       }),
     ),
   ),

@@ -65,4 +65,22 @@ describe("Codex app-server commands", () => {
       delete Bun.env.RELAY_TEST_CODEX_INVALID_JSON;
     }
   });
+
+  it("rejects a Codex RPC object with an invalid consumed field", async () => {
+    Bun.env.RELAY_TEST_CODEX_INVALID_JSON = "field";
+    try {
+      await expect(
+        runCodexCommand(executable, {
+          command: "compact",
+          cwd: process.cwd(),
+          arguments: "",
+        }),
+      ).rejects.toMatchObject({
+        _tag: "AppServerProtocolError",
+        source: "codex app-server",
+      });
+    } finally {
+      delete Bun.env.RELAY_TEST_CODEX_INVALID_JSON;
+    }
+  });
 });

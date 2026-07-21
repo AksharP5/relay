@@ -12,17 +12,65 @@ import type { NativeTuiCommand } from "./pty-host.ts";
 type JsonObject = Record<string, unknown>;
 const JsonObject = Schema.Record(Schema.String, Schema.Unknown);
 const OpenCodeCreatedSession = Schema.Struct({ id: Schema.String });
-const OpenCodeHistoryPage = Schema.Array(Schema.Unknown);
+const OpenCodeHistoryPage = Schema.Array(
+  Schema.Struct({
+    info: Schema.optionalKey(
+      Schema.Struct({
+        id: Schema.optionalKey(Schema.String),
+        role: Schema.optionalKey(Schema.String),
+        parentID: Schema.optionalKey(Schema.String),
+        finish: Schema.optionalKey(Schema.String),
+        time: Schema.optionalKey(Schema.Struct({ completed: Schema.optionalKey(Schema.Unknown) })),
+        error: Schema.optionalKey(Schema.Unknown),
+      }),
+    ),
+    parts: Schema.optionalKey(
+      Schema.Array(
+        Schema.Struct({
+          type: Schema.optionalKey(Schema.String),
+          text: Schema.optionalKey(Schema.String),
+          synthetic: Schema.optionalKey(Schema.Boolean),
+          ignored: Schema.optionalKey(Schema.Boolean),
+          metadata: Schema.optionalKey(
+            Schema.Struct({ providerExecuted: Schema.optionalKey(Schema.Boolean) }),
+          ),
+          state: Schema.optionalKey(
+            Schema.Struct({
+              status: Schema.optionalKey(Schema.String),
+              metadata: Schema.optionalKey(
+                Schema.Struct({ interrupted: Schema.optionalKey(Schema.Boolean) }),
+              ),
+            }),
+          ),
+        }),
+      ),
+    ),
+  }),
+);
 const OpenCodeSessionState = Schema.Struct({
-  directory: Schema.optionalKey(Schema.Unknown),
+  directory: Schema.optionalKey(Schema.String),
   revert: Schema.optionalKey(
-    Schema.NullOr(Schema.Struct({ messageID: Schema.optionalKey(Schema.Unknown) })),
+    Schema.NullOr(Schema.Struct({ messageID: Schema.optionalKey(Schema.String) })),
   ),
 });
 const OpenCodeStatuses = Schema.Record(
   Schema.String,
-  Schema.NullOr(Schema.Struct({ type: Schema.optionalKey(Schema.Unknown) })),
+  Schema.NullOr(Schema.Struct({ type: Schema.optionalKey(Schema.String) })),
 );
+const OpenCodeEvent = Schema.Struct({
+  type: Schema.optionalKey(Schema.String),
+  properties: Schema.optionalKey(
+    Schema.Struct({
+      sessionID: Schema.optionalKey(Schema.String),
+      info: Schema.optionalKey(
+        Schema.Struct({
+          sessionID: Schema.optionalKey(Schema.String),
+          parentID: Schema.optionalKey(Schema.String),
+        }),
+      ),
+    }),
+  ),
+});
 
 class OpenCodeReadError extends Error {
   constructor(
@@ -286,9 +334,13 @@ export class OpenCodeNativeBackend {
   #consumeEventBlock(block: string) {
     for (const line of block.split(/\r?\n/)) {
       if (!line.startsWith("data:")) continue;
-      let event: JsonObject | undefined;
+      let event: typeof OpenCodeEvent.Type | undefined;
       try {
-        event = decodeOpenCodePayload(JsonObject, JSON.parse(line.slice(5).trim()), "event stream");
+        event = decodeOpenCodePayload(
+          OpenCodeEvent,
+          JSON.parse(line.slice(5).trim()),
+          "event stream",
+        );
       } catch {
         continue;
       }
