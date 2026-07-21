@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer, Option, Schema } from "effect";
 import {
   appendFile,
   chmod,
@@ -395,8 +395,8 @@ const readUndoState = async (id: string): Promise<UndoState> => {
 
 const claimState = async (path: string): Promise<"live" | "starting" | "stale"> => {
   try {
-    const owner = Schema.decodeUnknownSync(LockClaim)(JSON.parse(await readFile(path, "utf8")));
-    return processIsAlive(owner.pid) ? "live" : "stale";
+    const owner = Schema.decodeUnknownOption(LockClaim)(JSON.parse(await readFile(path, "utf8")));
+    return Option.isSome(owner) && processIsAlive(owner.value.pid) ? "live" : "stale";
   } catch {
     try {
       return Date.now() - (await stat(path)).mtimeMs < 5 * 60 * 1000 ? "starting" : "stale";
