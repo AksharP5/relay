@@ -189,6 +189,11 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
                 : pc.red(`missing (${status.harness} was not found in PATH)`);
           yield* Console.log(`${status.harness.padEnd(10)} ${result}`);
         }
+        if (statuses.some((status) => !status.installed || !status.healthy)) {
+          yield* Effect.sync(() => {
+            process.exitCode = 1;
+          });
+        }
         return;
       }
       case "new": {
