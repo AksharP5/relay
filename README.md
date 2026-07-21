@@ -59,7 +59,7 @@ A Relay task stores a small canonical log and a binding for each harness.
 
 OpenCode receives a synthetic, hidden `noReply` message. Codex receives structured app-server context items. Neither handoff causes an inference request. After the handoff, the native session resumes normally, preserving the stable prefix that provider prompt caches prefer.
 
-The handoff is shared model context, not a rewrite of vendor-owned chat storage. A relayed turn can therefore be known by the destination model without appearing as a normal message in that native TUI's timeline. `relay history` is the complete visible Relay transcript; native timelines show messages created by that native harness. Relay does not edit private session databases to make them look identical.
+The handoff is shared model context, not a rewrite of vendor-owned chat storage. A relayed turn can therefore be known by the destination model without appearing as a normal message in that native TUI's timeline. `relay history` shows the current active visible canonical context; native timelines show messages created by that native harness. Relay does not edit private session databases to make them look identical.
 
 Relay transfers visible conversation—not hidden reasoning, raw tool payloads, approval state, provider cache entries, or another harness’s private database. The receiving harness should inspect the shared workspace because it is the source of truth for file changes.
 
@@ -119,7 +119,7 @@ relay doctor
 
 The build creates a standalone Relay executable for the current platform. Re-run `bun run build` after pulling changes. Source builds are for contributors; npm is the supported installation channel.
 
-Relay targets the latest stable releases rather than silently pinning old harnesses. The current automated contract passes with Codex CLI `0.144.3` and OpenCode `1.17.20`. On every relevant `main` change and once per day, compatibility CI installs both `@latest` packages on Linux and macOS and exercises their schemas, authenticated local servers, event streams, session creation, hidden handoff injection, resume, deleted-session recovery, status, and cleanup without a model call. The PTY byte path also has automated terminal tests.
+Relay targets the latest stable releases rather than silently pinning old harnesses. On every relevant `main` change and once per day, [compatibility CI](https://github.com/AksharP5/relay/actions/workflows/compat-latest.yml) installs both `@latest` packages on Linux and macOS, records the exact resolved versions in the run summary, and exercises their schemas, authenticated local servers, event streams, session creation, hidden handoff injection, resume, deleted-session recovery, status, and cleanup without a model call. The PTY byte path also has automated terminal tests.
 
 Relay does not auto-update tools on startup. That would add latency, network traffic, and an unexpected global machine mutation. `relay doctor` reports the locally installed versions; Relay’s CI detects upstream changes, and releases should pass `bun run compat:latest` against the latest harnesses.
 
@@ -132,9 +132,12 @@ relay
 relay .
 relay ../another-project
 relay /absolute/path/to/project
+relay -- native
 ```
 
-All four forms select the same directory-bound workspace behavior. Relative paths resolve from the current shell directory. Relay uses the most recent task bound to the selected directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
+These forms select the same directory-bound workspace behavior. Relative paths resolve from the current shell directory. Relay uses the most recent task bound to the selected directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
+
+If a directory name matches a Relay command, place `--` before exactly one directory operand. For example, `relay -- native` opens the `native` directory instead of running `relay native`. A path such as `relay ./native` continues to work without the delimiter.
 
 | Input                                    | Owner      | Action                                         |
 | ---------------------------------------- | ---------- | ---------------------------------------------- |
@@ -183,6 +186,8 @@ Selecting an existing session is an intentional context reset for the current Re
 The native TUI is the primary interface. Relay also keeps a headless surface for scripts and diagnostics:
 
 ```bash
+relay help # aliases: --help, -h
+relay version # aliases: --version, -v
 relay doctor
 relay config
 relay config set switch-key ctrl+g
@@ -215,7 +220,7 @@ Both the backend and native frontend stop when Relay leaves that harness. Native
 
 Set `RELAY_DATA_DIR` to place Relay’s canonical log elsewhere. Protect it like any local agent transcript.
 
-Use `relay export` for a user-readable JSON archive of visible task messages. It intentionally excludes internal native session IDs, locks, journals, hidden undo entries, secrets, and vendor databases. It is an archive, not an importable backup.
+Use `relay export` for a user-readable JSON archive of the current active visible canonical context. It intentionally excludes superseded contexts, internal native session IDs, locks, journals, hidden undo entries, secrets, and vendor databases. Superseded or adopted conversations remain available only through the native harness history that owns them. The export is an archive, not an importable backup.
 
 Use `relay delete [id] --force` to erase one task's Relay-owned records. Deletion is journaled so an interrupted delete finishes on the next launch. It does not delete files in the workspace or sessions retained by Codex and OpenCode.
 

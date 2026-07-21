@@ -9,9 +9,12 @@ relay
 relay .
 relay ../another-project
 relay /absolute/path/to/project
+relay -- native
 ```
 
 With no argument, Relay uses the current directory. A relative or absolute directory argument selects that workspace without requiring a separate `cd`. Relay selects the most recent task for that directory or creates one, then starts its active native TUI.
+
+Use `relay -- <directory>` when the directory name matches a Relay command. The delimiter accepts exactly one directory, so `relay -- native` opens a directory named `native`; `relay ./native` remains equivalent and needs no escape.
 
 Inside Codex, Codex owns its composer and slash commands. Inside OpenCode, OpenCode owns them. Relay does not translate `/resume` into `/sessions`, replace `/undo`, or focus a second command dialog. Type commands exactly as you would when launching that CLI directly.
 
@@ -35,6 +38,19 @@ Relay rebinds the current task to the selected native session and imports its co
 Native selection resets the current Relay task to the selected conversation. Relay compacts the superseded canonical prefix, drops the other harness binding, and imports the selected vendor transcript as the only active context. This prevents the old native prefix from contaminating the selected conversation and keeps switch-time memory and storage proportional to the active task. The original conversation remains in its Codex or OpenCode session and can be selected again. OpenCode's graceful exit identifies a newly selected session even when no new prompt was sent before switching. Relay refuses to adopt a session whose native working directory differs from the Relay task or is not exposed by the harness.
 
 Relay can adopt sessions that appear in the native picker. It does not expose a separate picker for headless or other session types that a vendor excludes from its own history UI.
+
+## Inspect help and version
+
+```bash
+relay help
+relay --help
+relay -h
+relay version
+relay --version
+relay -v
+```
+
+The help forms print Relay's supported command surface. The version forms print the installed Relay version.
 
 ## Check installed harnesses
 
@@ -96,7 +112,9 @@ relay export <id> --out relay-task.json
 relay delete <id> --force
 ```
 
-Export includes visible canonical conversation text and public task metadata. It excludes native binding IDs, hidden undo state, locks, journals, and secrets, and is not an importable backup. Delete requires `--force`, survives interruption through a private deletion journal, and never removes workspace files or vendor-native sessions.
+History and export are scoped to the task's current active visible canonical context. When a native session change adopts a different context, the superseded conversation remains in that harness's own history but is not included in Relay history or export.
+
+Export also includes public task metadata. It excludes native binding IDs, superseded contexts, hidden undo state, locks, journals, and secrets, and is not an importable backup. Delete requires `--force`, survives interruption through a private deletion journal, and never removes workspace files or vendor-native sessions.
 
 Tasks are directory-bound. Relay will not run or synchronize a task from a different directory, which prevents an accidental native session from editing the wrong project.
 

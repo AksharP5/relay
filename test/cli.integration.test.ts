@@ -30,7 +30,7 @@ const runRelay = async (
   env: Readonly<Record<string, string>> = {},
 ) => {
   try {
-    const result = await execFileAsync("bun", [join(projectRoot, "src/cli.ts"), ...args], {
+    const result = await execFileAsync("bun", [join(projectRoot, "src/cli.ts"), "--", ...args], {
       cwd,
       env: { ...process.env, RELAY_DATA_DIR: root, NO_COLOR: "1", ...env },
     });
@@ -43,6 +43,19 @@ const runRelay = async (
 
 afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+describe("Relay CLI surface", () => {
+  it("advertises help, version, and the explicit directory escape", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-help-"));
+    tempRoots.push(root);
+
+    const result = await runRelay(root, ["--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("relay help | --help | -h");
+    expect(result.stdout).toContain("relay version | --version | -v");
+    expect(result.stdout).toContain("relay -- <directory>");
+  });
 });
 
 describe("Relay CLI storage", () => {
@@ -82,6 +95,14 @@ describe("Relay CLI storage", () => {
     expect(notDirectory.exitCode).toBe(1);
     expect(notDirectory.stderr).toContain("Relay path is not a directory:");
     expect(notDirectory.stderr).toContain("not-a-directory");
+
+    const commandLikeFile = join(workspace, "native");
+    await writeFile(commandLikeFile, "file", "utf8");
+    const escapedCommandLike = await runRelay(root, ["--", "native"], workspace);
+    expect(escapedCommandLike.exitCode).toBe(1);
+    expect(escapedCommandLike.stderr).toContain(
+      `Relay path is not a directory: ${join(canonicalWorkspace, "native")}`,
+    );
   });
 
   it("persists, reports, and resets any terminal-observable switch key", async () => {

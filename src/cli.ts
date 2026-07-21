@@ -34,6 +34,9 @@ ${pc.bold("Relay")} — carry one coding task between Codex and OpenCode
 ${pc.bold("Usage")}
   relay
   relay [directory]
+  relay -- <directory>
+  relay help | --help | -h
+  relay version | --version | -v
   relay doctor
   relay config
   relay config get switch-key
@@ -53,6 +56,7 @@ ${pc.bold("Usage")}
 ${pc.bold("Examples")}
   relay .
   relay ../another-project
+  relay -- native
   relay config set switch-key ctrl+g
   relay config set switch-key shift+return
   relay new "Fix the checkout flow" --with codex
@@ -60,6 +64,7 @@ ${pc.bold("Examples")}
   relay ask --with opencode "Review the change and run the tests"
 
 Bare ${pc.cyan("relay")} opens the selected harness's real native TUI.
+Use ${pc.cyan("relay -- <directory>")} when a directory name matches a Relay command.
 Press the configured switch key (${pc.cyan("Ctrl+Q")} by default) to move between harnesses.
 ${pc.cyan("F6")} is available as a fallback.
 Run ${pc.cyan("relay config set switch-key ctrl+g")} to choose any terminal-observable key chord using OpenCode-style key names.
