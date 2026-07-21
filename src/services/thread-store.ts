@@ -359,33 +359,33 @@ const PendingTurn = Schema.Struct({
 });
 type PendingTurn = typeof PendingTurn.Type;
 
-interface UndoEntry {
-  readonly messages: ReadonlyArray<RelayMessage>;
-  readonly thread: RelayThread;
-}
+const UndoEntry = Schema.Struct({
+  messages: Schema.Array(RelayMessage),
+  thread: RelayThread,
+});
+type UndoEntry = typeof UndoEntry.Type;
 
+const StoredUndoState = Schema.Struct({ entries: Schema.Array(Schema.Unknown) });
 interface UndoState {
   readonly entries: ReadonlyArray<UndoEntry>;
 }
 
+const LockClaim = Schema.Struct({
+  pid: Schema.Number,
+});
+
 const readUndoState = async (id: string): Promise<UndoState> => {
   const file = Bun.file(undoPath(id));
   if (!(await file.exists())) return { entries: [] };
-  const value = (await file.json()) as { entries?: unknown };
-  if (!Array.isArray(value.entries)) return { entries: [] };
-  const entries = value.entries.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    const candidate = entry as { messages?: unknown; thread?: unknown };
+  let stored: typeof StoredUndoState.Type;
+  try {
+    stored = Schema.decodeUnknownSync(StoredUndoState)(await file.json());
+  } catch {
+    return { entries: [] };
+  }
+  const entries = stored.entries.flatMap((entry) => {
     try {
-      if (!Array.isArray(candidate.messages)) return [];
-      return [
-        {
-          messages: candidate.messages.map((message) =>
-            Schema.decodeUnknownSync(RelayMessage)(message),
-          ),
-          thread: Schema.decodeUnknownSync(RelayThread)(candidate.thread),
-        },
-      ];
+      return [Schema.decodeUnknownSync(UndoEntry)(entry)];
     } catch {
       return [];
     }
@@ -395,8 +395,8 @@ const readUndoState = async (id: string): Promise<UndoState> => {
 
 const claimState = async (path: string): Promise<"live" | "starting" | "stale"> => {
   try {
-    const owner = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown };
-    return typeof owner.pid === "number" && processIsAlive(owner.pid) ? "live" : "stale";
+    const owner = Schema.decodeUnknownSync(LockClaim)(JSON.parse(await readFile(path, "utf8")));
+    return processIsAlive(owner.pid) ? "live" : "stale";
   } catch {
     try {
       return Date.now() - (await stat(path)).mtimeMs < 5 * 60 * 1000 ? "starting" : "stale";
