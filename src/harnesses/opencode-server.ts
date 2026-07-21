@@ -131,15 +131,14 @@ export const startOpenCodeServer = async (
       detached: process.platform !== "win32",
     },
   );
-  let resolveUrl: (value: string) => void;
-  let rejectUrl: (cause: unknown) => void;
-  const serverUrl = new Promise<string>((resolve, reject) => {
-    resolveUrl = resolve;
-    rejectUrl = reject;
-  });
+  const {
+    promise: serverUrl,
+    resolve: resolveUrl,
+    reject: rejectUrl,
+  } = Promise.withResolvers<string>();
   const abortReason = () =>
     signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
-  const rejectStartup = (cause: unknown) => rejectUrl!(signal?.aborted ? abortReason() : cause);
+  const rejectStartup = (cause: unknown) => rejectUrl(signal?.aborted ? abortReason() : cause);
   let terminating: Promise<void> | undefined;
   const terminate = () => (terminating ??= stopProcessTree(child));
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -207,20 +206,15 @@ export const discoverOpenCodeCommands = async (
     throw new Error("OpenCode server output pipes are unavailable");
   }
 
-  let resolveUrl: (value: string) => void;
-  let rejectUrl: (cause: Error) => void;
-  const url = new Promise<string>((resolve, reject) => {
-    resolveUrl = resolve;
-    rejectUrl = reject;
-  });
+  const { promise: url, resolve: resolveUrl, reject: rejectUrl } = Promise.withResolvers<string>();
   const inspectLine = (line: string) => {
     const match = line.match(/opencode server listening on (http:\/\/\S+)/i);
     if (match?.[1]) resolveUrl(match[1]);
   };
-  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
-  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
+  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
+  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
   void child.exited.then((code) =>
-    rejectUrl!(new Error(`OpenCode server exited with code ${code}`)),
+    rejectUrl(new Error(`OpenCode server exited with code ${code}`)),
   );
 
   try {
@@ -286,20 +280,19 @@ export const runOpenCodeControl = async (
     throw new Error("OpenCode server output pipes are unavailable");
   }
 
-  let resolveUrl: (value: string) => void;
-  let rejectUrl: (cause: Error) => void;
-  const serverUrl = new Promise<string>((resolve, reject) => {
-    resolveUrl = resolve;
-    rejectUrl = reject;
-  });
+  const {
+    promise: serverUrl,
+    resolve: resolveUrl,
+    reject: rejectUrl,
+  } = Promise.withResolvers<string>();
   const inspectLine = (line: string) => {
     const match = line.match(/opencode server listening on (http:\/\/\S+)/i);
     if (match?.[1]) resolveUrl(match[1]);
   };
-  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
-  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
+  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
+  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
   void child.exited.then((code) =>
-    rejectUrl!(new Error(`OpenCode server exited with code ${code}`)),
+    rejectUrl(new Error(`OpenCode server exited with code ${code}`)),
   );
 
   try {
@@ -452,20 +445,19 @@ export const runOpenCodeCommand = async (
     await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
   }
-  let resolveUrl: (value: string) => void;
-  let rejectUrl: (cause: Error) => void;
-  const serverUrl = new Promise<string>((resolve, reject) => {
-    resolveUrl = resolve;
-    rejectUrl = reject;
-  });
+  const {
+    promise: serverUrl,
+    resolve: resolveUrl,
+    reject: rejectUrl,
+  } = Promise.withResolvers<string>();
   const inspectLine = (line: string) => {
     const match = line.match(/opencode server listening on (http:\/\/\S+)/i);
     if (match?.[1]) resolveUrl(match[1]);
   };
-  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
-  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
+  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
+  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
   void child.exited.then((code) =>
-    rejectUrl!(new Error(`OpenCode server exited with code ${code}`)),
+    rejectUrl(new Error(`OpenCode server exited with code ${code}`)),
   );
 
   try {

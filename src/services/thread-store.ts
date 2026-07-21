@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer, Option, Schema } from "effect";
 import {
   appendFile,
   chmod,
@@ -194,7 +194,8 @@ const readRawMessages = async (
   const lines = text.trimEnd().split("\n");
   const messages: Array<RelayMessage> = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
+    const line = lines[index];
+    if (line === undefined) continue;
     try {
       messages.push(Schema.decodeUnknownSync(RelayMessage)(JSON.parse(line)));
     } catch (cause) {
@@ -359,33 +360,33 @@ const PendingTurn = Schema.Struct({
 });
 type PendingTurn = typeof PendingTurn.Type;
 
-interface UndoEntry {
-  readonly messages: ReadonlyArray<RelayMessage>;
-  readonly thread: RelayThread;
-}
+const UndoEntry = Schema.Struct({
+  messages: Schema.Array(RelayMessage),
+  thread: RelayThread,
+});
+type UndoEntry = typeof UndoEntry.Type;
 
+const StoredUndoState = Schema.Struct({ entries: Schema.Array(Schema.Unknown) });
 interface UndoState {
   readonly entries: ReadonlyArray<UndoEntry>;
 }
 
+const LockClaim = Schema.Struct({
+  pid: Schema.Number,
+});
+
 const readUndoState = async (id: string): Promise<UndoState> => {
   const file = Bun.file(undoPath(id));
   if (!(await file.exists())) return { entries: [] };
-  const value = (await file.json()) as { entries?: unknown };
-  if (!Array.isArray(value.entries)) return { entries: [] };
-  const entries = value.entries.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    const candidate = entry as { messages?: unknown; thread?: unknown };
+  let stored: typeof StoredUndoState.Type;
+  try {
+    stored = Schema.decodeUnknownSync(StoredUndoState)(await file.json());
+  } catch {
+    return { entries: [] };
+  }
+  const entries = stored.entries.flatMap((entry) => {
     try {
-      if (!Array.isArray(candidate.messages)) return [];
-      return [
-        {
-          messages: candidate.messages.map((message) =>
-            Schema.decodeUnknownSync(RelayMessage)(message),
-          ),
-          thread: Schema.decodeUnknownSync(RelayThread)(candidate.thread),
-        },
-      ];
+      return [Schema.decodeUnknownSync(UndoEntry)(entry)];
     } catch {
       return [];
     }
@@ -395,8 +396,8 @@ const readUndoState = async (id: string): Promise<UndoState> => {
 
 const claimState = async (path: string): Promise<"live" | "starting" | "stale"> => {
   try {
-    const owner = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown };
-    return typeof owner.pid === "number" && processIsAlive(owner.pid) ? "live" : "stale";
+    const owner = Schema.decodeUnknownOption(LockClaim)(JSON.parse(await readFile(path, "utf8")));
+    return Option.isSome(owner) && processIsAlive(owner.value.pid) ? "live" : "stale";
   } catch {
     try {
       return Date.now() - (await stat(path)).mtimeMs < 5 * 60 * 1000 ? "starting" : "stale";
@@ -571,10 +572,7 @@ const acquireThreadLock = (id: string) =>
 let indexQueue = Promise.resolve();
 
 const acquireLocalIndexLock = async () => {
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const { promise: current, resolve: release } = Promise.withResolvers<void>();
   const previous = indexQueue;
   indexQueue = previous.then(() => current);
   await previous;
@@ -831,14 +829,15 @@ export class ThreadStore extends Context.Service<
           message: "No Relay task is selected. Run relay new first.",
         });
       }
+      const currentThreadId = index.currentThreadId;
 
       return yield* Effect.tryPromise({
         try: async () => {
-          const thread = await readThread(index.currentThreadId!);
+          const thread = await readThread(currentThreadId);
           if (!thread) {
             throw new ThreadNotFound({
-              threadId: index.currentThreadId!,
-              message: `Relay task ${index.currentThreadId!} was not found`,
+              threadId: currentThreadId,
+              message: `Relay task ${currentThreadId} was not found`,
             });
           }
           return thread;
@@ -865,14 +864,15 @@ export class ThreadStore extends Context.Service<
           message: "No Relay task is selected. Run relay new first.",
         });
       }
+      const currentThreadId = index.currentThreadId;
 
       return yield* Effect.tryPromise({
         try: async () => {
-          const thread = await readThreadMetadata(index.currentThreadId!);
+          const thread = await readThreadMetadata(currentThreadId);
           if (!thread) {
             throw new ThreadNotFound({
-              threadId: index.currentThreadId!,
-              message: `Relay task ${index.currentThreadId!} was not found`,
+              threadId: currentThreadId,
+              message: `Relay task ${currentThreadId} was not found`,
             });
           }
           return thread;
@@ -1251,6 +1251,7 @@ export class ThreadStore extends Context.Service<
             };
             const bindings: RelayThread["bindings"] =
               input.harness === "codex" ? { codex: binding } : { opencode: binding };
+            const firstTurn = input.turns.at(0);
             const updated: RelayThread = {
               ...thread,
               activeHarness: input.harness,
@@ -1262,13 +1263,13 @@ export class ThreadStore extends Context.Service<
                 ...(binding.model ? { [input.harness]: binding.model } : {}),
               },
               lastSeq: nextSeq,
-              ...(input.turns.length > 0 &&
+              ...(firstTurn &&
               (thread.title === "New Relay task" || thread.title === "Untitled task")
                 ? {
                     title:
-                      input.turns[0]!.prompt.length <= 64
-                        ? input.turns[0]!.prompt
-                        : `${input.turns[0]!.prompt.slice(0, 61)}...`,
+                      firstTurn.prompt.length <= 64
+                        ? firstTurn.prompt
+                        : `${firstTurn.prompt.slice(0, 61)}...`,
                   }
                 : {}),
               updatedAt: now,
@@ -1466,6 +1467,7 @@ export class ThreadStore extends Context.Service<
               return [user, assistant];
             });
             const existingBinding = thread.bindings[input.harness];
+            const latestTurnId = input.turns.at(-1)?.id;
             const binding: HarnessBinding = {
               harness: input.harness,
               sessionId: input.sessionId,
@@ -1475,16 +1477,17 @@ export class ThreadStore extends Context.Service<
                   ? { model: existingBinding.model }
                   : {}),
               lastSyncedSeq: messages.length > 0 ? nextSeq : (existingBinding?.lastSyncedSeq ?? 0),
-              ...(input.turns.at(-1)?.id
-                ? { nativeCursor: input.turns.at(-1)!.id }
+              ...(latestTurnId
+                ? { nativeCursor: latestTurnId }
                 : existingBinding?.nativeCursor
                   ? { nativeCursor: existingBinding.nativeCursor }
                   : {}),
               createdAt: existingBinding?.createdAt ?? now,
               updatedAt: now,
             };
+            const firstFreshTurn = fresh.at(0);
             const updateTitle =
-              fresh.length > 0 &&
+              firstFreshTurn !== undefined &&
               (thread.title === "New Relay task" || thread.title === "Untitled task");
             const hiddenBefore = new Set(visibility.hidden);
             const hidden = new Set(visibility.hidden);
@@ -1524,9 +1527,9 @@ export class ThreadStore extends Context.Service<
               ...(updateTitle
                 ? {
                     title:
-                      fresh[0]!.prompt.length <= 64
-                        ? fresh[0]!.prompt
-                        : `${fresh[0]!.prompt.slice(0, 61)}...`,
+                      firstFreshTurn.prompt.length <= 64
+                        ? firstFreshTurn.prompt
+                        : `${firstFreshTurn.prompt.slice(0, 61)}...`,
                   }
                 : {}),
               activeHarness: input.harness,
@@ -1701,8 +1704,8 @@ export class ThreadStore extends Context.Service<
             };
           }
           const other = harness === "codex" ? "opencode" : "codex";
-          if (bindings[other] && bindings[other]!.lastSyncedSeq > lastVisibleSeq)
-            delete bindings[other];
+          const otherBinding = bindings[other];
+          if (otherBinding && otherBinding.lastSyncedSeq > lastVisibleSeq) delete bindings[other];
           const updated: RelayThread = {
             ...thread,
             bindings,
