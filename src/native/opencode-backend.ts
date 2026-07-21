@@ -214,6 +214,7 @@ export class OpenCodeNativeBackend {
   readonly #server: RunningOpenCodeServer;
   readonly #executable: string;
   readonly #cwd: string;
+  readonly #dataRoot: string;
   readonly #eventAbort = new AbortController();
   readonly #requestAbort = new AbortController();
   readonly #sessionParents = new Map<string, string>();
@@ -224,17 +225,24 @@ export class OpenCodeNativeBackend {
   #observerEvents = 0;
   #observedRoot: string | undefined;
 
-  private constructor(server: RunningOpenCodeServer, executable: string, cwd: string) {
+  private constructor(
+    server: RunningOpenCodeServer,
+    executable: string,
+    cwd: string,
+    dataRoot: string,
+  ) {
     this.#server = server;
     this.#executable = executable;
     this.#cwd = cwd;
+    this.#dataRoot = dataRoot;
   }
 
-  static async start(executable: string, cwd: string, signal?: AbortSignal) {
+  static async start(executable: string, cwd: string, dataRoot: string, signal?: AbortSignal) {
     const backend = new OpenCodeNativeBackend(
-      await startOpenCodeServer(executable, cwd, signal),
+      await startOpenCodeServer(executable, cwd, dataRoot, signal),
       executable,
       cwd,
+      dataRoot,
     );
     const onAbort = () => backend.#eventAbort.abort(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -534,6 +542,7 @@ export class OpenCodeNativeBackend {
       const recovery = await startOpenCodeServer(
         this.#executable,
         this.#cwd,
+        this.#dataRoot,
         this.#requestAbort.signal,
         { pure: true },
       );

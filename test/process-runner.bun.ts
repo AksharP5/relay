@@ -3,9 +3,23 @@ import { Effect, Fiber } from "effect";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ProcessError } from "../src/errors.ts";
 import { ProcessRunner, stopProcessTree } from "../src/services/process-runner.ts";
 
 describe("ProcessRunner on Bun", () => {
+  it("reports spawn failures through the typed error channel", async () => {
+    const command = "/relay-test/command-does-not-exist";
+    const failure = await Effect.runPromise(
+      Effect.gen(function* () {
+        const runner = yield* ProcessRunner;
+        return yield* runner.run({ command }).pipe(Effect.flip);
+      }).pipe(Effect.provide(ProcessRunner.layer)),
+    );
+
+    expect(failure).toBeInstanceOf(ProcessError);
+    expect(failure).toMatchObject({ _tag: "ProcessError", operation: "run", command });
+  });
+
   it("writes stdin and closes the child pipe", async () => {
     const output = await Effect.runPromise(
       Effect.gen(function* () {

@@ -2,16 +2,15 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-const directory = await mkdtemp(join(tmpdir(), "relay-process-registry-"));
-Bun.env.RELAY_DATA_DIR = directory;
-const {
+import {
   cleanupOrphanedProcesses,
   ProcessRecoveryError,
   ProcessRecoveryFailure,
   trackManagedProcess,
-} = await import("../src/services/process-registry.ts");
-const { renderProcessRecoveryError } = await import("../src/cli.ts");
+} from "../src/services/process-registry.ts";
+import { renderProcessRecoveryError } from "../src/cli.ts";
+
+const directory = await mkdtemp(join(tmpdir(), "relay-process-registry-"));
 
 const waitFor = async (predicate: () => Promise<boolean>, timeoutMs = 3_000) => {
   const deadline = Date.now() + timeoutMs;
@@ -33,7 +32,6 @@ const processIsAlive = (pid: number) => {
 
 afterAll(async () => {
   await rm(directory, { recursive: true, force: true });
-  delete Bun.env.RELAY_DATA_DIR;
 });
 
 describe("managed process recovery", () => {
@@ -91,7 +89,7 @@ describe("managed process recovery", () => {
     );
 
     const signals: Array<readonly [number, NodeJS.Signals]> = [];
-    const result = await cleanupOrphanedProcesses({
+    const result = await cleanupOrphanedProcesses(directory, {
       operations: {
         processSnapshot: async (pid) =>
           pid === 4242 ? { pgid: 4343, startedAt: "fixture-start" } : undefined,
@@ -146,7 +144,7 @@ describe("managed process recovery", () => {
     );
 
     const signals: Array<readonly [number, NodeJS.Signals]> = [];
-    const result = await cleanupOrphanedProcesses({
+    const result = await cleanupOrphanedProcesses(directory, {
       operations: {
         processSnapshot: async (pid) =>
           pid === 5252 ? { pgid: 5353, startedAt: "group-leader-start" } : undefined,
@@ -192,7 +190,7 @@ describe("managed process recovery", () => {
         stderr: "pipe",
         env: {
           ...Bun.env,
-          RELAY_DATA_DIR: directory,
+          RELAY_TEST_DATA_ROOT: directory,
           RELAY_TEST_READY: ready,
           RELAY_TEST_MARKER: marker,
         },
@@ -204,7 +202,7 @@ describe("managed process recovery", () => {
 
     process.kill(owner.pid, "SIGKILL");
     await owner.exited;
-    const result = await cleanupOrphanedProcesses();
+    const result = await cleanupOrphanedProcesses(directory);
     expect(result.terminated).toBe(1);
     await waitFor(async () => !processIsAlive(childPid));
     await Bun.sleep(1_850);
@@ -237,7 +235,7 @@ describe("managed process recovery", () => {
       { mode: 0o600 },
     );
 
-    const result = await cleanupOrphanedProcesses();
+    const result = await cleanupOrphanedProcesses(directory);
     expect(result.discarded).toBe(1);
     expect(processIsAlive(child.pid)).toBe(true);
     process.kill(-child.pid, "SIGKILL");
@@ -250,7 +248,7 @@ describe("managed process recovery", () => {
       stdout: "ignore",
       stderr: "ignore",
     });
-    await trackManagedProcess(child, "process-only-test", { processOnly: true });
+    await trackManagedProcess(directory, child, "process-only-test", { processOnly: true });
     const processes = join(directory, "processes");
     const [claimName] = (await readdir(processes)).filter((name) => name.endsWith(".json"));
     const claimPath = join(processes, claimName!);
@@ -262,7 +260,7 @@ describe("managed process recovery", () => {
     claim.owner = { pid: 2_147_483_647, startedAt: "never" };
     await writeFile(claimPath, `${JSON.stringify(claim)}\n`, { mode: 0o600 });
 
-    const result = await cleanupOrphanedProcesses();
+    const result = await cleanupOrphanedProcesses(directory);
     expect(result.terminated).toBe(1);
     expect(await child.exited).not.toBe(0);
   });
@@ -279,7 +277,7 @@ describe("managed process recovery", () => {
         detached: true,
       },
     );
-    await trackManagedProcess(leader, "exiting-leader-test");
+    await trackManagedProcess(directory, leader, "exiting-leader-test");
     await waitFor(async () => Bun.file(ready).exists());
     const { descendantPid } = JSON.parse(await readFile(ready, "utf8")) as {
       descendantPid: number;
@@ -298,7 +296,7 @@ describe("managed process recovery", () => {
     delete claim.scope;
     await writeFile(claimPath, `${JSON.stringify(claim)}\n`, { mode: 0o600 });
 
-    const result = await cleanupOrphanedProcesses();
+    const result = await cleanupOrphanedProcesses(directory);
     expect(result.terminated).toBe(1);
     await waitFor(async () => !processIsAlive(descendantPid));
   });

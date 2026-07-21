@@ -10,6 +10,7 @@ import { parseArgs, type CliCommand } from "./cli-args.ts";
 import type { Harness, RelayThread } from "./domain.ts";
 import { HarnessService } from "./harnesses/harness-service.ts";
 import { resolveLaunchDirectory } from "./launch-directory.ts";
+import { RelayPaths } from "./services/data-root.ts";
 import { ProcessRunner } from "./services/process-runner.ts";
 import {
   cleanupOrphanedProcesses,
@@ -18,12 +19,7 @@ import {
 } from "./services/process-registry.ts";
 import { RelayService } from "./services/relay-service.ts";
 import { ThreadStore } from "./services/thread-store.ts";
-import {
-  loadRelaySettings,
-  relayConfigPath,
-  resetRelaySettings,
-  saveRelaySettings,
-} from "./services/settings.ts";
+import { SettingsService } from "./services/settings.ts";
 import { parseSwitchKey, switchKeyWarning } from "./switch-key.ts";
 import { makeNativeRelayController } from "./native/controller.ts";
 import { launchNativeRelay } from "./native/relay-host.ts";
@@ -138,6 +134,7 @@ const renderError = (error: unknown) => {
 export const program = (command: Exclude<CliCommand, { readonly name: "open" }>) =>
   Effect.gen(function* () {
     const relay = yield* RelayService;
+    const settingsService = yield* SettingsService;
 
     switch (command.name) {
       case "help":
@@ -148,17 +145,14 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
         return;
       case "config": {
         if (command.action === "get") {
-          const settings = yield* Effect.tryPromise({
-            try: loadRelaySettings,
-            catch: (cause) => cause,
-          });
+          const settings = yield* settingsService.load();
           yield* Console.log(`Switch key  ${pc.cyan(settings.switchKey.label)}`);
           yield* Console.log(`Fallback    ${pc.cyan("F6")}`);
-          yield* Console.log(`Config      ${pc.dim(relayConfigPath())}`);
+          yield* Console.log(`Config      ${pc.dim(settingsService.path())}`);
           return;
         }
         if (command.action === "reset") {
-          yield* Effect.tryPromise({ try: resetRelaySettings, catch: (cause) => cause });
+          yield* settingsService.reset();
           yield* Console.log(`${pc.green("Reset")} switch key to ${pc.cyan("Ctrl+Q")}.`);
           yield* Console.log(pc.dim("F6 remains available. Applies on the next Relay launch."));
           return;
@@ -167,10 +161,7 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
           try: () => parseSwitchKey(command.value),
           catch: (cause) => cause,
         });
-        yield* Effect.tryPromise({
-          try: () => saveRelaySettings({ switchKey }),
-          catch: (cause) => cause,
-        });
+        yield* settingsService.save({ switchKey });
         yield* Console.log(`${pc.green("Saved")} switch key ${pc.cyan(switchKey.label)}.`);
         const warning = switchKeyWarning(switchKey);
         if (warning) yield* Console.log(pc.yellow(warning));
@@ -318,10 +309,36 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
     }
   });
 
-const HarnessLayer = HarnessService.layer.pipe(Layer.provide(ProcessRunner.layer));
-export const MainLayer = RelayService.layer.pipe(
-  Layer.provide(Layer.mergeAll(ThreadStore.layer, HarnessLayer)),
+const PathsLayer = RelayPaths.layer;
+const ThreadStoreLayer = ThreadStore.configuredLayer.pipe(Layer.provide(PathsLayer));
+const ProcessRunnerLayer = ProcessRunner.configuredLayer.pipe(Layer.provide(PathsLayer));
+const SettingsLayer = SettingsService.configuredLayer.pipe(Layer.provide(PathsLayer));
+const HarnessLayer = HarnessService.configuredLayer.pipe(
+  Layer.provide(Layer.merge(ProcessRunnerLayer, PathsLayer)),
 );
+const RelayLayer = RelayService.layer.pipe(
+  Layer.provide(Layer.merge(ThreadStoreLayer, HarnessLayer)),
+);
+export const MainLayer = Layer.mergeAll(RelayLayer, PathsLayer, SettingsLayer);
+
+const recoverManagedProcessState = Effect.gen(function* () {
+  const paths = yield* RelayPaths;
+  const recovery = yield* Effect.tryPromise({
+    try: () => cleanupOrphanedProcesses(paths.root),
+    catch: (cause) => cause,
+  });
+  if (recovery.failures.length > 0) {
+    return yield* new ProcessRecoveryError({ failures: recovery.failures });
+  }
+  if (recovery.quarantined > 0) {
+    yield* Console.error(
+      pc.yellow(
+        `Relay quarantined ${recovery.quarantined} invalid process ownership record${recovery.quarantined === 1 ? "" : "s"}.`,
+      ),
+    );
+  }
+  return paths;
+});
 
 if (import.meta.main) {
   const argv = process.argv.slice(2);
@@ -330,17 +347,6 @@ if (import.meta.main) {
     if (argv.length > 0) {
       command = parseArgs(argv);
       if (command.name === "open") process.chdir(await resolveLaunchDirectory(command.directory));
-    }
-    if (command?.name !== "help" && command?.name !== "version") {
-      const recovery = await cleanupOrphanedProcesses();
-      if (recovery.failures.length > 0) {
-        throw new ProcessRecoveryError({ failures: recovery.failures });
-      }
-      if (recovery.quarantined > 0) {
-        process.stderr.write(
-          `${pc.yellow(`Relay quarantined ${recovery.quarantined} invalid process ownership record${recovery.quarantined === 1 ? "" : "s"}.`)}\n`,
-        );
-      }
     }
   } catch (error) {
     process.stderr.write(`${pc.red(renderError(error))}\n`);
@@ -354,13 +360,21 @@ if (import.meta.main) {
       process.stdout.write(`${packageJson.version}\n`);
     } else if (!command || command.name === "open") {
       const runtime = ManagedRuntime.make(MainLayer);
-      void loadRelaySettings()
-        .then((settings) =>
+      void runtime
+        .runPromise(
+          Effect.gen(function* () {
+            const paths = yield* recoverManagedProcessState;
+            const settings = yield* SettingsService;
+            return { paths, settings: yield* settings.load() };
+          }),
+        )
+        .then(({ paths, settings }) =>
           launchNativeRelay(
             makeNativeRelayController(runtime),
             {},
             {
               switchKey: settings.switchKey,
+              dataRoot: paths.root,
             },
           ),
         )
@@ -371,7 +385,7 @@ if (import.meta.main) {
         .finally(() => runtime.dispose());
     } else {
       pipe(
-        program(command),
+        recoverManagedProcessState.pipe(Effect.andThen(program(command))),
         Effect.provide(MainLayer),
         Effect.tapError((error) => Console.error(pc.red(renderError(error)))),
         Effect.catch(() => Effect.sync(() => (process.exitCode = 1))),

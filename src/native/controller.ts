@@ -8,7 +8,7 @@ import type {
   RelayMessage,
   RelayThread,
 } from "../domain.ts";
-import { RelayService } from "../services/relay-service.ts";
+import { RelayService, type RelayError } from "../services/relay-service.ts";
 
 export interface NativeRelayController {
   readonly loadLocalThread: (preferredHarness?: Harness) => Promise<RelayThread>;
@@ -66,10 +66,10 @@ export interface NativeRelayController {
   ) => Promise<RelayThread>;
 }
 
-export const makeNativeRelayController = (
-  runtime: ManagedRuntime.ManagedRuntime<RelayService, never>,
+export const makeNativeRelayController = <R, E>(
+  runtime: ManagedRuntime.ManagedRuntime<RelayService | R, E>,
 ): NativeRelayController => {
-  const run = <A>(effect: Effect.Effect<A, unknown, RelayService>) => runtime.runPromise(effect);
+  const run = <A>(effect: Effect.Effect<A, RelayError, RelayService>) => runtime.runPromise(effect);
 
   return {
     loadLocalThread: (preferredHarness) =>

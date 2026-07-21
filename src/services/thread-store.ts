@@ -23,23 +23,25 @@ import {
   type NativeTranscriptTurn,
   type RelayTaskExport,
 } from "../domain.ts";
-import { relayDataRoot } from "./data-root.ts";
+import { RelayPaths, type RelayPathsShape } from "./data-root.ts";
 
 const defaultIndex: RelayIndex = { currentThreadId: null, threadIds: [] };
 
 const errorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
-const threadDir = (id: string) => `${relayDataRoot()}/threads/${id}`;
-const metadataPath = (id: string) => `${threadDir(id)}/thread.json`;
-const eventsPath = (id: string) => `${threadDir(id)}/events.jsonl`;
-const indexPath = () => `${relayDataRoot()}/index.json`;
-const deletionPath = (id: string) => `${relayDataRoot()}/deletions/${id}.json`;
-const pendingPath = (id: string) => `${threadDir(id)}/pending-turn.json`;
-const undoPath = (id: string) => `${threadDir(id)}/undo-stack.json`;
-const visibilityPath = (id: string) => `${threadDir(id)}/native-visibility.json`;
-const lockPath = (id: string) => `${relayDataRoot()}/locks/${id}`;
-const runLockPath = (id: string) => `${relayDataRoot()}/run-locks/${id}`;
-const checkoutLockPath = async (cwd: string) => {
+const threadDir = (paths: RelayPathsShape, id: string) => `${paths.root}/threads/${id}`;
+const metadataPath = (paths: RelayPathsShape, id: string) => `${threadDir(paths, id)}/thread.json`;
+const eventsPath = (paths: RelayPathsShape, id: string) => `${threadDir(paths, id)}/events.jsonl`;
+const indexPath = (paths: RelayPathsShape) => `${paths.root}/index.json`;
+const deletionPath = (paths: RelayPathsShape, id: string) => `${paths.root}/deletions/${id}.json`;
+const pendingPath = (paths: RelayPathsShape, id: string) =>
+  `${threadDir(paths, id)}/pending-turn.json`;
+const undoPath = (paths: RelayPathsShape, id: string) => `${threadDir(paths, id)}/undo-stack.json`;
+const visibilityPath = (paths: RelayPathsShape, id: string) =>
+  `${threadDir(paths, id)}/native-visibility.json`;
+const lockPath = (paths: RelayPathsShape, id: string) => `${paths.root}/locks/${id}`;
+const runLockPath = (paths: RelayPathsShape, id: string) => `${paths.root}/run-locks/${id}`;
+const checkoutLockPath = async (paths: RelayPathsShape, cwd: string) => {
   const absolute = resolve(cwd);
   let root = await realpath(absolute).catch(() => absolute);
   while (true) {
@@ -52,7 +54,7 @@ const checkoutLockPath = async (cwd: string) => {
     }
     root = parent;
   }
-  return `${relayDataRoot()}/checkout-locks/${createHash("sha256").update(root).digest("hex")}`;
+  return `${paths.root}/checkout-locks/${createHash("sha256").update(root).digest("hex")}`;
 };
 const maxEventLineChars = 4_000_000;
 const NativeVisibility = Schema.Struct({
@@ -68,13 +70,13 @@ const secureDirectory = async (path: string) => {
   await chmod(path, 0o700);
 };
 
-const ensureBase = async () => {
-  await secureDirectory(relayDataRoot());
-  await secureDirectory(`${relayDataRoot()}/threads`);
-  await secureDirectory(`${relayDataRoot()}/locks`);
-  await secureDirectory(`${relayDataRoot()}/run-locks`);
-  await secureDirectory(`${relayDataRoot()}/checkout-locks`);
-  await secureDirectory(`${relayDataRoot()}/deletions`);
+const ensureBase = async (paths: RelayPathsShape) => {
+  await secureDirectory(paths.root);
+  await secureDirectory(`${paths.root}/threads`);
+  await secureDirectory(`${paths.root}/locks`);
+  await secureDirectory(`${paths.root}/run-locks`);
+  await secureDirectory(`${paths.root}/checkout-locks`);
+  await secureDirectory(`${paths.root}/deletions`);
 };
 
 const readJson = async <A>(path: string, schema: Schema.Decoder<A>): Promise<A | undefined> => {
@@ -85,8 +87,8 @@ const readJson = async <A>(path: string, schema: Schema.Decoder<A>): Promise<A |
   return Schema.decodeUnknownSync(schema)(value) as A;
 };
 
-const readVisibility = async (id: string): Promise<NativeVisibility> =>
-  (await readJson(visibilityPath(id), NativeVisibility)) ?? { hidden: [] };
+const readVisibility = async (paths: RelayPathsShape, id: string): Promise<NativeVisibility> =>
+  (await readJson(visibilityPath(paths, id), NativeVisibility)) ?? { hidden: [] };
 
 const visibilityKey = (harness: Harness, sessionId: string, nativeId: string) =>
   `${harness}:${sessionId}:${nativeId}`;
@@ -109,8 +111,8 @@ const visibleMessages = (messages: ReadonlyArray<RelayMessage>, visibility: Nati
   return messages.filter((message) => isVisible(message, hidden, links));
 };
 
-const atomicTextWrite = async (path: string, value: string) => {
-  await ensureBase();
+const atomicTextWrite = async (paths: RelayPathsShape, path: string, value: string) => {
+  await ensureBase(paths);
   const temp = `${path}.${crypto.randomUUID()}.tmp`;
   await secureDirectory(dirname(path));
   await writeFile(temp, value, { encoding: "utf8", mode: 0o600 });
@@ -118,8 +120,8 @@ const atomicTextWrite = async (path: string, value: string) => {
   await chmod(path, 0o600);
 };
 
-const atomicJsonWrite = (path: string, value: unknown) =>
-  atomicTextWrite(path, `${JSON.stringify(value, null, 2)}\n`);
+const atomicJsonWrite = (paths: RelayPathsShape, path: string, value: unknown) =>
+  atomicTextWrite(paths, path, `${JSON.stringify(value, null, 2)}\n`);
 
 const StoredIndexV1 = Schema.Struct({ version: Schema.Literal(1), ...RelayIndex.fields });
 const StoredThreadV1 = Schema.Struct({ version: Schema.Literal(1), ...RelayThread.fields });
@@ -145,23 +147,24 @@ const decodeStored = <A>(
   return { value: runtime as A, legacy: false };
 };
 
-const readIndexFile = async () => {
-  const file = Bun.file(indexPath());
+const readIndexFile = async (paths: RelayPathsShape) => {
+  const file = Bun.file(indexPath(paths));
   if (!(await file.exists())) return { value: defaultIndex, legacy: false };
-  await chmod(indexPath(), 0o600);
+  await chmod(indexPath(paths), 0o600);
   return decodeStored(await file.json(), RelayIndex, StoredIndexV1, "index");
 };
 
-const readThreadFile = async (id: string) => {
-  const file = Bun.file(metadataPath(id));
+const readThreadFile = async (paths: RelayPathsShape, id: string) => {
+  const file = Bun.file(metadataPath(paths, id));
   if (!(await file.exists())) return undefined;
-  await chmod(metadataPath(id), 0o600);
+  await chmod(metadataPath(paths, id), 0o600);
   return decodeStored(await file.json(), RelayThread, StoredThreadV1, "task");
 };
 
-const writeIndex = (index: RelayIndex) => atomicJsonWrite(indexPath(), { version: 1, ...index });
-const writeThread = (thread: RelayThread) =>
-  atomicJsonWrite(metadataPath(thread.id), { version: 1, ...thread });
+const writeIndex = (paths: RelayPathsShape, index: RelayIndex) =>
+  atomicJsonWrite(paths, indexPath(paths), { version: 1, ...index });
+const writeThread = (paths: RelayPathsShape, thread: RelayThread) =>
+  atomicJsonWrite(paths, metadataPath(paths, thread.id), { version: 1, ...thread });
 
 const DeletionJournal = Schema.Struct({
   version: Schema.Literal(1),
@@ -169,11 +172,11 @@ const DeletionJournal = Schema.Struct({
   createdAt: Schema.String,
 });
 
-const readDeletionJournals = async () => {
+const readDeletionJournals = async (paths: RelayPathsShape) => {
   const journals: Array<typeof DeletionJournal.Type> = [];
-  for (const entry of await readdir(`${relayDataRoot()}/deletions`)) {
+  for (const entry of await readdir(`${paths.root}/deletions`)) {
     if (!entry.endsWith(".json")) continue;
-    const path = `${relayDataRoot()}/deletions/${entry}`;
+    const path = `${paths.root}/deletions/${entry}`;
     await chmod(path, 0o600);
     journals.push(
       Schema.decodeUnknownSync(DeletionJournal)(JSON.parse(await readFile(path, "utf8"))),
@@ -183,12 +186,13 @@ const readDeletionJournals = async () => {
 };
 
 const readRawMessages = async (
+  paths: RelayPathsShape,
   id: string,
   options: { readonly repairTail?: boolean } = {},
 ): Promise<Array<RelayMessage>> => {
-  const file = Bun.file(eventsPath(id));
+  const file = Bun.file(eventsPath(paths, id));
   if (!(await file.exists())) return [];
-  await chmod(eventsPath(id), 0o600);
+  await chmod(eventsPath(paths, id), 0o600);
   const text = await file.text();
   if (text.trim().length === 0) return [];
   const lines = text.trimEnd().split("\n");
@@ -202,7 +206,8 @@ const readRawMessages = async (
       if (index !== lines.length - 1) throw cause;
       if (options.repairTail) {
         await atomicTextWrite(
-          eventsPath(id),
+          paths,
+          eventsPath(paths, id),
           messages.map((message) => JSON.stringify(message)).join("\n") + "\n",
         );
       }
@@ -210,23 +215,32 @@ const readRawMessages = async (
   }
   if (options.repairTail && !text.endsWith("\n")) {
     await atomicTextWrite(
-      eventsPath(id),
+      paths,
+      eventsPath(paths, id),
       messages.map((message) => JSON.stringify(message)).join("\n") + "\n",
     );
   }
   return messages;
 };
 
-const readMessages = async (id: string, options: { readonly repairTail?: boolean } = {}) => {
+const readMessages = async (
+  paths: RelayPathsShape,
+  id: string,
+  options: { readonly repairTail?: boolean } = {},
+) => {
   const [messages, visibility] = await Promise.all([
-    readRawMessages(id, options),
-    readVisibility(id),
+    readRawMessages(paths, id, options),
+    readVisibility(paths, id),
   ]);
   return visibleMessages(messages, visibility);
 };
 
-const scanMessages = async (id: string, onMessage: (message: RelayMessage) => void) => {
-  const file = Bun.file(eventsPath(id));
+const scanMessages = async (
+  paths: RelayPathsShape,
+  id: string,
+  onMessage: (message: RelayMessage) => void,
+) => {
+  const file = Bun.file(eventsPath(paths, id));
   if (!(await file.exists())) return;
 
   const reader = file.stream().getReader();
@@ -262,6 +276,7 @@ const scanMessages = async (id: string, onMessage: (message: RelayMessage) => vo
 };
 
 const readMessagesSince = async (
+  paths: RelayPathsShape,
   id: string,
   afterSeq: number,
   limits: { readonly maxMessages: number; readonly maxChars: number },
@@ -269,10 +284,10 @@ const readMessagesSince = async (
   const messages: Array<RelayMessage> = [];
   let chars = 0;
   let omittedMessages = 0;
-  const visibility = await readVisibility(id);
+  const visibility = await readVisibility(paths, id);
   const hidden = new Set(visibility.hidden);
   const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
-  await scanMessages(id, (message) => {
+  await scanMessages(paths, id, (message) => {
     if (!isVisible(message, hidden, links)) return;
     if (message.seq <= afterSeq) return;
     const truncation = "[Earlier content in this message was truncated by Relay.]\n";
@@ -295,15 +310,16 @@ const readMessagesSince = async (
 };
 
 const readRecentMessages = async (
+  paths: RelayPathsShape,
   id: string,
   options: { readonly maxMessages: number; readonly maxChars: number },
 ) => {
   const messages: Array<RelayMessage> = [];
   let chars = 0;
-  const visibility = await readVisibility(id);
+  const visibility = await readVisibility(paths, id);
   const hidden = new Set(visibility.hidden);
   const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
-  await scanMessages(id, (message) => {
+  await scanMessages(paths, id, (message) => {
     if (!isVisible(message, hidden, links)) return;
     const retained =
       message.content.length > options.maxChars
@@ -321,10 +337,13 @@ const readRecentMessages = async (
   return messages;
 };
 
-const loadIndex = async (options: { readonly lockHeld?: boolean } = {}): Promise<RelayIndex> => {
-  await ensureBase();
-  const stored = await readIndexFile();
-  const journals = await readDeletionJournals();
+const loadIndex = async (
+  paths: RelayPathsShape,
+  options: { readonly lockHeld?: boolean } = {},
+): Promise<RelayIndex> => {
+  await ensureBase(paths);
+  const stored = await readIndexFile(paths);
+  const journals = await readDeletionJournals(paths);
   if (!stored.legacy && journals.length === 0) return stored.value;
   if (options.lockHeld) {
     const deleted = new Set(journals.map((journal) => journal.threadId));
@@ -336,16 +355,16 @@ const loadIndex = async (options: { readonly lockHeld?: boolean } = {}): Promise
           : stored.value.currentThreadId,
       threadIds,
     };
-    await writeIndex(value);
+    await writeIndex(paths, value);
     for (const journal of journals) {
-      await rm(threadDir(journal.threadId), { recursive: true, force: true });
-      await rm(deletionPath(journal.threadId), { force: true });
+      await rm(threadDir(paths, journal.threadId), { recursive: true, force: true });
+      await rm(deletionPath(paths, journal.threadId), { force: true });
     }
     return value;
   }
-  const lock = await acquireIndexLock();
+  const lock = await acquireIndexLock(paths);
   try {
-    return await loadIndex({ lockHeld: true });
+    return await loadIndex(paths, { lockHeld: true });
   } finally {
     await lock.release();
   }
@@ -375,8 +394,8 @@ const LockClaim = Schema.Struct({
   pid: Schema.Number,
 });
 
-const readUndoState = async (id: string): Promise<UndoState> => {
-  const file = Bun.file(undoPath(id));
+const readUndoState = async (paths: RelayPathsShape, id: string): Promise<UndoState> => {
+  const file = Bun.file(undoPath(paths, id));
   if (!(await file.exists())) return { entries: [] };
   let stored: typeof StoredUndoState.Type;
   try {
@@ -407,8 +426,8 @@ const claimState = async (path: string): Promise<"live" | "starting" | "stale"> 
   }
 };
 
-async function liveLockExists(id: string) {
-  const path = lockPath(id);
+async function liveLockExists(paths: RelayPathsShape, id: string) {
+  const path = lockPath(paths, id);
   try {
     for (const entry of await readdir(path)) {
       if (!entry.endsWith(".json")) continue;
@@ -429,37 +448,41 @@ interface RecoveredThread {
   readonly messages: ReadonlyArray<RelayMessage>;
 }
 
-const recoverThreadLocked = async (thread: RelayThread): Promise<RecoveredThread> => {
-  const latest = (await readThreadFile(thread.id))?.value ?? thread;
-  const latestPending = await readJson<PendingTurn>(pendingPath(thread.id), PendingTurn);
-  const latestMessages = await readRawMessages(thread.id, { repairTail: true });
+const recoverThreadLocked = async (
+  paths: RelayPathsShape,
+  thread: RelayThread,
+): Promise<RecoveredThread> => {
+  const latest = (await readThreadFile(paths, thread.id))?.value ?? thread;
+  const latestPending = await readJson<PendingTurn>(pendingPath(paths, thread.id), PendingTurn);
+  const latestMessages = await readRawMessages(paths, thread.id, { repairTail: true });
   if (latestPending) {
     if (latestPending.replaceEvents) {
       const eventText =
         latestPending.messages.length > 0
           ? `${latestPending.messages.map((message) => JSON.stringify(message)).join("\n")}\n`
           : "";
-      await atomicTextWrite(eventsPath(thread.id), eventText);
+      await atomicTextWrite(paths, eventsPath(paths, thread.id), eventText);
       await atomicJsonWrite(
-        visibilityPath(thread.id),
+        paths,
+        visibilityPath(paths, thread.id),
         latestPending.visibility ?? { hidden: [], links: [] },
       );
-      await writeThread(latestPending.thread);
-      await rm(undoPath(thread.id), { force: true });
-      await rm(pendingPath(thread.id), { force: true });
+      await writeThread(paths, latestPending.thread);
+      await rm(undoPath(paths, thread.id), { force: true });
+      await rm(pendingPath(paths, thread.id), { force: true });
       return { thread: latestPending.thread, messages: [...latestPending.messages] };
     }
     const existingIds = new Set(latestMessages.map((message) => message.id));
     const missing = latestPending.messages.filter((message) => !existingIds.has(message.id));
     if (missing.length > 0) {
       await appendFile(
-        eventsPath(thread.id),
+        eventsPath(paths, thread.id),
         `${missing.map((message) => JSON.stringify(message)).join("\n")}\n`,
         { encoding: "utf8", mode: 0o600 },
       );
     }
-    await writeThread(latestPending.thread);
-    await rm(pendingPath(thread.id), { force: true });
+    await writeThread(paths, latestPending.thread);
+    await rm(pendingPath(paths, thread.id), { force: true });
     return {
       thread: latestPending.thread,
       messages: [...latestMessages, ...missing],
@@ -472,37 +495,40 @@ const recoverThreadLocked = async (thread: RelayThread): Promise<RecoveredThread
   const repairedSeq = Math.max(latest.contextStartSeq ?? 0, latestMessages.at(-1)?.seq ?? 0);
   if (repairedSeq === latest.lastSeq) return { thread: latest, messages: latestMessages };
   const repaired = { ...latest, lastSeq: repairedSeq };
-  await writeThread(repaired);
+  await writeThread(paths, repaired);
   return { thread: repaired, messages: latestMessages };
 };
 
-const recoverThread = async (thread: RelayThread): Promise<RelayThread> => {
-  if (await liveLockExists(thread.id)) return thread;
+const recoverThread = async (paths: RelayPathsShape, thread: RelayThread): Promise<RelayThread> => {
+  if (await liveLockExists(paths, thread.id)) return thread;
 
   let lock: Awaited<ReturnType<typeof acquireThreadLock>>;
   try {
-    lock = await acquireThreadLock(thread.id);
+    lock = await acquireThreadLock(paths, thread.id);
   } catch (cause) {
     if (cause instanceof ThreadBusy) return thread;
     throw cause;
   }
 
   try {
-    return (await recoverThreadLocked(thread)).thread;
+    return (await recoverThreadLocked(paths, thread)).thread;
   } finally {
     await lock.release();
   }
 };
 
-const readThreadMetadata = async (id: string): Promise<RelayThread | undefined> => {
-  const stored = await readThreadFile(id);
+const readThreadMetadata = async (
+  paths: RelayPathsShape,
+  id: string,
+): Promise<RelayThread | undefined> => {
+  const stored = await readThreadFile(paths, id);
   if (!stored) return undefined;
-  if (stored.legacy && !(await liveLockExists(id))) {
+  if (stored.legacy && !(await liveLockExists(paths, id))) {
     let lock: Awaited<ReturnType<typeof acquireThreadLock>> | undefined;
     try {
-      lock = await acquireThreadLock(id);
-      const latest = await readThreadFile(id);
-      if (latest?.legacy) await writeThread(latest.value);
+      lock = await acquireThreadLock(paths, id);
+      const latest = await readThreadFile(paths, id);
+      if (latest?.legacy) await writeThread(paths, latest.value);
     } catch (cause) {
       if (!(cause instanceof ThreadBusy)) throw cause;
     } finally {
@@ -512,9 +538,9 @@ const readThreadMetadata = async (id: string): Promise<RelayThread | undefined> 
   return stored.value;
 };
 
-const readThread = async (id: string): Promise<RelayThread | undefined> => {
-  const thread = await readThreadMetadata(id);
-  return thread ? recoverThread(thread) : undefined;
+const readThread = async (paths: RelayPathsShape, id: string): Promise<RelayThread | undefined> => {
+  const thread = await readThreadMetadata(paths, id);
+  return thread ? recoverThread(paths, thread) : undefined;
 };
 
 function processIsAlive(pid: number) {
@@ -527,16 +553,17 @@ function processIsAlive(pid: number) {
 }
 
 async function acquireLockAt(
+  paths: RelayPathsShape,
   id: string,
   path: string,
   busyMessage: string,
   startingMessage: string,
 ) {
-  await ensureBase();
+  await ensureBase(paths);
   const token = crypto.randomUUID();
   await secureDirectory(path);
   const claim = `${path}/${token}.json`;
-  await atomicJsonWrite(claim, {
+  await atomicJsonWrite(paths, claim, {
     pid: process.pid,
     token,
     createdAt: new Date().toISOString(),
@@ -561,10 +588,11 @@ async function acquireLockAt(
   return { release: () => rm(claim, { force: true }) };
 }
 
-const acquireThreadLock = (id: string) =>
+const acquireThreadLock = (paths: RelayPathsShape, id: string) =>
   acquireLockAt(
+    paths,
     id,
-    lockPath(id),
+    lockPath(paths, id),
     "This Relay task already has a turn running",
     "This Relay task already has a turn starting",
   );
@@ -579,13 +607,13 @@ const acquireLocalIndexLock = async () => {
   return release;
 };
 
-const acquireIndexLock = async () => {
+const acquireIndexLock = async (paths: RelayPathsShape) => {
   const releaseLocal = await acquireLocalIndexLock();
   try {
     const deadline = Date.now() + 5_000;
     while (true) {
       try {
-        const lock = await acquireThreadLock("__index__");
+        const lock = await acquireThreadLock(paths, "__index__");
         return {
           release: async () => {
             try {
@@ -606,20 +634,22 @@ const acquireIndexLock = async () => {
   }
 };
 
-const acquireTaskRunLease = (id: string) =>
+const acquireTaskRunLease = (paths: RelayPathsShape, id: string) =>
   acquireLockAt(
+    paths,
     id,
-    runLockPath(id),
+    runLockPath(paths, id),
     "This Relay task is already open or running a turn",
     "This Relay task is already starting elsewhere",
   );
 
-const acquireExecutionLease = async (thread: RelayThread) => {
-  const task = await acquireTaskRunLease(thread.id);
+const acquireExecutionLease = async (paths: RelayPathsShape, thread: RelayThread) => {
+  const task = await acquireTaskRunLease(paths, thread.id);
   try {
     const checkout = await acquireLockAt(
+      paths,
       thread.id,
-      await checkoutLockPath(thread.cwd),
+      await checkoutLockPath(paths, thread.cwd),
       `This checkout is already active in another Relay task. Use a separate git worktree for concurrent agents.`,
       `This checkout is already starting in another Relay task. Try again, or use a separate git worktree.`,
     );
@@ -776,8 +806,8 @@ export class ThreadStore extends Context.Service<
     readonly root: string;
   }
 >()("@relay/ThreadStore") {
-  static readonly layer = Layer.succeed(ThreadStore, {
-    root: relayDataRoot(),
+  static readonly make = (paths: RelayPathsShape) => ({
+    root: paths.root,
 
     create: Effect.fn("ThreadStore.create")((input: CreateThreadInput) =>
       Effect.tryPromise({
@@ -793,19 +823,22 @@ export class ThreadStore extends Context.Service<
             createdAt: now,
             updatedAt: now,
           };
-          const indexLock = await acquireIndexLock();
+          const indexLock = await acquireIndexLock(paths);
           try {
             try {
-              await writeThread(thread);
-              await secureDirectory(threadDir(thread.id));
-              await writeFile(eventsPath(thread.id), "", { encoding: "utf8", mode: 0o600 });
-              const index = await loadIndex({ lockHeld: true });
-              await writeIndex({
+              await writeThread(paths, thread);
+              await secureDirectory(threadDir(paths, thread.id));
+              await writeFile(eventsPath(paths, thread.id), "", {
+                encoding: "utf8",
+                mode: 0o600,
+              });
+              const index = await loadIndex(paths, { lockHeld: true });
+              await writeIndex(paths, {
                 currentThreadId: thread.id,
                 threadIds: [thread.id, ...index.threadIds.filter((id) => id !== thread.id)],
               } satisfies RelayIndex);
             } catch (cause) {
-              await rm(threadDir(thread.id), { recursive: true, force: true });
+              await rm(threadDir(paths, thread.id), { recursive: true, force: true });
               throw cause;
             }
           } finally {
@@ -820,7 +853,7 @@ export class ThreadStore extends Context.Service<
 
     current: Effect.fn("ThreadStore.current")(function* () {
       const index = yield* Effect.tryPromise({
-        try: () => loadIndex(),
+        try: () => loadIndex(paths),
         catch: (cause) =>
           new StoreError({ operation: "read index", message: errorMessage(cause), cause }),
       });
@@ -833,7 +866,7 @@ export class ThreadStore extends Context.Service<
 
       return yield* Effect.tryPromise({
         try: async () => {
-          const thread = await readThread(currentThreadId);
+          const thread = await readThread(paths, currentThreadId);
           if (!thread) {
             throw new ThreadNotFound({
               threadId: currentThreadId,
@@ -855,7 +888,7 @@ export class ThreadStore extends Context.Service<
 
     currentMetadata: Effect.fn("ThreadStore.currentMetadata")(function* () {
       const index = yield* Effect.tryPromise({
-        try: () => loadIndex(),
+        try: () => loadIndex(paths),
         catch: (cause) =>
           new StoreError({ operation: "read index", message: errorMessage(cause), cause }),
       });
@@ -868,7 +901,7 @@ export class ThreadStore extends Context.Service<
 
       return yield* Effect.tryPromise({
         try: async () => {
-          const thread = await readThreadMetadata(currentThreadId);
+          const thread = await readThreadMetadata(paths, currentThreadId);
           if (!thread) {
             throw new ThreadNotFound({
               threadId: currentThreadId,
@@ -891,9 +924,12 @@ export class ThreadStore extends Context.Service<
     get: Effect.fn("ThreadStore.get")((id: string) =>
       Effect.tryPromise({
         try: async () => {
-          const thread = await readThread(id);
+          const thread = await readThread(paths, id);
           if (!thread)
-            throw new ThreadNotFound({ threadId: id, message: `Relay task ${id} was not found` });
+            throw new ThreadNotFound({
+              threadId: id,
+              message: `Relay task ${id} was not found`,
+            });
           return thread;
         },
         catch: (cause) =>
@@ -906,8 +942,10 @@ export class ThreadStore extends Context.Service<
     list: Effect.fn("ThreadStore.list")(() =>
       Effect.tryPromise({
         try: async () => {
-          const index = await loadIndex();
-          const threads = await Promise.all(index.threadIds.map((id) => readThreadMetadata(id)));
+          const index = await loadIndex(paths);
+          const threads = await Promise.all(
+            index.threadIds.map((id) => readThreadMetadata(paths, id)),
+          );
           return threads.filter((thread): thread is RelayThread => thread !== undefined);
         },
         catch: (cause) =>
@@ -917,7 +955,7 @@ export class ThreadStore extends Context.Service<
 
     messages: Effect.fn("ThreadStore.messages")((id: string) =>
       Effect.tryPromise({
-        try: () => readMessages(id),
+        try: () => readMessages(paths, id),
         catch: (cause) =>
           new StoreError({ operation: "read messages", message: errorMessage(cause), cause }),
       }),
@@ -925,16 +963,20 @@ export class ThreadStore extends Context.Service<
 
     messagesSince: Effect.fn("ThreadStore.messagesSince")((id: string, afterSeq: number) =>
       Effect.tryPromise({
-        try: () => readMessagesSince(id, afterSeq, { maxMessages: 200, maxChars: 120_000 }),
+        try: () => readMessagesSince(paths, id, afterSeq, { maxMessages: 200, maxChars: 120_000 }),
         catch: (cause) =>
-          new StoreError({ operation: "read message delta", message: errorMessage(cause), cause }),
+          new StoreError({
+            operation: "read message delta",
+            message: errorMessage(cause),
+            cause,
+          }),
       }),
     ),
 
     recentMessages: Effect.fn("ThreadStore.recentMessages")(
       (id: string, options: { readonly maxMessages: number; readonly maxChars: number }) =>
         Effect.tryPromise({
-          try: () => readRecentMessages(id, options),
+          try: () => readRecentMessages(paths, id, options),
           catch: (cause) =>
             new StoreError({
               operation: "read recent messages",
@@ -947,17 +989,17 @@ export class ThreadStore extends Context.Service<
     exportTask: Effect.fn("ThreadStore.exportTask")((thread: RelayThread) =>
       Effect.tryPromise({
         try: async () => {
-          const runLease = await acquireTaskRunLease(thread.id);
+          const runLease = await acquireTaskRunLease(paths, thread.id);
           try {
-            const lock = await acquireThreadLock(thread.id);
+            const lock = await acquireThreadLock(paths, thread.id);
             try {
-              const current = await readThreadFile(thread.id);
+              const current = await readThreadFile(paths, thread.id);
               if (!current) throw new Error(`Relay task ${thread.id} no longer exists`);
-              const recovered = await recoverThreadLocked(current.value);
+              const recovered = await recoverThreadLocked(paths, current.value);
               const contextStartSeq = recovered.thread.contextStartSeq ?? 0;
               const messages = visibleMessages(
                 recovered.messages,
-                await readVisibility(thread.id),
+                await readVisibility(paths, thread.id),
               ).filter((message) => message.seq > contextStartSeq);
               return {
                 formatVersion: 1 as const,
@@ -993,28 +1035,28 @@ export class ThreadStore extends Context.Service<
     deleteTask: Effect.fn("ThreadStore.deleteTask")((thread: RelayThread) =>
       Effect.tryPromise({
         try: async () => {
-          const runLease = await acquireTaskRunLease(thread.id);
+          const runLease = await acquireTaskRunLease(paths, thread.id);
           try {
-            const lock = await acquireThreadLock(thread.id);
+            const lock = await acquireThreadLock(paths, thread.id);
             try {
-              const indexLock = await acquireIndexLock();
+              const indexLock = await acquireIndexLock(paths);
               try {
-                const index = await loadIndex({ lockHeld: true });
+                const index = await loadIndex(paths, { lockHeld: true });
                 const remaining = index.threadIds.filter((id) => id !== thread.id);
-                await atomicJsonWrite(deletionPath(thread.id), {
+                await atomicJsonWrite(paths, deletionPath(paths, thread.id), {
                   version: 1,
                   threadId: thread.id,
                   createdAt: new Date().toISOString(),
                 });
-                await writeIndex({
+                await writeIndex(paths, {
                   currentThreadId:
                     index.currentThreadId === thread.id
                       ? (remaining[0] ?? null)
                       : index.currentThreadId,
                   threadIds: remaining,
                 } satisfies RelayIndex);
-                await rm(threadDir(thread.id), { recursive: true, force: true });
-                await rm(deletionPath(thread.id), { force: true });
+                await rm(threadDir(paths, thread.id), { recursive: true, force: true });
+                await rm(deletionPath(paths, thread.id), { force: true });
               } finally {
                 await indexLock.release();
               }
@@ -1035,7 +1077,7 @@ export class ThreadStore extends Context.Service<
 
     acquireLock: Effect.fn("ThreadStore.acquireLock")((id: string) =>
       Effect.tryPromise({
-        try: () => acquireThreadLock(id),
+        try: () => acquireThreadLock(paths, id),
         catch: (cause) =>
           cause instanceof ThreadBusy
             ? cause
@@ -1045,17 +1087,21 @@ export class ThreadStore extends Context.Service<
 
     acquireRunLease: Effect.fn("ThreadStore.acquireRunLease")((id: string) =>
       Effect.tryPromise({
-        try: () => acquireTaskRunLease(id),
+        try: () => acquireTaskRunLease(paths, id),
         catch: (cause) =>
           cause instanceof ThreadBusy
             ? cause
-            : new StoreError({ operation: "own task run", message: errorMessage(cause), cause }),
+            : new StoreError({
+                operation: "own task run",
+                message: errorMessage(cause),
+                cause,
+              }),
       }),
     ),
 
     acquireExecutionLease: Effect.fn("ThreadStore.acquireExecutionLease")((thread: RelayThread) =>
       Effect.tryPromise({
-        try: () => acquireExecutionLease(thread),
+        try: () => acquireExecutionLease(paths, thread),
         catch: (cause) =>
           cause instanceof ThreadBusy
             ? cause
@@ -1071,7 +1117,7 @@ export class ThreadStore extends Context.Service<
       (thread: RelayThread, harness: Harness) =>
         Effect.tryPromise({
           try: async () => {
-            const messages = (await readMessages(thread.id)).filter(
+            const messages = (await readMessages(paths, thread.id)).filter(
               (message) => message.seq > (thread.contextStartSeq ?? 0),
             );
             const latest = messages.slice(-2);
@@ -1083,7 +1129,11 @@ export class ThreadStore extends Context.Service<
             );
           },
           catch: (cause) =>
-            new StoreError({ operation: "check undo state", message: errorMessage(cause), cause }),
+            new StoreError({
+              operation: "check undo state",
+              message: errorMessage(cause),
+              cause,
+            }),
         }),
     ),
 
@@ -1091,11 +1141,15 @@ export class ThreadStore extends Context.Service<
       (thread: RelayThread, harness: Harness) =>
         Effect.tryPromise({
           try: async () => {
-            const entry = (await readUndoState(thread.id)).entries.at(-1);
+            const entry = (await readUndoState(paths, thread.id)).entries.at(-1);
             return entry?.thread.activeHarness === harness;
           },
           catch: (cause) =>
-            new StoreError({ operation: "check redo state", message: errorMessage(cause), cause }),
+            new StoreError({
+              operation: "check redo state",
+              message: errorMessage(cause),
+              cause,
+            }),
         }),
     ),
 
@@ -1140,21 +1194,25 @@ export class ThreadStore extends Context.Service<
             lastSeq: response.seq,
             updatedAt: now,
           };
-          const pending: PendingTurn = { version: 1, messages: [user, response], thread: updated };
+          const pending: PendingTurn = {
+            version: 1,
+            messages: [user, response],
+            thread: updated,
+          };
 
-          await atomicJsonWrite(pendingPath(thread.id), pending);
+          await atomicJsonWrite(paths, pendingPath(paths, thread.id), pending);
           await appendFile(
-            eventsPath(thread.id),
+            eventsPath(paths, thread.id),
             `${JSON.stringify(user)}\n${JSON.stringify(response)}\n`,
             {
               encoding: "utf8",
               mode: 0o600,
             },
           );
-          await chmod(eventsPath(thread.id), 0o600);
-          await writeThread(updated);
-          await rm(pendingPath(thread.id), { force: true });
-          await rm(undoPath(thread.id), { force: true });
+          await chmod(eventsPath(paths, thread.id), 0o600);
+          await writeThread(paths, updated);
+          await rm(pendingPath(paths, thread.id), { force: true });
+          await rm(undoPath(paths, thread.id), { force: true });
           return { thread: updated, response };
         },
         catch: (cause) =>
@@ -1199,7 +1257,7 @@ export class ThreadStore extends Context.Service<
               },
               updatedAt: now,
             };
-            await writeThread(updated);
+            await writeThread(paths, updated);
             return updated;
           },
           catch: (cause) =>
@@ -1290,17 +1348,18 @@ export class ThreadStore extends Context.Service<
             // The replacement journal is written before any part of the old
             // context is removed. Recovery replays this exact event set and
             // metadata, so a crash cannot let a newer turn overtake adoption.
-            await atomicJsonWrite(pendingPath(thread.id), pending);
-            await rm(undoPath(thread.id), { force: true });
+            await atomicJsonWrite(paths, pendingPath(paths, thread.id), pending);
+            await rm(undoPath(paths, thread.id), { force: true });
             await atomicTextWrite(
-              eventsPath(thread.id),
+              paths,
+              eventsPath(paths, thread.id),
               messages.length > 0
                 ? `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`
                 : "",
             );
-            await atomicJsonWrite(visibilityPath(thread.id), visibility);
-            await writeThread(updated);
-            await rm(pendingPath(thread.id), { force: true });
+            await atomicJsonWrite(paths, visibilityPath(paths, thread.id), visibility);
+            await writeThread(paths, updated);
+            await rm(pendingPath(paths, thread.id), { force: true });
             return updated;
           },
           catch: (cause) =>
@@ -1332,7 +1391,7 @@ export class ThreadStore extends Context.Service<
               },
               updatedAt: now,
             };
-            await writeThread(updated);
+            await writeThread(paths, updated);
             return updated;
           },
           catch: (cause) =>
@@ -1365,7 +1424,7 @@ export class ThreadStore extends Context.Service<
               },
               updatedAt: new Date().toISOString(),
             };
-            await writeThread(updated);
+            await writeThread(paths, updated);
             return updated;
           },
           catch: (cause) =>
@@ -1381,11 +1440,11 @@ export class ThreadStore extends Context.Service<
       (thread: RelayThread, input: ImportNativeTurnsInput) =>
         Effect.tryPromise({
           try: async () => {
-            const existingMessages = await readRawMessages(thread.id);
+            const existingMessages = await readRawMessages(paths, thread.id);
             const contextMessages = existingMessages.filter(
               (message) => message.seq > (thread.contextStartSeq ?? 0),
             );
-            const visibility = await readVisibility(thread.id);
+            const visibility = await readVisibility(paths, thread.id);
             const links = new Map(
               (visibility.links ?? []).map((link) => [link.messageId, link.key]),
             );
@@ -1543,32 +1602,36 @@ export class ThreadStore extends Context.Service<
             };
 
             if (messages.length > 0) {
-              const pending: PendingTurn = { version: 1, messages: [...messages], thread: updated };
-              await atomicJsonWrite(pendingPath(thread.id), pending);
+              const pending: PendingTurn = {
+                version: 1,
+                messages: [...messages],
+                thread: updated,
+              };
+              await atomicJsonWrite(paths, pendingPath(paths, thread.id), pending);
               await appendFile(
-                eventsPath(thread.id),
+                eventsPath(paths, thread.id),
                 `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
                 { encoding: "utf8", mode: 0o600 },
               );
-              await chmod(eventsPath(thread.id), 0o600);
+              await chmod(eventsPath(paths, thread.id), 0o600);
             }
             if (
               hidden.size !== hiddenBefore.size ||
               [...hidden].some((key) => !hiddenBefore.has(key))
             ) {
-              await atomicJsonWrite(visibilityPath(thread.id), {
+              await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
                 hidden: [...hidden],
                 links: [...links].map(([messageId, key]) => ({ messageId, key })),
               });
             } else if (links.size !== (visibility.links?.length ?? 0)) {
-              await atomicJsonWrite(visibilityPath(thread.id), {
+              await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
                 hidden: [...hidden],
                 links: [...links].map(([messageId, key]) => ({ messageId, key })),
               });
             }
-            await writeThread(updated);
-            if (messages.length > 0) await rm(pendingPath(thread.id), { force: true });
-            await rm(undoPath(thread.id), { force: true });
+            await writeThread(paths, updated);
+            if (messages.length > 0) await rm(pendingPath(paths, thread.id), { force: true });
+            await rm(undoPath(paths, thread.id), { force: true });
             return updated;
           },
           catch: (cause) =>
@@ -1583,16 +1646,16 @@ export class ThreadStore extends Context.Service<
     setCurrent: Effect.fn("ThreadStore.setCurrent")((id: string) =>
       Effect.tryPromise({
         try: async () => {
-          const indexLock = await acquireIndexLock();
+          const indexLock = await acquireIndexLock(paths);
           try {
-            if (!(await Bun.file(metadataPath(id)).exists())) {
+            if (!(await Bun.file(metadataPath(paths, id)).exists())) {
               throw new ThreadNotFound({
                 threadId: id,
                 message: `Relay task ${id} was not found`,
               });
             }
-            const index = await loadIndex({ lockHeld: true });
-            await writeIndex({
+            const index = await loadIndex(paths, { lockHeld: true });
+            await writeIndex(paths, {
               currentThreadId: id,
               threadIds: [id, ...index.threadIds.filter((threadId) => threadId !== id)],
             } satisfies RelayIndex);
@@ -1619,7 +1682,7 @@ export class ThreadStore extends Context.Service<
             activeHarness: harness,
             updatedAt: new Date().toISOString(),
           };
-          await writeThread(updated);
+          await writeThread(paths, updated);
           return updated;
         },
         catch: (cause) =>
@@ -1647,7 +1710,7 @@ export class ThreadStore extends Context.Service<
             },
             updatedAt: new Date().toISOString(),
           };
-          await writeThread(updated);
+          await writeThread(paths, updated);
           return updated;
         },
         catch: (cause) =>
@@ -1663,8 +1726,8 @@ export class ThreadStore extends Context.Service<
       Effect.tryPromise({
         try: async () => {
           const [messages, rawMessages] = await Promise.all([
-            readMessages(thread.id),
-            readRawMessages(thread.id),
+            readMessages(paths, thread.id),
+            readRawMessages(paths, thread.id),
           ]);
           const contextMessages = messages.filter(
             (message) => message.seq > (thread.contextStartSeq ?? 0),
@@ -1712,16 +1775,17 @@ export class ThreadStore extends Context.Service<
             lastSeq,
             updatedAt: new Date().toISOString(),
           };
-          const state = await readUndoState(thread.id);
-          await atomicJsonWrite(undoPath(thread.id), {
+          const state = await readUndoState(paths, thread.id);
+          await atomicJsonWrite(paths, undoPath(paths, thread.id), {
             entries: [...state.entries, { messages: removed, thread }],
           });
           await atomicTextWrite(
-            eventsPath(thread.id),
+            paths,
+            eventsPath(paths, thread.id),
             remainingRaw.map((message) => JSON.stringify(message)).join("\n") +
               (remainingRaw.length ? "\n" : ""),
           );
-          await writeThread(updated);
+          await writeThread(paths, updated);
           return updated;
         },
         catch: (cause) =>
@@ -1734,21 +1798,22 @@ export class ThreadStore extends Context.Service<
     redoLastTurn: Effect.fn("ThreadStore.redoLastTurn")((thread: RelayThread, harness: Harness) =>
       Effect.tryPromise({
         try: async () => {
-          const state = await readUndoState(thread.id);
+          const state = await readUndoState(paths, thread.id);
           const entry = state.entries.at(-1);
           if (!entry || entry.thread.activeHarness !== harness) {
             throw new NoCurrentThread({ message: "There is no turn to redo" });
           }
-          const messages = await readRawMessages(thread.id);
+          const messages = await readRawMessages(paths, thread.id);
           const restored = [...messages, ...entry.messages].sort(
             (left, right) => left.seq - right.seq,
           );
           await atomicTextWrite(
-            eventsPath(thread.id),
+            paths,
+            eventsPath(paths, thread.id),
             `${restored.map((message) => JSON.stringify(message)).join("\n")}\n`,
           );
-          await writeThread(entry.thread);
-          const visibility = await readVisibility(thread.id);
+          await writeThread(paths, entry.thread);
+          const visibility = await readVisibility(paths, thread.id);
           const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
           const restoredKeys = new Set(
             entry.messages.flatMap((message) => {
@@ -1761,14 +1826,14 @@ export class ThreadStore extends Context.Service<
           );
           const hidden = visibility.hidden.filter((key) => !restoredKeys.has(key));
           if (hidden.length !== visibility.hidden.length) {
-            await atomicJsonWrite(visibilityPath(thread.id), {
+            await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
               hidden,
               ...(visibility.links ? { links: visibility.links } : {}),
             });
           }
           const entries = state.entries.slice(0, -1);
-          if (entries.length) await atomicJsonWrite(undoPath(thread.id), { entries });
-          else await rm(undoPath(thread.id), { force: true });
+          if (entries.length) await atomicJsonWrite(paths, undoPath(paths, thread.id), { entries });
+          else await rm(undoPath(paths, thread.id), { force: true });
           return entry.thread;
         },
         catch: (cause) =>
@@ -1778,4 +1843,17 @@ export class ThreadStore extends Context.Service<
       }),
     ),
   });
+
+  static readonly configuredLayer = Layer.effect(
+    ThreadStore,
+    Effect.gen(function* () {
+      const paths = yield* RelayPaths;
+      return ThreadStore.of(ThreadStore.make(paths));
+    }),
+  );
+
+  static readonly layer = ThreadStore.configuredLayer.pipe(Layer.provide(RelayPaths.layer));
+
+  static readonly layerFromRoot = (root: string) =>
+    ThreadStore.configuredLayer.pipe(Layer.provide(RelayPaths.layerFromRoot(root)));
 }

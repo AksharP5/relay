@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   discoverOpenCodeCommands,
   runOpenCodeCommand,
@@ -14,8 +14,10 @@ const executable = fileURLToPath(new URL("./fixtures/fake-opencode-server.ts", i
 const hangingExecutable = fileURLToPath(
   new URL("./fixtures/fake-hanging-opencode.sh", import.meta.url),
 );
+const dataRoot = await mkdtemp(join(tmpdir(), "relay-opencode-server-root-"));
 
 beforeAll(() => Promise.all([chmod(executable, 0o755), chmod(hangingExecutable, 0o755)]));
+afterAll(() => rm(dataRoot, { recursive: true, force: true }));
 
 const processIdentity = async (pid: number) => {
   if (process.platform === "linux") {
@@ -43,7 +45,12 @@ describe("OpenCode command discovery", () => {
     Bun.env.RELAY_TEST_PID_FILE = pidPath;
     const controller = new AbortController();
     try {
-      const starting = startOpenCodeServer(hangingExecutable, process.cwd(), controller.signal);
+      const starting = startOpenCodeServer(
+        hangingExecutable,
+        process.cwd(),
+        dataRoot,
+        controller.signal,
+      );
       let pid: number | undefined;
       for (let attempt = 0; attempt < 100 && pid === undefined; attempt += 1) {
         pid = await readFile(pidPath, "utf8")
@@ -74,7 +81,7 @@ describe("OpenCode command discovery", () => {
   });
 
   it("loads and normalizes commands from the authenticated native server", async () => {
-    const commands = await discoverOpenCodeCommands(executable, process.cwd());
+    const commands = await discoverOpenCodeCommands(executable, process.cwd(), dataRoot);
     expect(commands).toEqual([
       {
         name: "commit",
@@ -94,7 +101,9 @@ describe("OpenCode command discovery", () => {
   it("rejects valid JSON with the wrong OpenCode command shape", async () => {
     Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS = "1";
     try {
-      await expect(discoverOpenCodeCommands(executable, process.cwd())).rejects.toMatchObject({
+      await expect(
+        discoverOpenCodeCommands(executable, process.cwd(), dataRoot),
+      ).rejects.toMatchObject({
         _tag: "OpenCodeProtocolError",
         operation: "command catalog",
       });
@@ -106,7 +115,9 @@ describe("OpenCode command discovery", () => {
   it("rejects an OpenCode command catalog with an invalid consumed field", async () => {
     Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS = "field";
     try {
-      await expect(discoverOpenCodeCommands(executable, process.cwd())).rejects.toMatchObject({
+      await expect(
+        discoverOpenCodeCommands(executable, process.cwd(), dataRoot),
+      ).rejects.toMatchObject({
         _tag: "OpenCodeProtocolError",
         operation: "command catalog",
       });
@@ -116,32 +127,52 @@ describe("OpenCode command discovery", () => {
   });
 
   it("runs session controls without turning them into prompts", async () => {
-    const compact = await runOpenCodeControl(executable, {
-      cwd: process.cwd(),
-      sessionId: "ses_test",
-      action: "compact",
-    });
-    const share = await runOpenCodeControl(executable, {
-      cwd: process.cwd(),
-      sessionId: "ses_test",
-      action: "share",
-    });
-    const unshare = await runOpenCodeControl(executable, {
-      cwd: process.cwd(),
-      sessionId: "ses_test",
-      action: "unshare",
-    });
-    const undo = await runOpenCodeControl(executable, {
-      cwd: process.cwd(),
-      sessionId: "ses_test",
-      action: "undo",
-      expectedPrompt: "first",
-    });
-    const redo = await runOpenCodeControl(executable, {
-      cwd: process.cwd(),
-      sessionId: "ses_test",
-      action: "redo",
-    });
+    const compact = await runOpenCodeControl(
+      executable,
+      {
+        cwd: process.cwd(),
+        sessionId: "ses_test",
+        action: "compact",
+      },
+      dataRoot,
+    );
+    const share = await runOpenCodeControl(
+      executable,
+      {
+        cwd: process.cwd(),
+        sessionId: "ses_test",
+        action: "share",
+      },
+      dataRoot,
+    );
+    const unshare = await runOpenCodeControl(
+      executable,
+      {
+        cwd: process.cwd(),
+        sessionId: "ses_test",
+        action: "unshare",
+      },
+      dataRoot,
+    );
+    const undo = await runOpenCodeControl(
+      executable,
+      {
+        cwd: process.cwd(),
+        sessionId: "ses_test",
+        action: "undo",
+        expectedPrompt: "first",
+      },
+      dataRoot,
+    );
+    const redo = await runOpenCodeControl(
+      executable,
+      {
+        cwd: process.cwd(),
+        sessionId: "ses_test",
+        action: "redo",
+      },
+      dataRoot,
+    );
     expect(compact).toBe("OpenCode compacted its native context.");
     expect(share).toBe("OpenCode shared this session: https://opncd.ai/s/test");
     expect(unshare).toBe("OpenCode stopped sharing this session.");
@@ -151,22 +182,30 @@ describe("OpenCode command discovery", () => {
 
   it("refuses to undo an out-of-band native turn", async () => {
     await expect(
-      runOpenCodeControl(executable, {
-        cwd: process.cwd(),
-        sessionId: "ses_test",
-        action: "undo",
-        expectedPrompt: "fir",
-      }),
+      runOpenCodeControl(
+        executable,
+        {
+          cwd: process.cwd(),
+          sessionId: "ses_test",
+          action: "undo",
+          expectedPrompt: "fir",
+        },
+        dataRoot,
+      ),
     ).rejects.toThrow("does not match Relay history");
   });
 
   it("seeds missed context before a first native prompt command", async () => {
-    const result = await runOpenCodeCommand(executable, {
-      cwd: process.cwd(),
-      command: "commit",
-      arguments: "release-ready",
-      handoffText: "prior Relay conversation",
-    });
+    const result = await runOpenCodeCommand(
+      executable,
+      {
+        cwd: process.cwd(),
+        command: "commit",
+        arguments: "release-ready",
+        handoffText: "prior Relay conversation",
+      },
+      dataRoot,
+    );
     expect(result).toEqual({ sessionId: "ses_created", text: "Command response" });
   });
 
@@ -174,12 +213,16 @@ describe("OpenCode command discovery", () => {
     Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE = "1";
     try {
       await expect(
-        runOpenCodeCommand(executable, {
-          cwd: process.cwd(),
-          command: "commit",
-          arguments: "release-ready",
-          handoffText: "prior Relay conversation",
-        }),
+        runOpenCodeCommand(
+          executable,
+          {
+            cwd: process.cwd(),
+            command: "commit",
+            arguments: "release-ready",
+            handoffText: "prior Relay conversation",
+          },
+          dataRoot,
+        ),
       ).rejects.toMatchObject({
         _tag: "OpenCodeProtocolError",
         operation: "command response",
@@ -193,12 +236,16 @@ describe("OpenCode command discovery", () => {
     Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE = "field";
     try {
       await expect(
-        runOpenCodeCommand(executable, {
-          cwd: process.cwd(),
-          command: "commit",
-          arguments: "release-ready",
-          handoffText: "prior Relay conversation",
-        }),
+        runOpenCodeCommand(
+          executable,
+          {
+            cwd: process.cwd(),
+            command: "commit",
+            arguments: "release-ready",
+            handoffText: "prior Relay conversation",
+          },
+          dataRoot,
+        ),
       ).rejects.toMatchObject({
         _tag: "OpenCodeProtocolError",
         operation: "command response",

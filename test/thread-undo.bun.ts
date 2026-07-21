@@ -3,15 +3,13 @@ import { Effect, Schema } from "effect";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ThreadStore } from "../src/services/thread-store.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "relay-undo-"));
-Bun.env.RELAY_DATA_DIR = directory;
-const { ThreadStore } = await import("../src/services/thread-store.ts");
 const StoredUndoFixture = Schema.Struct({ entries: Schema.Array(Schema.Unknown) });
 
 afterAll(async () => {
   await rm(directory, { recursive: true, force: true });
-  delete Bun.env.RELAY_DATA_DIR;
 });
 
 describe("canonical undo and redo", () => {
@@ -54,7 +52,7 @@ describe("canonical undo and redo", () => {
           "second",
           "second response",
         ]);
-      }).pipe(Effect.provide(ThreadStore.layer)),
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(directory))),
     );
   });
 
@@ -86,7 +84,7 @@ describe("canonical undo and redo", () => {
         const redoExit = yield* Effect.exit(store.redoLastTurn(adopted, "opencode"));
         expect(redoExit._tag).toBe("Failure");
         expect(yield* store.messages(created.id)).toEqual([]);
-      }).pipe(Effect.provide(ThreadStore.layer)),
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(directory))),
     );
   });
 
@@ -125,7 +123,7 @@ describe("canonical undo and redo", () => {
           "keep me",
           "keep this response",
         ]);
-      }).pipe(Effect.provide(ThreadStore.layer)),
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(directory))),
     );
   });
 });

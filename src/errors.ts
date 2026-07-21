@@ -3,7 +3,7 @@ import { Schema } from "effect";
 export class StoreError extends Schema.TaggedErrorClass<StoreError>()("StoreError", {
   operation: Schema.String,
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 export class ThreadNotFound extends Schema.TaggedErrorClass<ThreadNotFound>()("ThreadNotFound", {
@@ -35,6 +35,20 @@ export class HarnessError extends Schema.TaggedErrorClass<HarnessError>()("Harne
   exitCode: Schema.optional(Schema.Number),
   stderr: Schema.optional(Schema.String),
   sessionState: Schema.optional(Schema.Literals(["preserve", "uncertain"])),
+}) {}
+
+export class ProcessError extends Schema.TaggedErrorClass<ProcessError>()("ProcessError", {
+  operation: Schema.Literal("run"),
+  command: Schema.String,
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
+}) {}
+
+export class SettingsError extends Schema.TaggedErrorClass<SettingsError>()("SettingsError", {
+  operation: Schema.Literals(["load", "save", "reset"]),
+  path: Schema.String,
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 export class CliError extends Schema.TaggedErrorClass<CliError>()("CliError", {
