@@ -1,10 +1,76 @@
+import { Schema } from "effect";
 import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { buildHandoff } from "../handoff.ts";
-import { startOpenCodeServer, type RunningOpenCodeServer } from "../harnesses/opencode-server.ts";
+import {
+  decodeOpenCodePayload,
+  startOpenCodeServer,
+  type RunningOpenCodeServer,
+} from "../harnesses/opencode-server.ts";
 import { NativeSessionUnavailable } from "./errors.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
 type JsonObject = Record<string, unknown>;
+const JsonObject = Schema.Record(Schema.String, Schema.Unknown);
+const OpenCodeCreatedSession = Schema.Struct({ id: Schema.String });
+const OpenCodeHistoryPage = Schema.Array(
+  Schema.Struct({
+    info: Schema.optionalKey(
+      Schema.Struct({
+        id: Schema.optionalKey(Schema.String),
+        role: Schema.optionalKey(Schema.String),
+        parentID: Schema.optionalKey(Schema.String),
+        finish: Schema.optionalKey(Schema.String),
+        time: Schema.optionalKey(Schema.Struct({ completed: Schema.optionalKey(Schema.Unknown) })),
+        error: Schema.optionalKey(Schema.Unknown),
+      }),
+    ),
+    parts: Schema.optionalKey(
+      Schema.Array(
+        Schema.Struct({
+          type: Schema.optionalKey(Schema.String),
+          text: Schema.optionalKey(Schema.String),
+          synthetic: Schema.optionalKey(Schema.Boolean),
+          ignored: Schema.optionalKey(Schema.Boolean),
+          metadata: Schema.optionalKey(
+            Schema.Struct({ providerExecuted: Schema.optionalKey(Schema.Boolean) }),
+          ),
+          state: Schema.optionalKey(
+            Schema.Struct({
+              status: Schema.optionalKey(Schema.String),
+              metadata: Schema.optionalKey(
+                Schema.Struct({ interrupted: Schema.optionalKey(Schema.Boolean) }),
+              ),
+            }),
+          ),
+        }),
+      ),
+    ),
+  }),
+);
+const OpenCodeSessionState = Schema.Struct({
+  directory: Schema.optionalKey(Schema.String),
+  revert: Schema.optionalKey(
+    Schema.NullOr(Schema.Struct({ messageID: Schema.optionalKey(Schema.String) })),
+  ),
+});
+const OpenCodeStatuses = Schema.Record(
+  Schema.String,
+  Schema.NullOr(Schema.Struct({ type: Schema.optionalKey(Schema.String) })),
+);
+const OpenCodeEvent = Schema.Struct({
+  type: Schema.optionalKey(Schema.String),
+  properties: Schema.optionalKey(
+    Schema.Struct({
+      sessionID: Schema.optionalKey(Schema.String),
+      info: Schema.optionalKey(
+        Schema.Struct({
+          sessionID: Schema.optionalKey(Schema.String),
+          parentID: Schema.optionalKey(Schema.String),
+        }),
+      ),
+    }),
+  ),
+});
 
 class OpenCodeReadError extends Error {
   constructor(
@@ -15,8 +81,9 @@ class OpenCodeReadError extends Error {
   }
 }
 
+const isJsonObject = Schema.is(JsonObject);
 const asObject = (value: unknown): JsonObject | undefined =>
-  value !== null && typeof value === "object" ? (value as JsonObject) : undefined;
+  isJsonObject(value) ? value : undefined;
 
 const asSessionId = (value: unknown) =>
   typeof value === "string" && value.startsWith("ses") ? value : undefined;
@@ -155,6 +222,7 @@ export class OpenCodeNativeBackend {
   #observeTui = false;
   #observerHealthy = false;
   #observerGap = false;
+  #observerEvents = 0;
   #observedRoot: string | undefined;
 
   private constructor(
@@ -275,12 +343,17 @@ export class OpenCodeNativeBackend {
   #consumeEventBlock(block: string) {
     for (const line of block.split(/\r?\n/)) {
       if (!line.startsWith("data:")) continue;
-      let event: JsonObject | undefined;
+      let event: typeof OpenCodeEvent.Type | undefined;
       try {
-        event = asObject(JSON.parse(line.slice(5).trim()));
+        event = decodeOpenCodePayload(
+          OpenCodeEvent,
+          JSON.parse(line.slice(5).trim()),
+          "event stream",
+        );
       } catch {
         continue;
       }
+      this.#observerEvents += 1;
       const properties = asObject(event?.properties);
       const info = asObject(properties?.info);
       const eventType = typeof event?.type === "string" ? event.type : undefined;
@@ -374,8 +447,11 @@ export class OpenCodeNativeBackend {
     });
     if (!response.ok)
       throw new Error(`OpenCode session creation failed with HTTP ${response.status}`);
-    const session = asObject(await response.json());
-    if (typeof session?.id !== "string") throw new Error("OpenCode did not return a session id");
+    const session = decodeOpenCodePayload(
+      OpenCodeCreatedSession,
+      await response.json(),
+      "created session",
+    );
     return session.id;
   }
 
@@ -418,7 +494,11 @@ export class OpenCodeNativeBackend {
         );
       }
       const cursor = response.headers.get("x-next-cursor") ?? undefined;
-      pages.unshift(compactOpenCodeMessages(await response.json()));
+      pages.unshift(
+        compactOpenCodeMessages(
+          decodeOpenCodePayload(OpenCodeHistoryPage, await response.json(), "history page"),
+        ),
+      );
       if (!cursor) return pages.flat();
       if (seenCursors.has(cursor)) throw new Error("OpenCode history pagination repeated a cursor");
       seenCursors.add(cursor);
@@ -442,7 +522,11 @@ export class OpenCodeNativeBackend {
         sessionResponse.status,
       );
     }
-    const session: unknown = await sessionResponse.json();
+    const session = decodeOpenCodePayload(
+      OpenCodeSessionState,
+      await sessionResponse.json(),
+      "session state",
+    );
     return transcriptFrom(session, messages);
   }
 
@@ -487,16 +571,22 @@ export class OpenCodeNativeBackend {
         response.status,
       );
     }
-    return openCodeCompletedCursor(await response.json());
+    return openCodeCompletedCursor(
+      decodeOpenCodePayload(OpenCodeHistoryPage, await response.json(), "recent history"),
+    );
   }
 
   async isIdle(sessionId?: string) {
     const response = await this.#get("/session/status", 2_000);
     if (!response.ok) throw new Error(`OpenCode status failed with HTTP ${response.status}`);
-    const statuses = asObject(await response.json());
+    const statuses = decodeOpenCodePayload(
+      OpenCodeStatuses,
+      await response.json(),
+      "session status",
+    );
     const types = sessionId
-      ? [asObject(statuses?.[sessionId])?.type]
-      : Object.values(statuses ?? {}).map((status) => asObject(status)?.type);
+      ? [statuses[sessionId]?.type]
+      : Object.values(statuses).map((status) => status?.type);
     return types.every((type) => type === undefined || type === "idle");
   }
 
@@ -506,8 +596,12 @@ export class OpenCodeNativeBackend {
       await response.body?.cancel();
       throw new Error(`OpenCode session lookup failed with HTTP ${response.status}`);
     }
-    const session = asObject(await response.json());
-    return typeof session?.directory === "string" ? session.directory : undefined;
+    const session = decodeOpenCodePayload(
+      OpenCodeSessionState,
+      await response.json(),
+      "session lookup",
+    );
+    return typeof session.directory === "string" ? session.directory : undefined;
   }
 
   async deleteSession(sessionId: string) {
@@ -519,6 +613,15 @@ export class OpenCodeNativeBackend {
     if (!response.ok)
       throw new Error(`OpenCode session deletion failed with HTTP ${response.status}`);
     await response.body?.cancel();
+  }
+
+  /** Exposes bounded synchronization state for native observer coordination and diagnostics. */
+  observerState() {
+    return {
+      healthy: this.#observerHealthy,
+      gap: this.#observerGap,
+      events: this.#observerEvents,
+    } as const;
   }
 
   /** Detects sessions created or used through native /new and /sessions commands. */

@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { Schema } from "effect";
 import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { AppServerError, WebSocketAppServerConnection } from "../harnesses/codex-app-server.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
@@ -11,9 +12,11 @@ import { NativeSessionUnavailable } from "./errors.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
 type JsonObject = Record<string, unknown>;
+const JsonObject = Schema.Record(Schema.String, Schema.Unknown);
 
+const isJsonObject = Schema.is(JsonObject);
 const asObject = (value: unknown): JsonObject | undefined =>
-  value !== null && typeof value === "object" ? (value as JsonObject) : undefined;
+  isJsonObject(value) ? value : undefined;
 
 const reservePort = () =>
   new Promise<number>((resolve, reject) => {

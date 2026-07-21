@@ -98,6 +98,34 @@ describe("OpenCode command discovery", () => {
     ]);
   });
 
+  it("rejects valid JSON with the wrong OpenCode command shape", async () => {
+    Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS = "1";
+    try {
+      await expect(
+        discoverOpenCodeCommands(executable, process.cwd(), dataRoot),
+      ).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "command catalog",
+      });
+    } finally {
+      delete Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS;
+    }
+  });
+
+  it("rejects an OpenCode command catalog with an invalid consumed field", async () => {
+    Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS = "field";
+    try {
+      await expect(
+        discoverOpenCodeCommands(executable, process.cwd(), dataRoot),
+      ).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "command catalog",
+      });
+    } finally {
+      delete Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS;
+    }
+  });
+
   it("runs session controls without turning them into prompts", async () => {
     const compact = await runOpenCodeControl(
       executable,
@@ -179,5 +207,51 @@ describe("OpenCode command discovery", () => {
       dataRoot,
     );
     expect(result).toEqual({ sessionId: "ses_created", text: "Command response" });
+  });
+
+  it("rejects a valid but malformed OpenCode command response", async () => {
+    Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE = "1";
+    try {
+      await expect(
+        runOpenCodeCommand(
+          executable,
+          {
+            cwd: process.cwd(),
+            command: "commit",
+            arguments: "release-ready",
+            handoffText: "prior Relay conversation",
+          },
+          dataRoot,
+        ),
+      ).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "command response",
+      });
+    } finally {
+      delete Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE;
+    }
+  });
+
+  it("rejects an OpenCode command response with an invalid consumed field", async () => {
+    Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE = "field";
+    try {
+      await expect(
+        runOpenCodeCommand(
+          executable,
+          {
+            cwd: process.cwd(),
+            command: "commit",
+            arguments: "release-ready",
+            handoffText: "prior Relay conversation",
+          },
+          dataRoot,
+        ),
+      ).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "command response",
+      });
+    } finally {
+      delete Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE;
+    }
   });
 });

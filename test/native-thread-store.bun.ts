@@ -277,6 +277,30 @@ describe("native transcript storage", () => {
     await retry.release();
   });
 
+  it("discards malformed lock claims without a starting grace period", async () => {
+    const created = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        return yield* store.create({
+          title: "Malformed lease claim",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+    const claims = join(directory, "run-locks", created.id);
+    await mkdir(claims, { recursive: true });
+    await writeFile(join(claims, "owner.json"), `${JSON.stringify({ pid: "invalid" })}\n`);
+
+    const lease = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        return yield* store.acquireRunLease(created.id);
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+    await lease.release();
+  });
+
   it("releasing an old lease cannot remove a newer owner's claim", async () => {
     const created = await Effect.runPromise(
       Effect.gen(function* () {

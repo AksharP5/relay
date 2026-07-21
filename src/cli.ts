@@ -12,7 +12,11 @@ import { HarnessService } from "./harnesses/harness-service.ts";
 import { resolveLaunchDirectory } from "./launch-directory.ts";
 import { RelayPaths } from "./services/data-root.ts";
 import { ProcessRunner } from "./services/process-runner.ts";
-import { cleanupOrphanedProcesses } from "./services/process-registry.ts";
+import {
+  cleanupOrphanedProcesses,
+  ProcessRecoveryError,
+  type ProcessRecoveryFailure,
+} from "./services/process-registry.ts";
 import { RelayService } from "./services/relay-service.ts";
 import { ThreadStore } from "./services/thread-store.ts";
 import {
@@ -31,6 +35,9 @@ ${pc.bold("Relay")} — carry one coding task between Codex and OpenCode
 ${pc.bold("Usage")}
   relay
   relay [directory]
+  relay -- <directory>
+  relay help | --help | -h
+  relay version | --version | -v
   relay doctor
   relay config
   relay config get switch-key
@@ -50,6 +57,7 @@ ${pc.bold("Usage")}
 ${pc.bold("Examples")}
   relay .
   relay ../another-project
+  relay -- native
   relay config set switch-key ctrl+g
   relay config set switch-key shift+return
   relay new "Fix the checkout flow" --with codex
@@ -57,6 +65,7 @@ ${pc.bold("Examples")}
   relay ask --with opencode "Review the change and run the tests"
 
 Bare ${pc.cyan("relay")} opens the selected harness's real native TUI.
+Use ${pc.cyan("relay -- <directory>")} when a directory name matches a Relay command.
 Press the configured switch key (${pc.cyan("Ctrl+Q")} by default) to move between harnesses.
 ${pc.cyan("F6")} is available as a fallback.
 Run ${pc.cyan("relay config set switch-key ctrl+g")} to choose any terminal-observable key chord using OpenCode-style key names.
@@ -83,7 +92,43 @@ const renderStatus = (thread: RelayThread, dataRoot: string) =>
     `Data       ${pc.dim(dataRoot)}`,
   ].join("\n");
 
+const quoted = (value: string) => JSON.stringify(value);
+
+const renderProcessRecoveryFailure = (failure: ProcessRecoveryFailure, index: number) => {
+  const identity =
+    failure.scope === "group"
+      ? `leader PID ${failure.pid}, PGID ${failure.pgid}, start ${quoted(failure.startedAt)}`
+      : `PID ${failure.pid}, start ${quoted(failure.startedAt)}`;
+  const inspection =
+    failure.scope === "group"
+      ? `ps -eo pid=,pgid=,lstart=,command=  # inspect PGID ${failure.pgid}`
+      : `ps -o pid=,pgid=,lstart=,command= -p ${failure.pid}`;
+  const remediation =
+    failure.scope === "group"
+      ? `Only stop PGID ${failure.pgid} after confirming its processes belong to this interrupted ${quoted(failure.kind)} run. Never signal a reused process group.`
+      : `Only stop PID ${failure.pid} if its start identity still matches this claim. Never signal a reused PID.`;
+
+  return [
+    `Recovery claim ${index + 1}:`,
+    `  Claim file ${quoted(failure.claimFile)} · token ${quoted(failure.claimToken)}`,
+    `  Kind ${quoted(failure.kind)} · scope ${failure.scope}`,
+    `  Identity ${identity}`,
+    `  Inspect safely: ${inspection}`,
+    `  Remediation: ${remediation}`,
+    "  Relay kept this claim for a later retry.",
+  ].join("\n");
+};
+
+export const renderProcessRecoveryError = (error: ProcessRecoveryError) => {
+  const count = error.failures.length;
+  return [
+    `Relay could not finish orphan recovery for ${count} managed process claim${count === 1 ? "" : "s"} left by an interrupted run.`,
+    ...error.failures.map(renderProcessRecoveryFailure),
+  ].join("\n\n");
+};
+
 const renderError = (error: unknown) => {
+  if (error instanceof ProcessRecoveryError) return renderProcessRecoveryError(error);
   if (!error || typeof error !== "object") return `Relay failed: ${String(error)}`;
   const message = "message" in error ? String(error.message) : `Relay failed: ${String(error)}`;
   const detail = "stderr" in error && typeof error.stderr === "string" ? error.stderr.trim() : "";
@@ -148,6 +193,11 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
                 ? pc.red("unhealthy (--version failed)")
                 : pc.red(`missing (${status.harness} was not found in PATH)`);
           yield* Console.log(`${status.harness.padEnd(10)} ${result}`);
+        }
+        if (statuses.some((status) => !status.installed || !status.healthy)) {
+          yield* Effect.sync(() => {
+            process.exitCode = 1;
+          });
         }
         return;
       }
@@ -290,12 +340,8 @@ const recoverManagedProcessState = Effect.gen(function* () {
     try: () => cleanupOrphanedProcesses(paths.root),
     catch: (cause) => cause,
   });
-  if (recovery.failed > 0) {
-    return yield* Effect.fail(
-      new Error(
-        `Relay could not stop ${recovery.failed} process group${recovery.failed === 1 ? "" : "s"} left by an interrupted run`,
-      ),
-    );
+  if (recovery.failures.length > 0) {
+    return yield* new ProcessRecoveryError({ failures: recovery.failures });
   }
   if (recovery.quarantined > 0) {
     yield* Console.error(
@@ -321,7 +367,11 @@ if (import.meta.main) {
   }
 
   if (process.exitCode !== 1) {
-    if (!command || command.name === "open") {
+    if (command?.name === "help") {
+      process.stdout.write(`${help}\n`);
+    } else if (command?.name === "version") {
+      process.stdout.write(`${packageJson.version}\n`);
+    } else if (!command || command.name === "open") {
       const runtime = ManagedRuntime.make(MainLayer);
       void runtime
         .runPromise(

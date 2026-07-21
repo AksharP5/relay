@@ -1,16 +1,15 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { Effect } from "effect";
-import { mkdtemp, rm } from "node:fs/promises";
+import { Effect, Schema } from "effect";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ThreadStore } from "../src/services/thread-store.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "relay-undo-"));
-Bun.env.RELAY_DATA_DIR = directory;
-const { ThreadStore } = await import("../src/services/thread-store.ts");
+const StoredUndoFixture = Schema.Struct({ entries: Schema.Array(Schema.Unknown) });
 
 afterAll(async () => {
   await rm(directory, { recursive: true, force: true });
-  delete Bun.env.RELAY_DATA_DIR;
 });
 
 describe("canonical undo and redo", () => {
@@ -53,7 +52,7 @@ describe("canonical undo and redo", () => {
           "second",
           "second response",
         ]);
-      }).pipe(Effect.provide(ThreadStore.layer)),
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(directory))),
     );
   });
 
@@ -85,7 +84,46 @@ describe("canonical undo and redo", () => {
         const redoExit = yield* Effect.exit(store.redoLastTurn(adopted, "opencode"));
         expect(redoExit._tag).toBe("Failure");
         expect(yield* store.messages(created.id)).toEqual([]);
-      }).pipe(Effect.provide(ThreadStore.layer)),
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(directory))),
+    );
+  });
+
+  it("skips malformed undo entries while retaining valid recovery state", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Tolerant undo state",
+          cwd: process.cwd(),
+          harness: "opencode",
+        });
+        const committed = yield* store.commitTurn(created, {
+          harness: "opencode",
+          prompt: "keep me",
+          response: "keep this response",
+          sessionId: "tolerant-session",
+          bindingCreatedAt: created.createdAt,
+        });
+        const undone = yield* store.undoLastTurn(committed.thread, "opencode");
+        const undoPath = join(directory, "threads", created.id, "undo-stack.json");
+        const stored = Schema.decodeUnknownSync(StoredUndoFixture)(
+          JSON.parse(yield* Effect.promise(() => readFile(undoPath, "utf8"))),
+        );
+        yield* Effect.promise(() =>
+          writeFile(
+            undoPath,
+            `${JSON.stringify({ entries: [{ messages: "invalid" }, ...stored.entries] })}\n`,
+          ),
+        );
+
+        expect(yield* store.canRedoLastTurn(undone, "opencode")).toBe(true);
+        const redone = yield* store.redoLastTurn(undone, "opencode");
+        expect(redone.lastSeq).toBe(2);
+        expect((yield* store.messages(created.id)).map((message) => message.content)).toEqual([
+          "keep me",
+          "keep this response",
+        ]);
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(directory))),
     );
   });
 });

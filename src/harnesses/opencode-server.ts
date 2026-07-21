@@ -1,11 +1,88 @@
+import { Schema } from "effect";
 import type { HarnessCommand } from "../domain.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
 import { trackManagedProcess } from "../services/process-registry.ts";
 
-interface OpenCodeCommand {
-  readonly name?: unknown;
-  readonly description?: unknown;
-}
+const OpenCodeCommand = Schema.Struct({
+  name: Schema.optionalKey(Schema.String),
+  description: Schema.optionalKey(Schema.String),
+});
+const OpenCodeCommands = Schema.Array(OpenCodeCommand);
+const OpenCodeModelMessages = Schema.Array(
+  Schema.Struct({
+    info: Schema.optionalKey(
+      Schema.Struct({
+        providerID: Schema.optionalKey(Schema.String),
+        modelID: Schema.optionalKey(Schema.String),
+      }),
+    ),
+  }),
+);
+const OpenCodeUndoSession = Schema.Struct({
+  revert: Schema.optionalKey(
+    Schema.NullOr(Schema.Struct({ messageID: Schema.optionalKey(Schema.String) })),
+  ),
+});
+const OpenCodeUndoMessages = Schema.Array(
+  Schema.Struct({
+    info: Schema.optionalKey(
+      Schema.Struct({
+        id: Schema.optionalKey(Schema.String),
+        role: Schema.optionalKey(Schema.String),
+      }),
+    ),
+    parts: Schema.optionalKey(
+      Schema.Array(
+        Schema.Struct({
+          type: Schema.optionalKey(Schema.String),
+          text: Schema.optionalKey(Schema.String),
+        }),
+      ),
+    ),
+  }),
+);
+const OpenCodeSharedSession = Schema.Struct({
+  share: Schema.optionalKey(
+    Schema.NullOr(Schema.Struct({ url: Schema.optionalKey(Schema.String) })),
+  ),
+});
+const OpenCodeCreatedSession = Schema.Struct({ id: Schema.String });
+const OpenCodeCommandMessage = Schema.Struct({
+  parts: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        type: Schema.optionalKey(Schema.String),
+        text: Schema.optionalKey(Schema.String),
+      }),
+    ),
+  ),
+});
+
+export class OpenCodeProtocolError extends Schema.TaggedErrorClass<OpenCodeProtocolError>()(
+  "OpenCodeProtocolError",
+  {
+    operation: Schema.String,
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+export const decodeOpenCodePayload = <A>(
+  schema: Schema.Decoder<A>,
+  value: unknown,
+  operation: string,
+): A => {
+  try {
+    return Schema.decodeUnknownSync(schema)(value);
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    throw new OpenCodeProtocolError({
+      operation,
+      message: `OpenCode returned an invalid ${operation} payload: ${detail}`,
+      cause,
+    });
+  }
+};
 
 const fetchOpenCode = (input: URL, init: RequestInit = {}) =>
   fetch(input, { ...init, signal: init.signal ?? AbortSignal.timeout(30 * 60 * 1_000) });
@@ -55,15 +132,14 @@ export const startOpenCodeServer = async (
       detached: process.platform !== "win32",
     },
   );
-  let resolveUrl: (value: string) => void;
-  let rejectUrl: (cause: unknown) => void;
-  const serverUrl = new Promise<string>((resolve, reject) => {
-    resolveUrl = resolve;
-    rejectUrl = reject;
-  });
+  const {
+    promise: serverUrl,
+    resolve: resolveUrl,
+    reject: rejectUrl,
+  } = Promise.withResolvers<string>();
   const abortReason = () =>
     signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
-  const rejectStartup = (cause: unknown) => rejectUrl!(signal?.aborted ? abortReason() : cause);
+  const rejectStartup = (cause: unknown) => rejectUrl(signal?.aborted ? abortReason() : cause);
   let terminating: Promise<void> | undefined;
   const terminate = () => (terminating ??= stopProcessTree(child));
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -132,20 +208,15 @@ export const discoverOpenCodeCommands = async (
     throw new Error("OpenCode server output pipes are unavailable");
   }
 
-  let resolveUrl: (value: string) => void;
-  let rejectUrl: (cause: Error) => void;
-  const url = new Promise<string>((resolve, reject) => {
-    resolveUrl = resolve;
-    rejectUrl = reject;
-  });
+  const { promise: url, resolve: resolveUrl, reject: rejectUrl } = Promise.withResolvers<string>();
   const inspectLine = (line: string) => {
     const match = line.match(/opencode server listening on (http:\/\/\S+)/i);
     if (match?.[1]) resolveUrl(match[1]);
   };
-  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
-  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
+  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
+  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
   void child.exited.then((code) =>
-    rejectUrl!(new Error(`OpenCode server exited with code ${code}`)),
+    rejectUrl(new Error(`OpenCode server exited with code ${code}`)),
   );
 
   try {
@@ -161,7 +232,11 @@ export const discoverOpenCodeCommands = async (
     const response = await fetchOpenCode(endpoint, { headers: { authorization } });
     if (!response.ok)
       throw new Error(`OpenCode command discovery failed with HTTP ${response.status}`);
-    const commands = (await response.json()) as Array<OpenCodeCommand>;
+    const commands = decodeOpenCodePayload(
+      OpenCodeCommands,
+      await response.json(),
+      "command catalog",
+    );
     return commands.flatMap((command) =>
       typeof command.name === "string"
         ? [
@@ -208,20 +283,19 @@ export const runOpenCodeControl = async (
     throw new Error("OpenCode server output pipes are unavailable");
   }
 
-  let resolveUrl: (value: string) => void;
-  let rejectUrl: (cause: Error) => void;
-  const serverUrl = new Promise<string>((resolve, reject) => {
-    resolveUrl = resolve;
-    rejectUrl = reject;
-  });
+  const {
+    promise: serverUrl,
+    resolve: resolveUrl,
+    reject: rejectUrl,
+  } = Promise.withResolvers<string>();
   const inspectLine = (line: string) => {
     const match = line.match(/opencode server listening on (http:\/\/\S+)/i);
     if (match?.[1]) resolveUrl(match[1]);
   };
-  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
-  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
+  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
+  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
   void child.exited.then((code) =>
-    rejectUrl!(new Error(`OpenCode server exited with code ${code}`)),
+    rejectUrl(new Error(`OpenCode server exited with code ${code}`)),
   );
 
   try {
@@ -246,9 +320,11 @@ export const runOpenCodeControl = async (
         messagesUrl.searchParams.set("directory", input.cwd);
         const messagesResponse = await fetchOpenCode(messagesUrl, { headers });
         if (messagesResponse.ok) {
-          const messages = (await messagesResponse.json()) as Array<{
-            info?: { role?: unknown; providerID?: unknown; modelID?: unknown };
-          }>;
+          const messages = decodeOpenCodePayload(
+            OpenCodeModelMessages,
+            await messagesResponse.json(),
+            "message model history",
+          );
           const latest = messages.findLast(
             (item) =>
               typeof item.info?.providerID === "string" && typeof item.info?.modelID === "string",
@@ -276,11 +352,16 @@ export const runOpenCodeControl = async (
       ]);
       if (!sessionResponse.ok || !messagesResponse.ok)
         throw new Error("Could not read the OpenCode undo state");
-      const session = (await sessionResponse.json()) as { revert?: { messageID?: unknown } };
-      const messages = (await messagesResponse.json()) as Array<{
-        info?: { id?: unknown; role?: unknown };
-        parts?: Array<{ type?: unknown; text?: unknown }>;
-      }>;
+      const session = decodeOpenCodePayload(
+        OpenCodeUndoSession,
+        await sessionResponse.json(),
+        "undo session",
+      );
+      const messages = decodeOpenCodePayload(
+        OpenCodeUndoMessages,
+        await messagesResponse.json(),
+        "undo history",
+      );
       const users = messages
         .filter(
           (item): item is typeof item & { info: { id: string; role?: unknown } } =>
@@ -323,7 +404,11 @@ export const runOpenCodeControl = async (
       throw new Error(`OpenCode ${input.action} failed with HTTP ${response.status}`);
     }
     if (input.action === "share") {
-      const session = (await response.json()) as { share?: { url?: unknown } };
+      const session = decodeOpenCodePayload(
+        OpenCodeSharedSession,
+        await response.json(),
+        "shared session",
+      );
       return typeof session.share?.url === "string"
         ? `OpenCode shared this session: ${session.share.url}`
         : "OpenCode shared this session.";
@@ -364,20 +449,19 @@ export const runOpenCodeCommand = async (
     await stopProcessTree(child);
     throw new Error("OpenCode server output pipes are unavailable");
   }
-  let resolveUrl: (value: string) => void;
-  let rejectUrl: (cause: Error) => void;
-  const serverUrl = new Promise<string>((resolve, reject) => {
-    resolveUrl = resolve;
-    rejectUrl = reject;
-  });
+  const {
+    promise: serverUrl,
+    resolve: resolveUrl,
+    reject: rejectUrl,
+  } = Promise.withResolvers<string>();
   const inspectLine = (line: string) => {
     const match = line.match(/opencode server listening on (http:\/\/\S+)/i);
     if (match?.[1]) resolveUrl(match[1]);
   };
-  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
-  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
+  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
+  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl);
   void child.exited.then((code) =>
-    rejectUrl!(new Error(`OpenCode server exited with code ${code}`)),
+    rejectUrl(new Error(`OpenCode server exited with code ${code}`)),
   );
 
   try {
@@ -402,8 +486,11 @@ export const runOpenCodeCommand = async (
       });
       if (!createResponse.ok)
         throw new Error(`OpenCode session creation failed with HTTP ${createResponse.status}`);
-      const session = (await createResponse.json()) as { id?: unknown };
-      if (typeof session.id !== "string") throw new Error("OpenCode did not return a session id");
+      const session = decodeOpenCodePayload(
+        OpenCodeCreatedSession,
+        await createResponse.json(),
+        "created session",
+      );
       sessionId = session.id;
     }
     const commandUrl = new URL(`/session/${encodeURIComponent(sessionId)}/command`, baseUrl);
@@ -421,9 +508,11 @@ export const runOpenCodeCommand = async (
     });
     if (!commandResponse.ok)
       throw new Error(`OpenCode /${input.command} failed with HTTP ${commandResponse.status}`);
-    const message = (await commandResponse.json()) as {
-      parts?: Array<{ type?: unknown; text?: unknown }>;
-    };
+    const message = decodeOpenCodePayload(
+      OpenCodeCommandMessage,
+      await commandResponse.json(),
+      "command response",
+    );
     const text = (message.parts ?? [])
       .filter((part) => part.type === "text" && typeof part.text === "string")
       .map((part) => part.text)

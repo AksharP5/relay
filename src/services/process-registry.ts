@@ -15,7 +15,59 @@ const ProcessClaim = Schema.Struct({
   kind: Schema.String,
   createdAt: Schema.String,
 });
-type ProcessClaim = typeof ProcessClaim.Type;
+interface ProcessClaim extends Schema.Schema.Type<typeof ProcessClaim> {}
+
+const ProcessRecoveryFailureBase = {
+  claimFile: Schema.String,
+  claimToken: Schema.String,
+  kind: Schema.String,
+  pid: Schema.Number,
+  startedAt: Schema.String,
+};
+export const ProcessRecoveryFailure = Schema.Union([
+  Schema.Struct({
+    ...ProcessRecoveryFailureBase,
+    scope: Schema.Literal("process"),
+  }),
+  Schema.Struct({
+    ...ProcessRecoveryFailureBase,
+    scope: Schema.Literal("group"),
+    pgid: Schema.Number,
+  }),
+]);
+export type ProcessRecoveryFailure = typeof ProcessRecoveryFailure.Type;
+
+export const ProcessRecoveryResult = Schema.Struct({
+  terminated: Schema.Number,
+  discarded: Schema.Number,
+  quarantined: Schema.Number,
+  failed: Schema.Number,
+  failures: Schema.Array(ProcessRecoveryFailure),
+});
+export interface ProcessRecoveryResult extends Schema.Schema.Type<typeof ProcessRecoveryResult> {}
+
+export class ProcessRecoveryError extends Schema.TaggedErrorClass<ProcessRecoveryError>()(
+  "ProcessRegistry.RecoveryError",
+  { failures: Schema.Array(ProcessRecoveryFailure) },
+) {}
+
+interface ProcessIdentity {
+  readonly pgid: number;
+  readonly startedAt: string;
+}
+
+export interface ProcessRecoveryOperations {
+  readonly processSnapshot: (pid: number) => Promise<ProcessIdentity | undefined>;
+  readonly signalGroup: (pgid: number, signal: NodeJS.Signals) => void;
+  readonly signalProcess: (pid: number, signal: NodeJS.Signals) => void;
+  readonly groupIsAlive: (pgid: number) => boolean;
+  readonly waitForGroupExit: (pgid: number, timeoutMs: number) => Promise<boolean>;
+  readonly waitForProcessExit: (
+    pid: number,
+    startedAt: string,
+    timeoutMs: number,
+  ) => Promise<boolean>;
+}
 
 const registrations = new WeakMap<object, string>();
 const registryDirectory = (root: string) => `${root}/processes`;
@@ -117,6 +169,15 @@ const waitForProcessExit = async (pid: number, startedAt: string, timeoutMs: num
   return (await processSnapshot(pid))?.startedAt !== startedAt;
 };
 
+const liveRecoveryOperations: ProcessRecoveryOperations = {
+  processSnapshot,
+  signalGroup,
+  signalProcess,
+  groupIsAlive,
+  waitForGroupExit,
+  waitForProcessExit,
+};
+
 export const trackManagedProcess = async (
   root: string,
   child: ProcessLike,
@@ -162,15 +223,25 @@ export const untrackManagedProcess = async (child: ProcessLike) => {
   await rm(path, { force: true });
 };
 
-export const cleanupOrphanedProcesses = async (root: string) => {
+export const cleanupOrphanedProcesses = async (
+  root: string,
+  options: { readonly operations?: ProcessRecoveryOperations } = {},
+): Promise<ProcessRecoveryResult> => {
+  const operations = options.operations ?? liveRecoveryOperations;
   if (process.platform === "win32")
-    return { terminated: 0, discarded: 0, quarantined: 0, failed: 0 };
+    return ProcessRecoveryResult.make({
+      terminated: 0,
+      discarded: 0,
+      quarantined: 0,
+      failed: 0,
+      failures: [],
+    });
   await ensureRegistry(root);
   await ensureDirectory(quarantineDirectory(root));
   let terminated = 0;
   let discarded = 0;
   let quarantined = 0;
-  let failed = 0;
+  const failures: Array<ProcessRecoveryFailure> = [];
 
   for (const entry of await readdir(registryDirectory(root))) {
     if (!entry.endsWith(".json")) continue;
@@ -185,14 +256,14 @@ export const cleanupOrphanedProcesses = async (root: string) => {
       continue;
     }
 
-    const owner = await processSnapshot(claim.owner.pid);
+    const owner = await operations.processSnapshot(claim.owner.pid);
     if (owner?.startedAt === claim.owner.startedAt) continue;
-    const child = await processSnapshot(claim.child.pid);
+    const child = await operations.processSnapshot(claim.child.pid);
     const scope = claim.scope ?? "group";
     const matchingLeader =
       child?.startedAt === claim.child.startedAt && child.pgid === claim.child.pgid;
     const leaderExitedWithLiveGroup =
-      scope === "group" && child === undefined && groupIsAlive(claim.child.pgid);
+      scope === "group" && child === undefined && operations.groupIsAlive(claim.child.pgid);
     if (matchingLeader || leaderExitedWithLiveGroup) {
       if (scope === "group" && claim.child.pgid <= 1) {
         discarded += 1;
@@ -201,17 +272,32 @@ export const cleanupOrphanedProcesses = async (root: string) => {
       }
       const signal = (value: NodeJS.Signals) =>
         scope === "group"
-          ? signalGroup(claim.child.pgid, value)
-          : signalProcess(claim.child.pid, value);
+          ? operations.signalGroup(claim.child.pgid, value)
+          : operations.signalProcess(claim.child.pid, value);
       const waitForExit = (timeoutMs: number) =>
         scope === "group"
-          ? waitForGroupExit(claim.child.pgid, timeoutMs)
-          : waitForProcessExit(claim.child.pid, claim.child.startedAt, timeoutMs);
+          ? operations.waitForGroupExit(claim.child.pgid, timeoutMs)
+          : operations.waitForProcessExit(claim.child.pid, claim.child.startedAt, timeoutMs);
       signal("SIGTERM");
       if (!(await waitForExit(750))) {
         signal("SIGKILL");
         if (!(await waitForExit(750))) {
-          failed += 1;
+          const identity = {
+            claimFile: entry,
+            claimToken: claim.token,
+            kind: claim.kind,
+            pid: claim.child.pid,
+            startedAt: claim.child.startedAt,
+          };
+          failures.push(
+            scope === "group"
+              ? ProcessRecoveryFailure.make({
+                  ...identity,
+                  scope,
+                  pgid: claim.child.pgid,
+                })
+              : ProcessRecoveryFailure.make({ ...identity, scope }),
+          );
           continue;
         }
       }
@@ -221,5 +307,11 @@ export const cleanupOrphanedProcesses = async (root: string) => {
     }
     await rm(path, { force: true });
   }
-  return { terminated, discarded, quarantined, failed };
+  return ProcessRecoveryResult.make({
+    terminated,
+    discarded,
+    quarantined,
+    failed: failures.length,
+    failures,
+  });
 };
