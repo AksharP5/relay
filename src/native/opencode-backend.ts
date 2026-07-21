@@ -154,6 +154,7 @@ export class OpenCodeNativeBackend {
   #observeTui = false;
   #observerHealthy = false;
   #observerGap = false;
+  #observerEvents = 0;
   #observedRoot: string | undefined;
 
   private constructor(server: RunningOpenCodeServer, executable: string, cwd: string) {
@@ -273,6 +274,7 @@ export class OpenCodeNativeBackend {
       } catch {
         continue;
       }
+      this.#observerEvents += 1;
       const properties = asObject(event?.properties);
       const info = asObject(properties?.info);
       const eventType = typeof event?.type === "string" ? event.type : undefined;
@@ -510,6 +512,15 @@ export class OpenCodeNativeBackend {
     if (!response.ok)
       throw new Error(`OpenCode session deletion failed with HTTP ${response.status}`);
     await response.body?.cancel();
+  }
+
+  /** Exposes bounded synchronization state for native observer coordination and diagnostics. */
+  observerState() {
+    return {
+      healthy: this.#observerHealthy,
+      gap: this.#observerGap,
+      events: this.#observerEvents,
+    } as const;
   }
 
   /** Detects sessions created or used through native /new and /sessions commands. */
