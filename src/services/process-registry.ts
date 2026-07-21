@@ -18,16 +18,25 @@ const ProcessClaim = Schema.Struct({
 });
 interface ProcessClaim extends Schema.Schema.Type<typeof ProcessClaim> {}
 
-export const ProcessRecoveryFailure = Schema.Struct({
+const ProcessRecoveryFailureBase = {
   claimFile: Schema.String,
   claimToken: Schema.String,
   kind: Schema.String,
-  scope: Schema.Literals(["group", "process"]),
   pid: Schema.Number,
-  pgid: Schema.optionalKey(Schema.Number),
   startedAt: Schema.String,
-});
-export interface ProcessRecoveryFailure extends Schema.Schema.Type<typeof ProcessRecoveryFailure> {}
+};
+export const ProcessRecoveryFailure = Schema.Union([
+  Schema.Struct({
+    ...ProcessRecoveryFailureBase,
+    scope: Schema.Literal("process"),
+  }),
+  Schema.Struct({
+    ...ProcessRecoveryFailureBase,
+    scope: Schema.Literal("group"),
+    pgid: Schema.Number,
+  }),
+]);
+export type ProcessRecoveryFailure = typeof ProcessRecoveryFailure.Type;
 
 export const ProcessRecoveryResult = Schema.Struct({
   terminated: Schema.Number,
