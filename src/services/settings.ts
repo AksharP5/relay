@@ -1,6 +1,6 @@
-import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer, Option, Schema } from "effect";
 import { SettingsError } from "../errors.ts";
 import { DEFAULT_SWITCH_KEY, parseSwitchKey, type SwitchKeyBinding } from "../switch-key.ts";
 import { relayDataRoot } from "./data-root.ts";
@@ -12,9 +12,10 @@ export interface RelaySettings {
 export const relayConfigPath = () => `${relayDataRoot()}/config.json`;
 const defaultSettings = (): RelaySettings => ({ switchKey: DEFAULT_SWITCH_KEY });
 const StoredRelaySettings = Schema.Struct({
-  version: Schema.optionalKey(Schema.Unknown),
-  switchKey: Schema.optionalKey(Schema.Unknown),
+  version: Schema.Literal(1),
+  switchKey: Schema.String,
 });
+const StoredSettingsVersion = Schema.Struct({ version: Schema.Number });
 
 const errorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
@@ -39,43 +40,58 @@ const secureDirectory = async (path: string) => {
   await chmod(path, 0o700);
 };
 
+const settingsSchemaError = (value: unknown, cause: Schema.SchemaError) => {
+  const version = Schema.decodeUnknownOption(StoredSettingsVersion)(value);
+  return Option.isSome(version) && version.value.version !== 1
+    ? new Error(`unsupported settings version ${version.value.version}`)
+    : cause;
+};
+
 const decodeRelaySettings = (value: unknown) =>
   Schema.decodeUnknownEffect(StoredRelaySettings)(value).pipe(
-    Effect.mapError(() => new Error("expected a JSON object")),
-    Effect.flatMap((stored) => {
-      if (stored.version !== 1) {
-        return Effect.fail(
-          new Error(`unsupported settings version ${String(stored.version ?? "missing")}`),
-        );
-      }
-      const switchKey = stored.switchKey;
-      if (typeof switchKey !== "string") {
-        return Effect.fail(new Error("switchKey must be a string"));
-      }
-      return Effect.try({
-        try: () => ({ switchKey: parseSwitchKey(switchKey) }),
+    Effect.mapError((cause) => settingsSchemaError(value, cause)),
+    Effect.flatMap((stored) =>
+      Effect.try({
+        try: () => ({ switchKey: parseSwitchKey(stored.switchKey) }),
         catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
-      });
-    }),
+      }),
+    ),
+  );
+
+const isMissingFile = (cause: unknown) =>
+  cause instanceof Error && "code" in cause && cause.code === "ENOENT";
+
+const decodeSettingsSource = (path: string, source: string) =>
+  Effect.try({
+    try: () => {
+      const value: unknown = JSON.parse(source);
+      return value;
+    },
+    catch: (cause) => invalidSettingsError(path, cause),
+  }).pipe(
+    Effect.flatMap((value) =>
+      decodeRelaySettings(value).pipe(
+        Effect.mapError((cause) => invalidSettingsError(path, cause)),
+      ),
+    ),
   );
 
 const loadRelaySettings = (path: string) =>
   Effect.tryPromise({
     try: async () => {
-      const file = Bun.file(path);
-      if (!(await file.exists())) return undefined;
-      await chmod(path, 0o600);
-      const value: unknown = await file.json();
-      return value;
+      try {
+        const source = await readFile(path, "utf8");
+        await chmod(path, 0o600);
+        return source;
+      } catch (cause) {
+        if (isMissingFile(cause)) return undefined;
+        throw cause;
+      }
     },
     catch: (cause) => settingsError("load", path, cause),
   }).pipe(
-    Effect.flatMap((value) =>
-      value === undefined
-        ? Effect.succeed(defaultSettings())
-        : decodeRelaySettings(value).pipe(
-            Effect.mapError((cause) => invalidSettingsError(path, cause)),
-          ),
+    Effect.flatMap((source) =>
+      source === undefined ? Effect.succeed(defaultSettings()) : decodeSettingsSource(path, source),
     ),
   );
 

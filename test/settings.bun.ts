@@ -46,18 +46,35 @@ describe("SettingsService", () => {
     );
   });
 
-  it("reports malformed settings through the typed error channel", async () => {
+  it("reports malformed JSON and schema-invalid settings through the typed channel", async () => {
     const config = await tempConfigPath("relay-settings-invalid-");
-    await writeFile(config.path, "null\n", "utf8");
 
-    const failure = await runSettings(config.path, (settings) => settings.load().pipe(Effect.flip));
-    expect(failure).toBeInstanceOf(SettingsError);
+    for (const source of ["{not-json\n", '{"version":1,"switchKey":42}\n']) {
+      await writeFile(config.path, source, "utf8");
+      const failure = await runSettings(config.path, (settings) =>
+        settings.load().pipe(Effect.flip),
+      );
+      expect(failure).toBeInstanceOf(SettingsError);
+      expect(failure).toMatchObject({
+        _tag: "SettingsError",
+        operation: "load",
+        path: config.path,
+      });
+      expect(failure.message).toContain("are invalid");
+    }
+  });
+
+  it("distinguishes load I/O failures from invalid settings", async () => {
+    const path = "/dev/null/config.json";
+
+    const failure = await runSettings(path, (settings) => settings.load().pipe(Effect.flip));
     expect(failure).toMatchObject({
       _tag: "SettingsError",
       operation: "load",
-      path: config.path,
+      path,
     });
-    expect(failure.message).toContain("are invalid");
+    expect(failure.message).toContain("could not be loaded");
+    expect(failure.message).not.toContain("are invalid");
   });
 
   it("reports save and reset failures with their exact operations", async () => {
