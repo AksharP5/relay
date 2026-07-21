@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.0](https://github.com/AksharP5/relay/compare/v0.1.4...v0.2.0) (2026-07-21)
+
+
+### Features
+
+* make switch key configurable ([51e593b](https://github.com/AksharP5/relay/commit/51e593b80566eda07431465b2ec735f1831dbf0b))
+* open relay in an explicit directory ([#12](https://github.com/AksharP5/relay/issues/12)) ([4b9d55a](https://github.com/AksharP5/relay/commit/4b9d55af445b5f3ba19c2d6fe48382bd892c73ed))
+
+
+### Bug Fixes
+
+* **cli:** tighten argument contracts ([#35](https://github.com/AksharP5/relay/issues/35)) ([b1c7af2](https://github.com/AksharP5/relay/commit/b1c7af2a4fe17a273860809c51047f90ba6d9674))
+* explain uncertain headless recovery ([#11](https://github.com/AksharP5/relay/issues/11)) ([e4edce4](https://github.com/AksharP5/relay/commit/e4edce409abfbd1b3b527b4ddb85edb06dd1789b))
+* fail doctor for unavailable harnesses ([#37](https://github.com/AksharP5/relay/issues/37)) ([1bc4ba9](https://github.com/AksharP5/relay/commit/1bc4ba9c7c494a7db4631ddf2fae9cc1d262d9b8))
+* make orphan recovery actionable ([#36](https://github.com/AksharP5/relay/issues/36)) ([6be6327](https://github.com/AksharP5/relay/commit/6be63276233a2b1019b8cfa6c6fbd141e4c4f7dc))
+* preserve OpenCode startup cancellation ([#14](https://github.com/AksharP5/relay/issues/14)) ([3302362](https://github.com/AksharP5/relay/commit/3302362914bda422323c664bce4117ef8bc734aa))
+* validate vendor JSON at adapter boundaries ([#45](https://github.com/AksharP5/relay/issues/45)) ([e4a0b74](https://github.com/AksharP5/relay/commit/e4a0b74a2d5bbde659d93ddd28492ea7f325d2e6))
+
 ## [0.1.4](https://github.com/AksharP5/relay/compare/v0.1.3...v0.1.4) (2026-07-13)
 
 
