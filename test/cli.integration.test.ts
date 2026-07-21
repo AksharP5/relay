@@ -59,6 +59,24 @@ describe("Relay CLI surface", () => {
 });
 
 describe("Relay CLI storage", () => {
+  it("serves help and version without touching Relay storage", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "relay-static-commands-"));
+    tempRoots.push(parent);
+    const dataRoot = join(parent, "must-remain-a-file");
+    const sentinel = "static commands must not read or create storage\n";
+    await writeFile(dataRoot, sentinel, { mode: 0o600 });
+
+    const help = await runRelay(dataRoot, ["--help"]);
+    expect(help).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(help.stdout).toContain("Usage");
+
+    const version = await runRelay(dataRoot, ["--version"]);
+    expect(version).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(version.stdout).toMatch(/^\d+\.\d+\.\d+\n$/);
+
+    expect(await readFile(dataRoot, "utf8")).toBe(sentinel);
+  });
+
   it("rejects invalid explicit directories before native startup", async () => {
     const root = await mkdtemp(join(tmpdir(), "relay-explicit-directory-"));
     const workspace = await mkdtemp(join(tmpdir(), "relay-explicit-workspace-"));
