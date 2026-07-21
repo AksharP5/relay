@@ -25,7 +25,8 @@
   "scripts": {
     "relay": "bun src/cli.ts",
     "build": "bun scripts/build.ts",
-    "check": "bun run format:check && bun run typecheck && bun run test",
+    "check": "bun run audit && bun run format:check && bun run typecheck && bun run test",
+    "audit": "bun audit",
     "compat:latest": "bun scripts/compat-latest.ts",
     "format": "oxfmt . --write",
     "format:check": "oxfmt . --check",
