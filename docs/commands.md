@@ -96,7 +96,9 @@ relay export <id> --out relay-task.json
 relay delete <id> --force
 ```
 
-Export includes visible canonical conversation text and public task metadata. It excludes native binding IDs, hidden undo state, locks, journals, and secrets, and is not an importable backup. Delete requires `--force`, survives interruption through a private deletion journal, and never removes workspace files or vendor-native sessions.
+History and export are scoped to the task's current active visible canonical context. When a native session change adopts a different context, the superseded conversation remains in that harness's own history but is not included in Relay history or export.
+
+Export also includes public task metadata. It excludes native binding IDs, superseded contexts, hidden undo state, locks, journals, and secrets, and is not an importable backup. Delete requires `--force`, survives interruption through a private deletion journal, and never removes workspace files or vendor-native sessions.
 
 Tasks are directory-bound. Relay will not run or synchronize a task from a different directory, which prevents an accidental native session from editing the wrong project.
 
