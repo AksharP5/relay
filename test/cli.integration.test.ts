@@ -11,6 +11,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -30,7 +31,7 @@ const runRelay = async (
   env: Readonly<Record<string, string>> = {},
 ) => {
   try {
-    const result = await execFileAsync("bun", [join(projectRoot, "src/cli.ts"), ...args], {
+    const result = await execFileAsync("bun", [join(projectRoot, "src/cli.ts"), "--", ...args], {
       cwd,
       env: { ...process.env, RELAY_DATA_DIR: root, NO_COLOR: "1", ...env },
     });
@@ -45,7 +46,38 @@ afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+describe("Relay CLI surface", () => {
+  it("advertises help, version, and the explicit directory escape", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-help-"));
+    tempRoots.push(root);
+
+    const result = await runRelay(root, ["--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("relay help | --help | -h");
+    expect(result.stdout).toContain("relay version | --version | -v");
+    expect(result.stdout).toContain("relay -- <directory>");
+  });
+});
+
 describe("Relay CLI storage", () => {
+  it("serves help and version without touching Relay storage", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "relay-static-commands-"));
+    tempRoots.push(parent);
+    const dataRoot = join(parent, "must-remain-a-file");
+    const sentinel = "static commands must not read or create storage\n";
+    await writeFile(dataRoot, sentinel, { mode: 0o600 });
+
+    const help = await runRelay(dataRoot, ["--help"]);
+    expect(help).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(help.stdout).toContain("Usage");
+
+    const version = await runRelay(dataRoot, ["--version"]);
+    expect(version).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(version.stdout).toMatch(/^\d+\.\d+\.\d+\n$/);
+
+    expect(await readFile(dataRoot, "utf8")).toBe(sentinel);
+  });
+
   it("rejects invalid explicit directories before native startup", async () => {
     const root = await mkdtemp(join(tmpdir(), "relay-explicit-directory-"));
     const workspace = await mkdtemp(join(tmpdir(), "relay-explicit-workspace-"));
@@ -64,6 +96,14 @@ describe("Relay CLI storage", () => {
     expect(notDirectory.exitCode).toBe(1);
     expect(notDirectory.stderr).toContain("Relay path is not a directory:");
     expect(notDirectory.stderr).toContain("not-a-directory");
+
+    const commandLikeFile = join(workspace, "native");
+    await writeFile(commandLikeFile, "file", "utf8");
+    const escapedCommandLike = await runRelay(root, ["--", "native"], workspace);
+    expect(escapedCommandLike.exitCode).toBe(1);
+    expect(escapedCommandLike.stderr).toContain(
+      `Relay path is not a directory: ${join(canonicalWorkspace, "native")}`,
+    );
   });
 
   it("persists, reports, and resets any terminal-observable switch key", async () => {
@@ -113,6 +153,34 @@ describe("Relay CLI storage", () => {
     expect(future.exitCode).toBe(1);
     expect(future.stderr).toContain("unsupported settings version 2");
     expect(await readFile(configPath, "utf8")).toBe(futureConfig);
+  });
+
+  it("returns a failure status when doctor finds missing or unhealthy harnesses", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-doctor-"));
+    const bin = join(root, "bin");
+    tempRoots.push(root);
+    await mkdir(bin);
+
+    const { stdout: bunPath } = await execFileAsync("sh", ["-c", "command -v bun"]);
+    await symlink(bunPath.trim(), join(bin, "bun"));
+    const env = { PATH: `${bin}:/usr/bin:/bin` };
+
+    const missing = await runRelay(root, ["doctor"], projectRoot, env);
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stdout).toContain("codex      missing");
+    expect(missing.stdout).toContain("opencode   missing");
+
+    const unhealthyHarness = "#!/bin/sh\nexit 1\n";
+    await Promise.all([
+      writeFile(join(bin, "codex"), unhealthyHarness),
+      writeFile(join(bin, "opencode"), unhealthyHarness),
+    ]);
+    await Promise.all([chmod(join(bin, "codex"), 0o755), chmod(join(bin, "opencode"), 0o755)]);
+
+    const unhealthy = await runRelay(root, ["doctor"], projectRoot, env);
+    expect(unhealthy.exitCode).toBe(1);
+    expect(unhealthy.stdout).toContain("codex      unhealthy");
+    expect(unhealthy.stdout).toContain("opencode   unhealthy");
   });
 
   it("hands off only unseen context across a real Codex → OpenCode → Codex process flow", async () => {

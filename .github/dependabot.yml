@@ -1,0 +1,20 @@
+version: 2
+
+updates:
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "13:17"
+      timezone: America/New_York
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "13:47"
+      timezone: America/New_York
+    open-pull-requests-limit: 5
