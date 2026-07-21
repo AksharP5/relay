@@ -37,6 +37,20 @@ export class HarnessError extends Schema.TaggedErrorClass<HarnessError>()("Harne
   sessionState: Schema.optional(Schema.Literals(["preserve", "uncertain"])),
 }) {}
 
+export class ProcessError extends Schema.TaggedErrorClass<ProcessError>()("ProcessError", {
+  operation: Schema.Literal("run"),
+  command: Schema.String,
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect),
+}) {}
+
+export class SettingsError extends Schema.TaggedErrorClass<SettingsError>()("SettingsError", {
+  operation: Schema.Literals(["load", "save", "reset"]),
+  path: Schema.String,
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect),
+}) {}
+
 export class CliError extends Schema.TaggedErrorClass<CliError>()("CliError", {
   message: Schema.String,
 }) {}

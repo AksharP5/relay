@@ -19,12 +19,7 @@ import {
 } from "./services/process-registry.ts";
 import { RelayService } from "./services/relay-service.ts";
 import { ThreadStore } from "./services/thread-store.ts";
-import {
-  loadRelaySettings,
-  relayConfigPath,
-  resetRelaySettings,
-  saveRelaySettings,
-} from "./services/settings.ts";
+import { SettingsService } from "./services/settings.ts";
 import { parseSwitchKey, switchKeyWarning } from "./switch-key.ts";
 import { makeNativeRelayController } from "./native/controller.ts";
 import { launchNativeRelay } from "./native/relay-host.ts";
@@ -138,8 +133,8 @@ const renderError = (error: unknown) => {
 
 export const program = (command: Exclude<CliCommand, { readonly name: "open" }>) =>
   Effect.gen(function* () {
-    const paths = yield* RelayPaths;
     const relay = yield* RelayService;
+    const settingsService = yield* SettingsService;
 
     switch (command.name) {
       case "help":
@@ -150,20 +145,14 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
         return;
       case "config": {
         if (command.action === "get") {
-          const settings = yield* Effect.tryPromise({
-            try: () => loadRelaySettings(paths),
-            catch: (cause) => cause,
-          });
+          const settings = yield* settingsService.load();
           yield* Console.log(`Switch key  ${pc.cyan(settings.switchKey.label)}`);
           yield* Console.log(`Fallback    ${pc.cyan("F6")}`);
-          yield* Console.log(`Config      ${pc.dim(relayConfigPath(paths))}`);
+          yield* Console.log(`Config      ${pc.dim(settingsService.path())}`);
           return;
         }
         if (command.action === "reset") {
-          yield* Effect.tryPromise({
-            try: () => resetRelaySettings(paths),
-            catch: (cause) => cause,
-          });
+          yield* settingsService.reset();
           yield* Console.log(`${pc.green("Reset")} switch key to ${pc.cyan("Ctrl+Q")}.`);
           yield* Console.log(pc.dim("F6 remains available. Applies on the next Relay launch."));
           return;
@@ -172,10 +161,7 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
           try: () => parseSwitchKey(command.value),
           catch: (cause) => cause,
         });
-        yield* Effect.tryPromise({
-          try: () => saveRelaySettings(paths, { switchKey }),
-          catch: (cause) => cause,
-        });
+        yield* settingsService.save({ switchKey });
         yield* Console.log(`${pc.green("Saved")} switch key ${pc.cyan(switchKey.label)}.`);
         const warning = switchKeyWarning(switchKey);
         if (warning) yield* Console.log(pc.yellow(warning));
@@ -326,13 +312,14 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
 const PathsLayer = RelayPaths.layer;
 const ThreadStoreLayer = ThreadStore.configuredLayer.pipe(Layer.provide(PathsLayer));
 const ProcessRunnerLayer = ProcessRunner.configuredLayer.pipe(Layer.provide(PathsLayer));
+const SettingsLayer = SettingsService.configuredLayer.pipe(Layer.provide(PathsLayer));
 const HarnessLayer = HarnessService.configuredLayer.pipe(
   Layer.provide(Layer.merge(ProcessRunnerLayer, PathsLayer)),
 );
 const RelayLayer = RelayService.layer.pipe(
   Layer.provide(Layer.merge(ThreadStoreLayer, HarnessLayer)),
 );
-export const MainLayer = Layer.merge(RelayLayer, PathsLayer);
+export const MainLayer = Layer.mergeAll(RelayLayer, PathsLayer, SettingsLayer);
 
 const recoverManagedProcessState = Effect.gen(function* () {
   const paths = yield* RelayPaths;
@@ -377,11 +364,8 @@ if (import.meta.main) {
         .runPromise(
           Effect.gen(function* () {
             const paths = yield* recoverManagedProcessState;
-            const settings = yield* Effect.tryPromise({
-              try: () => loadRelaySettings(paths),
-              catch: (cause) => cause,
-            });
-            return { paths, settings };
+            const settings = yield* SettingsService;
+            return { paths, settings: yield* settings.load() };
           }),
         )
         .then(({ paths, settings }) =>
