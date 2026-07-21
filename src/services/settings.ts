@@ -1,5 +1,7 @@
 import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { Context, Effect, Layer } from "effect";
+import { SettingsError } from "../errors.ts";
 import { DEFAULT_SWITCH_KEY, parseSwitchKey, type SwitchKeyBinding } from "../switch-key.ts";
 import { relayDataRoot } from "./data-root.ts";
 
@@ -12,12 +14,23 @@ const defaultSettings = (): RelaySettings => ({ switchKey: DEFAULT_SWITCH_KEY })
 
 const errorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
+const settingsError = (operation: "load" | "save" | "reset", path: string, cause: unknown) =>
+  new SettingsError({
+    operation,
+    path,
+    message:
+      operation === "load"
+        ? `Relay settings at ${path} are invalid: ${errorMessage(cause).replace(/^invalid settings: /, "")}`
+        : `Relay settings at ${path} could not be ${operation === "save" ? "saved" : "reset"}: ${errorMessage(cause)}`,
+    cause,
+  });
+
 const secureDirectory = async (path: string) => {
   await mkdir(path, { recursive: true, mode: 0o700 });
   await chmod(path, 0o700);
 };
 
-export const loadRelaySettings = async (): Promise<RelaySettings> => {
+const loadRelaySettings = async (): Promise<RelaySettings> => {
   const path = relayConfigPath();
   const file = Bun.file(path);
   if (!(await file.exists())) return defaultSettings();
@@ -33,11 +46,11 @@ export const loadRelaySettings = async (): Promise<RelaySettings> => {
     if (typeof stored.switchKey !== "string") throw new Error("switchKey must be a string");
     return { switchKey: parseSwitchKey(stored.switchKey) };
   } catch (cause) {
-    throw new Error(`Relay settings at ${path} are invalid: ${errorMessage(cause)}`);
+    throw new Error(`invalid settings: ${errorMessage(cause)}`);
   }
 };
 
-export const saveRelaySettings = async (settings: RelaySettings) => {
+const saveRelaySettings = async (settings: RelaySettings) => {
   const path = relayConfigPath();
   await secureDirectory(dirname(path));
   const temp = `${path}.${crypto.randomUUID()}.tmp`;
@@ -50,4 +63,37 @@ export const saveRelaySettings = async (settings: RelaySettings) => {
   await chmod(path, 0o600);
 };
 
-export const resetRelaySettings = () => saveRelaySettings(defaultSettings());
+export class SettingsService extends Context.Service<
+  SettingsService,
+  {
+    readonly path: () => string;
+    readonly load: () => Effect.Effect<RelaySettings, SettingsError>;
+    readonly save: (settings: RelaySettings) => Effect.Effect<void, SettingsError>;
+    readonly reset: () => Effect.Effect<void, SettingsError>;
+  }
+>()("@relay/SettingsService") {
+  static readonly layer = Layer.succeed(SettingsService, {
+    path: relayConfigPath,
+    load: Effect.fn("SettingsService.load")(() => {
+      const path = relayConfigPath();
+      return Effect.tryPromise({
+        try: loadRelaySettings,
+        catch: (cause) => settingsError("load", path, cause),
+      });
+    }),
+    save: Effect.fn("SettingsService.save")((settings: RelaySettings) => {
+      const path = relayConfigPath();
+      return Effect.tryPromise({
+        try: () => saveRelaySettings(settings),
+        catch: (cause) => settingsError("save", path, cause),
+      });
+    }),
+    reset: Effect.fn("SettingsService.reset")(() => {
+      const path = relayConfigPath();
+      return Effect.tryPromise({
+        try: () => saveRelaySettings(defaultSettings()),
+        catch: (cause) => settingsError("reset", path, cause),
+      });
+    }),
+  });
+}

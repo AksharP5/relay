@@ -10,7 +10,15 @@ import type {
   RelayTaskExport,
   RelayThread,
 } from "../domain.ts";
-import { CliError, HarnessError, ThreadNotFound } from "../errors.ts";
+import {
+  CliError,
+  HarnessError,
+  type HarnessUnavailable,
+  type NoCurrentThread,
+  type StoreError,
+  type ThreadBusy,
+  ThreadNotFound,
+} from "../errors.ts";
 import { HarnessService, type HarnessStatus } from "../harnesses/harness-service.ts";
 import { ThreadStore } from "./thread-store.ts";
 
@@ -36,6 +44,15 @@ export interface NativeDelta {
   readonly messages: ReadonlyArray<RelayMessage>;
   readonly omittedMessages: number;
 }
+
+export type RelayError =
+  | StoreError
+  | ThreadNotFound
+  | ThreadBusy
+  | NoCurrentThread
+  | HarnessUnavailable
+  | HarnessError
+  | CliError;
 
 export const titleFromPrompt = (prompt: string) => {
   const singleLine = prompt.replaceAll(/\s+/g, " ").trim();
@@ -66,36 +83,38 @@ export class RelayService extends Context.Service<
       readonly title: string;
       readonly cwd: string;
       readonly harness: Harness;
-    }) => Effect.Effect<RelayThread, unknown>;
-    readonly ask: (input: AskInput) => Effect.Effect<AskResult, unknown>;
+    }) => Effect.Effect<RelayThread, RelayError>;
+    readonly ask: (input: AskInput) => Effect.Effect<AskResult, RelayError>;
     readonly switchHarness: (
       harness: Harness,
       threadId?: string,
-    ) => Effect.Effect<RelayThread, unknown>;
-    readonly useThread: (threadId: string) => Effect.Effect<RelayThread, unknown>;
-    readonly current: () => Effect.Effect<RelayThread, unknown>;
-    readonly list: () => Effect.Effect<ReadonlyArray<RelayThread>, unknown>;
-    readonly history: () => Effect.Effect<ReadonlyArray<RelayMessage>, unknown>;
-    readonly historyFor: (threadId: string) => Effect.Effect<ReadonlyArray<RelayMessage>, unknown>;
+    ) => Effect.Effect<RelayThread, RelayError>;
+    readonly useThread: (threadId: string) => Effect.Effect<RelayThread, RelayError>;
+    readonly current: () => Effect.Effect<RelayThread, RelayError>;
+    readonly list: () => Effect.Effect<ReadonlyArray<RelayThread>, RelayError>;
+    readonly history: () => Effect.Effect<ReadonlyArray<RelayMessage>, RelayError>;
+    readonly historyFor: (
+      threadId: string,
+    ) => Effect.Effect<ReadonlyArray<RelayMessage>, RelayError>;
     readonly historyForDisplay: (
       threadId: string,
-    ) => Effect.Effect<ReadonlyArray<RelayMessage>, unknown>;
-    readonly exportTask: (threadId?: string) => Effect.Effect<RelayTaskExport, unknown>;
-    readonly deleteTask: (threadId?: string) => Effect.Effect<RelayThread, unknown>;
+    ) => Effect.Effect<ReadonlyArray<RelayMessage>, RelayError>;
+    readonly exportTask: (threadId?: string) => Effect.Effect<RelayTaskExport, RelayError>;
+    readonly deleteTask: (threadId?: string) => Effect.Effect<RelayThread, RelayError>;
     readonly doctor: () => Effect.Effect<ReadonlyArray<HarnessStatus>>;
     readonly capabilities: (
       harness: Harness,
       cwd?: string,
-    ) => Effect.Effect<HarnessCapabilities, unknown>;
+    ) => Effect.Effect<HarnessCapabilities, RelayError>;
     readonly control: (input: {
       readonly action: "compact" | "share" | "unshare" | "undo" | "redo";
       readonly harness?: Harness;
       readonly threadId?: string;
-    }) => Effect.Effect<{ readonly thread: RelayThread; readonly message: string }, unknown>;
+    }) => Effect.Effect<{ readonly thread: RelayThread; readonly message: string }, RelayError>;
     readonly nativeDelta: (
       threadId: string,
       harness: Harness,
-    ) => Effect.Effect<NativeDelta, unknown>;
+    ) => Effect.Effect<NativeDelta, RelayError>;
     readonly bindNativeSession: (input: {
       readonly threadId: string;
       readonly harness: Harness;
@@ -103,7 +122,7 @@ export class RelayService extends Context.Service<
       readonly lastSyncedSeq: number;
       readonly nativeCursor?: string;
       readonly model?: string;
-    }) => Effect.Effect<RelayThread, unknown>;
+    }) => Effect.Effect<RelayThread, RelayError>;
     readonly resetNativeContext: (input: {
       readonly threadId: string;
       readonly harness: Harness;
@@ -112,18 +131,18 @@ export class RelayService extends Context.Service<
       readonly model?: string;
       readonly turns: ReadonlyArray<NativeTranscriptTurn>;
       readonly hiddenTurnIds?: ReadonlyArray<string>;
-    }) => Effect.Effect<RelayThread, unknown>;
+    }) => Effect.Effect<RelayThread, RelayError>;
     readonly beginNativeHandoff: (input: {
       readonly threadId: string;
       readonly harness: Harness;
       readonly sessionId?: string;
       readonly fromSeq: number;
       readonly throughSeq: number;
-    }) => Effect.Effect<RelayThread, unknown>;
+    }) => Effect.Effect<RelayThread, RelayError>;
     readonly abandonNativeHandoff: (
       threadId: string,
       harness: Harness,
-    ) => Effect.Effect<RelayThread, unknown>;
+    ) => Effect.Effect<RelayThread, RelayError>;
     readonly importNativeTurns: (input: {
       readonly threadId: string;
       readonly harness: Harness;
@@ -131,22 +150,22 @@ export class RelayService extends Context.Service<
       readonly turns: ReadonlyArray<NativeTranscriptTurn>;
       readonly hiddenTurnIds?: ReadonlyArray<string>;
       readonly model?: string;
-    }) => Effect.Effect<RelayThread, unknown>;
+    }) => Effect.Effect<RelayThread, RelayError>;
     readonly acquireNativeLease: (
       threadId: string,
     ) => Effect.Effect<
       { readonly thread: RelayThread; readonly release: () => Promise<void> },
-      unknown
+      RelayError
     >;
     readonly switchNativeHarness: (
       threadId: string,
       harness: Harness,
-    ) => Effect.Effect<RelayThread, unknown>;
+    ) => Effect.Effect<RelayThread, RelayError>;
     readonly dropNativeBinding: (
       threadId: string,
       harness: Harness,
       expectedSessionId: string,
-    ) => Effect.Effect<RelayThread, unknown>;
+    ) => Effect.Effect<RelayThread, RelayError>;
     readonly dataRoot: string;
   }
 >()("@relay/RelayService") {

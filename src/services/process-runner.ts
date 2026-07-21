@@ -1,4 +1,5 @@
 import { Context, Effect, Layer } from "effect";
+import { ProcessError } from "../errors.ts";
 import { trackManagedProcess, untrackManagedProcess } from "./process-registry.ts";
 
 export interface ProcessInput {
@@ -117,7 +118,7 @@ export const readStream = async (
 export class ProcessRunner extends Context.Service<
   ProcessRunner,
   {
-    readonly run: (input: ProcessInput) => Effect.Effect<ProcessOutput, Error>;
+    readonly run: (input: ProcessInput) => Effect.Effect<ProcessOutput, ProcessError>;
     readonly which: (command: string) => Effect.Effect<string | undefined>;
   }
 >()("@relay/ProcessRunner") {
@@ -181,7 +182,13 @@ export class ProcessRunner extends Context.Service<
             if (onAbort) signal.removeEventListener("abort", onAbort);
           }
         },
-        catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+        catch: (cause) =>
+          new ProcessError({
+            operation: "run",
+            command: input.command,
+            message: `Could not run ${input.command}: ${cause instanceof Error ? cause.message : String(cause)}`,
+            cause,
+          }),
       });
 
       return operation.pipe(

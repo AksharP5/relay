@@ -14,12 +14,7 @@ import { ProcessRunner } from "./services/process-runner.ts";
 import { cleanupOrphanedProcesses } from "./services/process-registry.ts";
 import { RelayService } from "./services/relay-service.ts";
 import { ThreadStore } from "./services/thread-store.ts";
-import {
-  loadRelaySettings,
-  relayConfigPath,
-  resetRelaySettings,
-  saveRelaySettings,
-} from "./services/settings.ts";
+import { SettingsService } from "./services/settings.ts";
 import { parseSwitchKey, switchKeyWarning } from "./switch-key.ts";
 import { makeNativeRelayController } from "./native/controller.ts";
 import { launchNativeRelay } from "./native/relay-host.ts";
@@ -93,6 +88,7 @@ const renderError = (error: unknown) => {
 export const program = (command: Exclude<CliCommand, { readonly name: "open" }>) =>
   Effect.gen(function* () {
     const relay = yield* RelayService;
+    const settingsService = yield* SettingsService;
 
     switch (command.name) {
       case "help":
@@ -103,17 +99,14 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
         return;
       case "config": {
         if (command.action === "get") {
-          const settings = yield* Effect.tryPromise({
-            try: loadRelaySettings,
-            catch: (cause) => cause,
-          });
+          const settings = yield* settingsService.load();
           yield* Console.log(`Switch key  ${pc.cyan(settings.switchKey.label)}`);
           yield* Console.log(`Fallback    ${pc.cyan("F6")}`);
-          yield* Console.log(`Config      ${pc.dim(relayConfigPath())}`);
+          yield* Console.log(`Config      ${pc.dim(settingsService.path())}`);
           return;
         }
         if (command.action === "reset") {
-          yield* Effect.tryPromise({ try: resetRelaySettings, catch: (cause) => cause });
+          yield* settingsService.reset();
           yield* Console.log(`${pc.green("Reset")} switch key to ${pc.cyan("Ctrl+Q")}.`);
           yield* Console.log(pc.dim("F6 remains available. Applies on the next Relay launch."));
           return;
@@ -122,10 +115,7 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
           try: () => parseSwitchKey(command.value),
           catch: (cause) => cause,
         });
-        yield* Effect.tryPromise({
-          try: () => saveRelaySettings({ switchKey }),
-          catch: (cause) => cause,
-        });
+        yield* settingsService.save({ switchKey });
         yield* Console.log(`${pc.green("Saved")} switch key ${pc.cyan(switchKey.label)}.`);
         const warning = switchKeyWarning(switchKey);
         if (warning) yield* Console.log(pc.yellow(warning));
@@ -269,9 +259,10 @@ export const program = (command: Exclude<CliCommand, { readonly name: "open" }>)
   });
 
 const HarnessLayer = HarnessService.layer.pipe(Layer.provide(ProcessRunner.layer));
-export const MainLayer = RelayService.layer.pipe(
+const RelayLayer = RelayService.layer.pipe(
   Layer.provide(Layer.mergeAll(ThreadStore.layer, HarnessLayer)),
 );
+export const MainLayer = Layer.merge(RelayLayer, SettingsService.layer);
 
 if (import.meta.main) {
   const argv = process.argv.slice(2);
@@ -300,7 +291,13 @@ if (import.meta.main) {
   if (process.exitCode !== 1) {
     if (!command || command.name === "open") {
       const runtime = ManagedRuntime.make(MainLayer);
-      void loadRelaySettings()
+      void runtime
+        .runPromise(
+          Effect.gen(function* () {
+            const settings = yield* SettingsService;
+            return yield* settings.load();
+          }),
+        )
         .then((settings) =>
           launchNativeRelay(
             makeNativeRelayController(runtime),
