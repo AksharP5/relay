@@ -478,4 +478,52 @@ describe("OpenCode native backend", () => {
       await backend.close();
     }
   });
+
+  it("rejects valid JSON with the wrong native OpenCode response shape", async () => {
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    try {
+      await expect(backend.ensureSession({ title: "invalid-shape" })).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "created session",
+      });
+      await expect(backend.completedCursor("ses_invalid_history")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "recent history",
+      });
+      await expect(backend.read("ses_invalid_history")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "history page",
+      });
+      await expect(backend.sessionCwd("ses_invalid_session")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "session lookup",
+      });
+    } finally {
+      await backend.close();
+    }
+  });
+
+  it("rejects native OpenCode responses with invalid consumed fields", async () => {
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    try {
+      await expect(backend.ensureSession({ title: "invalid-fields" })).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "created session",
+      });
+      await expect(backend.completedCursor("ses_invalid_history_fields")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "recent history",
+      });
+      await expect(backend.read("ses_invalid_history_fields")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "history page",
+      });
+      await expect(backend.sessionCwd("ses_invalid_session_fields")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "session lookup",
+      });
+    } finally {
+      await backend.close();
+    }
+  });
 });

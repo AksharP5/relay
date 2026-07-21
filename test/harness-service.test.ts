@@ -1,6 +1,11 @@
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
-import { HarnessService, sessionStateForFailure } from "../src/harnesses/harness-service.ts";
+import {
+  CodexModelCatalogError,
+  HarnessService,
+  parseCodexModels,
+  sessionStateForFailure,
+} from "../src/harnesses/harness-service.ts";
 import { ProcessRunner, type ProcessInput } from "../src/services/process-runner.ts";
 
 const runWithFake = async (harness: "codex" | "opencode", sessionId?: string, model?: string) => {
@@ -56,6 +61,25 @@ const runWithFake = async (harness: "codex" | "opencode", sessionId?: string, mo
 };
 
 describe("HarnessService", () => {
+  it("schema-decodes the Codex model catalog", () => {
+    for (const payload of ["null", '{"models":null}', '{"models":[{"slug":42}]}']) {
+      try {
+        parseCodexModels(payload);
+        throw new Error("expected malformed catalog to fail");
+      } catch (cause) {
+        expect(cause).toBeInstanceOf(CodexModelCatalogError);
+        expect(cause).toMatchObject({ _tag: "CodexModelCatalogError" });
+      }
+    }
+    expect(
+      parseCodexModels(
+        JSON.stringify({
+          models: [{ slug: "gpt-test", display_name: "GPT Test", priority: 1, is_default: true }],
+        }),
+      ),
+    ).toEqual([{ id: "gpt-test", name: "GPT Test", isDefault: true }]);
+  });
+
   it("preserves bindings only for recognizable context-limit failures", () => {
     expect(sessionStateForFailure(new Error("maximum context length exceeded"))).toBe("preserve");
     expect(sessionStateForFailure(new Error("transport closed after request"))).toBe("uncertain");

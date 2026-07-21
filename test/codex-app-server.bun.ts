@@ -1,7 +1,7 @@
 import { chmod } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { runCodexCommand } from "../src/harnesses/codex-app-server.ts";
+import { AppServerProtocolError, runCodexCommand } from "../src/harnesses/codex-app-server.ts";
 
 const executable = fileURLToPath(new URL("./fixtures/fake-codex-app-server.ts", import.meta.url));
 
@@ -45,5 +45,42 @@ describe("Codex app-server commands", () => {
         timeoutMs: 50,
       }),
     ).rejects.toThrow("Timed out waiting for Codex review/start");
+  });
+
+  it("rejects valid JSON that is not a Codex RPC object", async () => {
+    Bun.env.RELAY_TEST_CODEX_INVALID_JSON = "1";
+    try {
+      await expect(
+        runCodexCommand(executable, {
+          command: "compact",
+          cwd: process.cwd(),
+          arguments: "",
+        }),
+      ).rejects.toMatchObject({
+        _tag: "AppServerProtocolError",
+        source: "codex app-server",
+      });
+      expect(AppServerProtocolError).toBeDefined();
+    } finally {
+      delete Bun.env.RELAY_TEST_CODEX_INVALID_JSON;
+    }
+  });
+
+  it("rejects a Codex RPC object with an invalid consumed field", async () => {
+    Bun.env.RELAY_TEST_CODEX_INVALID_JSON = "field";
+    try {
+      await expect(
+        runCodexCommand(executable, {
+          command: "compact",
+          cwd: process.cwd(),
+          arguments: "",
+        }),
+      ).rejects.toMatchObject({
+        _tag: "AppServerProtocolError",
+        source: "codex app-server",
+      });
+    } finally {
+      delete Bun.env.RELAY_TEST_CODEX_INVALID_JSON;
+    }
   });
 });

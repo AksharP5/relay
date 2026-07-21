@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 import type {
   Harness,
   HarnessCapabilities,
@@ -69,27 +69,49 @@ const opencodeBuiltins: ReadonlyArray<HarnessCommand> = [
   },
 ];
 
-const parseCodexModels = (stdout: string): ReadonlyArray<HarnessModel> => {
-  const value = JSON.parse(stdout) as {
-    models?: Array<{
-      slug?: unknown;
-      display_name?: unknown;
-      description?: unknown;
-      visibility?: unknown;
-      priority?: unknown;
-      is_default?: unknown;
-    }>;
-  };
+const CodexModelCatalog = Schema.Struct({
+  models: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        slug: Schema.optionalKey(Schema.String),
+        display_name: Schema.optionalKey(Schema.String),
+        description: Schema.optionalKey(Schema.String),
+        visibility: Schema.optionalKey(Schema.String),
+        priority: Schema.optionalKey(Schema.Number),
+        is_default: Schema.optionalKey(Schema.Boolean),
+      }),
+    ),
+  ),
+});
+
+export class CodexModelCatalogError extends Schema.TaggedErrorClass<CodexModelCatalogError>()(
+  "CodexModelCatalogError",
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+export const parseCodexModels = (stdout: string): ReadonlyArray<HarnessModel> => {
+  let value: typeof CodexModelCatalog.Type;
+  try {
+    value = Schema.decodeUnknownSync(CodexModelCatalog)(JSON.parse(stdout));
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    throw new CodexModelCatalogError({
+      message: `Codex returned an invalid model catalog payload: ${detail}`,
+      cause,
+    });
+  }
   return (value.models ?? [])
-    .filter(
-      (model): model is typeof model & { slug: string } =>
-        typeof model.slug === "string" && model.visibility !== "hide",
+    .filter((model): model is typeof model & { slug: string } =>
+      Boolean(model.slug !== undefined && model.visibility !== "hide"),
     )
     .sort((left, right) => Number(left.priority ?? 1_000) - Number(right.priority ?? 1_000))
     .map((model) => ({
       id: model.slug,
-      name: typeof model.display_name === "string" ? model.display_name : model.slug,
-      ...(typeof model.description === "string" ? { description: model.description } : {}),
+      name: model.display_name ?? model.slug,
+      ...(model.description !== undefined ? { description: model.description } : {}),
       ...(model.is_default === true ? { isDefault: true } : {}),
     }));
 };
