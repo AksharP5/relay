@@ -2,13 +2,13 @@ import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Schema } from "effect";
 import { DEFAULT_SWITCH_KEY, parseSwitchKey, type SwitchKeyBinding } from "../switch-key.ts";
-import { relayDataRoot } from "./data-root.ts";
+import type { RelayPathsShape } from "./data-root.ts";
 
 export interface RelaySettings {
   readonly switchKey: SwitchKeyBinding;
 }
 
-export const relayConfigPath = () => `${relayDataRoot()}/config.json`;
+export const relayConfigPath = (paths: RelayPathsShape) => `${paths.root}/config.json`;
 const defaultSettings = (): RelaySettings => ({ switchKey: DEFAULT_SWITCH_KEY });
 
 const errorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
@@ -24,8 +24,8 @@ const secureDirectory = async (path: string) => {
   await chmod(path, 0o700);
 };
 
-export const loadRelaySettings = async (): Promise<RelaySettings> => {
-  const path = relayConfigPath();
+export const loadRelaySettings = async (paths: RelayPathsShape): Promise<RelaySettings> => {
+  const path = relayConfigPath(paths);
   const file = Bun.file(path);
   if (!(await file.exists())) return defaultSettings();
 
@@ -43,8 +43,8 @@ export const loadRelaySettings = async (): Promise<RelaySettings> => {
   }
 };
 
-export const saveRelaySettings = async (settings: RelaySettings) => {
-  const path = relayConfigPath();
+export const saveRelaySettings = async (paths: RelayPathsShape, settings: RelaySettings) => {
+  const path = relayConfigPath(paths);
   await secureDirectory(dirname(path));
   const temp = `${path}.${crypto.randomUUID()}.tmp`;
   await writeFile(
@@ -56,4 +56,5 @@ export const saveRelaySettings = async (settings: RelaySettings) => {
   await chmod(path, 0o600);
 };
 
-export const resetRelaySettings = () => saveRelaySettings(defaultSettings());
+export const resetRelaySettings = (paths: RelayPathsShape) =>
+  saveRelaySettings(paths, defaultSettings());

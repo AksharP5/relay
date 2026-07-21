@@ -108,6 +108,7 @@ export class AppServerConnection {
     args: ReadonlyArray<string>,
     cwd: string,
     timeoutMs: number,
+    dataRoot: string,
   ) {
     const child = Bun.spawn([command, ...args], {
       cwd,
@@ -117,7 +118,7 @@ export class AppServerConnection {
       stderr: "pipe",
       detached: process.platform !== "win32",
     });
-    await trackManagedProcess(child, "codex-app-server");
+    await trackManagedProcess(dataRoot, child, "codex-app-server");
     const connection = new AppServerConnection(child);
     try {
       await connection.#requestRaw(
@@ -136,16 +137,23 @@ export class AppServerConnection {
     }
   }
 
-  static start(command: string, cwd: string, timeoutMs: number) {
-    return AppServerConnection.#start(command, ["app-server", "--stdio"], cwd, timeoutMs);
+  static start(command: string, cwd: string, timeoutMs: number, dataRoot: string) {
+    return AppServerConnection.#start(command, ["app-server", "--stdio"], cwd, timeoutMs, dataRoot);
   }
 
-  static connectSocket(command: string, cwd: string, socketPath: string, timeoutMs: number) {
+  static connectSocket(
+    command: string,
+    cwd: string,
+    socketPath: string,
+    timeoutMs: number,
+    dataRoot: string,
+  ) {
     return AppServerConnection.#start(
       command,
       ["app-server", "proxy", "--sock", socketPath],
       cwd,
       timeoutMs,
+      dataRoot,
     );
   }
 
@@ -446,9 +454,10 @@ const waitForCommand = (
 export const runCodexCommand = async (
   executable: string,
   input: CodexCommandInput,
+  dataRoot: string,
 ): Promise<CodexCommandResult> => {
   const timeoutMs = input.timeoutMs ?? 30 * 60 * 1_000;
-  const connection = await AppServerConnection.start(executable, input.cwd, timeoutMs);
+  const connection = await AppServerConnection.start(executable, input.cwd, timeoutMs, dataRoot);
   try {
     const threadResult = input.sessionId
       ? await connection.request(

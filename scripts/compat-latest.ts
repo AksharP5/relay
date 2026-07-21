@@ -91,7 +91,7 @@ const isolatedCodexHome = join(artifacts, "codex-home");
 await mkdir(isolatedCodexHome, { recursive: true, mode: 0o700 });
 Bun.env.CODEX_HOME = isolatedCodexHome;
 
-const codexBackend = await CodexNativeBackend.start(codex, process.cwd());
+const codexBackend = await CodexNativeBackend.start(codex, process.cwd(), artifacts);
 let codexSessionId: string | undefined;
 try {
   const empty = await codexBackend.prepareSession({ handoff: [] });
@@ -119,7 +119,7 @@ try {
 }
 
 if (!codexSessionId) throw new Error("Codex compatibility session was not created");
-const resumedCodex = await CodexNativeBackend.start(codex, process.cwd());
+const resumedCodex = await CodexNativeBackend.start(codex, process.cwd(), artifacts);
 try {
   if ((await resumedCodex.ensureSession({ sessionId: codexSessionId })) !== codexSessionId) {
     throw new Error("Codex changed the resumed session id");
@@ -149,7 +149,7 @@ requireText(
 requireText(openCodeServeHelp, ["--hostname", "--port"], "OpenCode serve help");
 requireText(openCodeAttachHelp, ["--dir", "--session", "--password"], "OpenCode attach help");
 
-const server = await startOpenCodeServer(opencode, process.cwd());
+const server = await startOpenCodeServer(opencode, process.cwd(), artifacts);
 try {
   const url = (path: string) => {
     const value = new URL(path, server.baseUrl);
@@ -214,7 +214,7 @@ try {
   await server.close();
 }
 
-const openCodeBackend = await OpenCodeNativeBackend.start(opencode, process.cwd());
+const openCodeBackend = await OpenCodeNativeBackend.start(opencode, process.cwd(), artifacts);
 let openCodeProbeSessionId: string | undefined;
 try {
   const coldCommand = openCodeBackend.command();

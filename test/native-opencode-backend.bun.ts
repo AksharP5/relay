@@ -276,7 +276,7 @@ describe("OpenCode native backend", () => {
     const marker = join(directory, "attempts");
     const previousMarker = Bun.env.RELAY_TEST_RECOVERY_FILE;
     Bun.env.RELAY_TEST_RECOVERY_FILE = marker;
-    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), directory);
     try {
       await expect(backend.read("ses_recover")).resolves.toEqual({
         turns: [],
@@ -295,7 +295,7 @@ describe("OpenCode native backend", () => {
     const marker = join(directory, "attempts");
     const previousMarker = Bun.env.RELAY_TEST_RECOVERY_FILE;
     Bun.env.RELAY_TEST_RECOVERY_FILE = marker;
-    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), directory);
     try {
       await expect(backend.read("ses_missing")).rejects.toMatchObject({
         name: "NativeSessionUnavailable",
@@ -311,7 +311,8 @@ describe("OpenCode native backend", () => {
   });
 
   it("creates authenticated sessions and returns the native attach command", async () => {
-    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-live-root-"));
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), directory);
     try {
       const coldCommand = backend.command();
       expect(coldCommand.args).toContain("attach");
@@ -476,11 +477,13 @@ describe("OpenCode native backend", () => {
       expect(await backend.resolveSession(sessionId, true)).toBe(secondReconnectedSession.id);
     } finally {
       await backend.close();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
   it("rejects valid JSON with the wrong native OpenCode response shape", async () => {
-    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-invalid-shape-"));
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), directory);
     try {
       await expect(backend.ensureSession({ title: "invalid-shape" })).rejects.toMatchObject({
         _tag: "OpenCodeProtocolError",
@@ -500,11 +503,13 @@ describe("OpenCode native backend", () => {
       });
     } finally {
       await backend.close();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
   it("rejects native OpenCode responses with invalid consumed fields", async () => {
-    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-invalid-fields-"));
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), directory);
     try {
       await expect(backend.ensureSession({ title: "invalid-fields" })).rejects.toMatchObject({
         _tag: "OpenCodeProtocolError",
@@ -524,6 +529,7 @@ describe("OpenCode native backend", () => {
       });
     } finally {
       await backend.close();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });

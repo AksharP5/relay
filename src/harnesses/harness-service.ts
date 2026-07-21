@@ -11,6 +11,7 @@ import type {
 } from "../domain.ts";
 import { HarnessError, HarnessUnavailable } from "../errors.ts";
 import { buildHandoff, composePrompt } from "../handoff.ts";
+import { RelayPaths } from "../services/data-root.ts";
 import { ProcessRunner } from "../services/process-runner.ts";
 import { runCodexCommand } from "./codex-app-server.ts";
 import {
@@ -141,9 +142,10 @@ export class HarnessService extends Context.Service<
     ) => Effect.Effect<HarnessControlResult, HarnessUnavailable | HarnessError>;
   }
 >()("@relay/HarnessService") {
-  static readonly layer = Layer.effect(
+  static readonly configuredLayer = Layer.effect(
     HarnessService,
     Effect.gen(function* () {
+      const paths = yield* RelayPaths;
       const runner = yield* ProcessRunner;
 
       const status = Effect.fn("HarnessService.status")((harness: Harness) =>
@@ -220,7 +222,7 @@ export class HarnessService extends Context.Service<
             let nativeCommands = harness === "codex" ? codexCommands : opencodeBuiltins;
             if (harness === "opencode") {
               const discovered = yield* Effect.tryPromise({
-                try: () => discoverOpenCodeCommands(command, cwd),
+                try: () => discoverOpenCodeCommands(command, cwd, paths.root),
                 catch: () => undefined,
               }).pipe(Effect.orElseSucceed(() => undefined));
               if (discovered) nativeCommands = [...nativeCommands, ...discovered];
@@ -257,19 +259,23 @@ export class HarnessService extends Context.Service<
           if (harness === "codex" && (input.command === "compact" || input.command === "review")) {
             return yield* Effect.tryPromise({
               try: () =>
-                runCodexCommand(command, {
-                  command: input.command as "compact" | "review",
-                  cwd: input.cwd,
-                  arguments: nativePrompt,
-                  ...(input.handoff.length || input.handoffOmittedMessages
-                    ? {
-                        handoffText: buildHandoff(input.handoff, input.handoffOmittedMessages),
-                      }
-                    : {}),
-                  ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-                  ...(input.model ? { model: input.model } : {}),
-                  ...(input.onProgress ? { onProgress: input.onProgress } : {}),
-                }),
+                runCodexCommand(
+                  command,
+                  {
+                    command: input.command as "compact" | "review",
+                    cwd: input.cwd,
+                    arguments: nativePrompt,
+                    ...(input.handoff.length || input.handoffOmittedMessages
+                      ? {
+                          handoffText: buildHandoff(input.handoff, input.handoffOmittedMessages),
+                        }
+                      : {}),
+                    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+                    ...(input.model ? { model: input.model } : {}),
+                    ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+                  },
+                  paths.root,
+                ),
               catch: (cause) =>
                 new HarnessError({
                   harness,
@@ -283,18 +289,22 @@ export class HarnessService extends Context.Service<
           if (harness === "opencode" && input.command) {
             return yield* Effect.tryPromise({
               try: () =>
-                runOpenCodeCommand(command, {
-                  cwd: input.cwd,
-                  command: input.command!,
-                  arguments: nativePrompt,
-                  ...(input.handoff.length || input.handoffOmittedMessages
-                    ? {
-                        handoffText: buildHandoff(input.handoff, input.handoffOmittedMessages),
-                      }
-                    : {}),
-                  ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-                  ...(input.model ? { model: input.model } : {}),
-                }),
+                runOpenCodeCommand(
+                  command,
+                  {
+                    cwd: input.cwd,
+                    command: input.command!,
+                    arguments: nativePrompt,
+                    ...(input.handoff.length || input.handoffOmittedMessages
+                      ? {
+                          handoffText: buildHandoff(input.handoff, input.handoffOmittedMessages),
+                        }
+                      : {}),
+                    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+                    ...(input.model ? { model: input.model } : {}),
+                  },
+                  paths.root,
+                ),
               catch: (cause) =>
                 new HarnessError({
                   harness,
@@ -451,13 +461,17 @@ export class HarnessService extends Context.Service<
               }
               const result = yield* Effect.tryPromise({
                 try: () =>
-                  runCodexCommand(command, {
-                    command: "compact",
-                    cwd: input.cwd,
-                    sessionId: input.sessionId,
-                    arguments: "",
-                    ...(input.model ? { model: input.model } : {}),
-                  }),
+                  runCodexCommand(
+                    command,
+                    {
+                      command: "compact",
+                      cwd: input.cwd,
+                      sessionId: input.sessionId,
+                      arguments: "",
+                      ...(input.model ? { model: input.model } : {}),
+                    },
+                    paths.root,
+                  ),
                 catch: (cause) =>
                   new HarnessError({
                     harness,
@@ -467,7 +481,7 @@ export class HarnessService extends Context.Service<
               return { message: result.text };
             }
             const message = yield* Effect.tryPromise({
-              try: () => runOpenCodeControl(command, input),
+              try: () => runOpenCodeControl(command, input, paths.root),
               catch: (cause) =>
                 new HarnessError({
                   harness,
@@ -481,4 +495,6 @@ export class HarnessService extends Context.Service<
       return { run, status, capabilities, control };
     }),
   );
+
+  static readonly layer = HarnessService.configuredLayer.pipe(Layer.provide(RelayPaths.layer));
 }
