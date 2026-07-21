@@ -63,6 +63,8 @@ export interface NativePtyOptions {
   readonly handoffInputLimitBytes?: number;
   /** Maximum queued input or output retained under PTY backpressure. */
   readonly ioQueueLimitBytes?: number;
+  /** Notify the owner after the child PTY is registered and ready to accept input. */
+  readonly onReady?: () => void;
   /** Snapshot native state immediately before a real Enter is forwarded. */
   readonly onSubmitObserved?: () => void | Promise<void>;
   /** Return false to leave the native TUI running (for example, during an active turn). */
@@ -503,6 +505,7 @@ export const runNativeTui = async (
     terminal = child.terminal;
     if (!terminal) throw new Error("Relay could not create a native pseudo-terminal");
     flushInput();
+    options.onReady?.();
     if (parentSignal || switchRequested || hostFailure) stopping = stopProcessTree(child);
 
     const exitCode = await child.exited;

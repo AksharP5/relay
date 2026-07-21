@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it } from "bun:test";
 
 import { NativeInputRouter } from "../src/native/input-router.ts";
-import { releaseNativeTuiInput, runNativeTui } from "../src/native/pty-host.ts";
+import { releaseNativeTuiInput, runNativeTui as runNativeTuiHost } from "../src/native/pty-host.ts";
 import { legacySwitchSequences, parseSwitchKey } from "../src/switch-key.ts";
 
 class TestInput extends EventEmitter {
@@ -63,6 +63,22 @@ class BlockedOutput extends TestOutput {
 }
 
 const running: Array<Promise<unknown>> = [];
+const runningResizeSources = new Set<EventEmitter>();
+
+const runNativeTui = (
+  command: Parameters<typeof runNativeTuiHost>[0],
+  io: NonNullable<Parameters<typeof runNativeTuiHost>[1]>,
+  options: NonNullable<Parameters<typeof runNativeTuiHost>[2]> = {},
+) => {
+  runningResizeSources.add(io.resizeSource);
+  return runNativeTuiHost(command, io, {
+    ...options,
+    onReady: () => {
+      options.onReady?.();
+      io.output.write("RELAY_HOST_READY");
+    },
+  });
+};
 
 const waitFor = async (
   predicate: () => boolean | Promise<boolean>,
@@ -77,9 +93,17 @@ const waitFor = async (
 };
 
 const waitForOutput = (output: TestOutput, expected: string, timeoutMs = 1_000) =>
-  waitFor(() => output.text().includes(expected), `native output: ${expected}`, timeoutMs);
+  waitFor(
+    () =>
+      output.text().includes(expected) &&
+      (expected !== "FAKE_NATIVE_READY:" || output.text().includes("RELAY_HOST_READY")),
+    `native output: ${expected}`,
+    timeoutMs,
+  );
 
 afterEach(async () => {
+  for (const resize of runningResizeSources) resize.emit("SIGTERM");
+  runningResizeSources.clear();
   await Promise.allSettled(running.splice(0));
 });
 
@@ -435,10 +459,7 @@ describe("native PTY host", () => {
     running.push(result);
 
     await waitForOutput(output, "FAKE_NATIVE_READY:");
-    await waitFor(
-      () => output.chunks.reduce((bytes, chunk) => bytes + chunk.length, 0) >= 4_096,
-      "bounded pre-exit output",
-    );
+    await waitForOutput(output, "FAKE_NATIVE_OUTPUT_READY");
     input.emit("data", Buffer.from([0x11]));
     expect(await result).toEqual({ reason: "switch", sessionIdHint: "ses_selected123" });
   });
@@ -873,18 +894,21 @@ describe("native PTY host", () => {
 
   it("terminates instead of accumulating unbounded output under backpressure", async () => {
     const input = new TestInput();
+    const output = new BlockedOutput();
     const result = runNativeTui(
       {
         executable: process.execPath,
         args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
         cwd: process.cwd(),
-        env: { FAKE_NATIVE_OUTPUT_BYTES: "32" },
+        env: { FAKE_NATIVE_OUTPUT_BYTES: "32", FAKE_NATIVE_OUTPUT_ON_INPUT: "1" },
       },
-      { input, output: new BlockedOutput(), resizeSource: new EventEmitter() },
+      { input, output, resizeSource: new EventEmitter() },
       { ioQueueLimitBytes: 8 },
     );
     running.push(result);
 
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
+    input.emit("data", Buffer.from("overflow"));
     await expect(result).rejects.toThrow("output backpressure exceeded");
     expect(input.isRaw).toBe(false);
     expect(input.listenerCount("data")).toBe(0);
