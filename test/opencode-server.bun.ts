@@ -17,6 +17,24 @@ const hangingExecutable = fileURLToPath(
 
 beforeAll(() => Promise.all([chmod(executable, 0o755), chmod(hangingExecutable, 0o755)]));
 
+const processIdentity = async (pid: number) => {
+  if (process.platform === "linux") {
+    const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => undefined);
+    const startTicks = stat
+      ?.slice(stat.lastIndexOf(") ") + 2)
+      .trim()
+      .split(/\s+/)[19];
+    return startTicks ? `linux:${startTicks}` : undefined;
+  }
+  const child = Bun.spawn(["/bin/ps", "-o", "lstart=", "-p", String(pid)], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const [output, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  return exitCode === 0 && output.trim() ? output.trim() : undefined;
+};
+
 describe("OpenCode command discovery", () => {
   it("cancels and terminates a server interrupted during startup", async () => {
     const directory = await mkdtemp(join(tmpdir(), "relay-opencode-abort-"));
@@ -34,17 +52,20 @@ describe("OpenCode command discovery", () => {
         if (pid === undefined) await Bun.sleep(5);
       }
       expect(pid).toBeNumber();
-      controller.abort();
-      await expect(starting).rejects.toHaveProperty("name", "AbortError");
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        try {
-          process.kill(pid!, 0);
-          await Bun.sleep(5);
-        } catch {
-          break;
-        }
+      let identity: string | undefined;
+      for (let attempt = 0; attempt < 100 && identity === undefined; attempt += 1) {
+        identity = await processIdentity(pid!);
+        if (identity === undefined) await Bun.sleep(5);
       }
-      expect(() => process.kill(pid!, 0)).toThrow();
+      expect(identity).toBeString();
+      const reason = new DOMException("test startup cancellation", "AbortError");
+      controller.abort(reason);
+      await expect(starting).rejects.toBe(reason);
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((await processIdentity(pid!)) !== identity) break;
+        await Bun.sleep(5);
+      }
+      expect(await processIdentity(pid!)).not.toBe(identity);
     } finally {
       if (previousPidPath === undefined) delete Bun.env.RELAY_TEST_PID_FILE;
       else Bun.env.RELAY_TEST_PID_FILE = previousPidPath;

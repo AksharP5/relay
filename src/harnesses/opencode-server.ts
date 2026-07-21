@@ -54,46 +54,48 @@ export const startOpenCodeServer = async (
       detached: process.platform !== "win32",
     },
   );
-  await trackManagedProcess(child, "opencode-server");
-  if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream)) {
-    await stopProcessTree(child);
-    throw new Error("OpenCode server output pipes are unavailable");
-  }
-
   let resolveUrl: (value: string) => void;
-  let rejectUrl: (cause: Error) => void;
+  let rejectUrl: (cause: unknown) => void;
   const serverUrl = new Promise<string>((resolve, reject) => {
     resolveUrl = resolve;
     rejectUrl = reject;
   });
-  const inspectLine = (line: string) => {
-    const match = line.match(/opencode server listening on (http:\/\/\S+)/i);
-    if (match?.[1]) resolveUrl(match[1]);
-  };
-  void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
-  void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectUrl!);
-  void child.exited.then((code) =>
-    rejectUrl!(new Error(`OpenCode server exited with code ${code}`)),
-  );
+  const abortReason = () =>
+    signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
+  const rejectStartup = (cause: unknown) => rejectUrl!(signal?.aborted ? abortReason() : cause);
   let terminating: Promise<void> | undefined;
   const terminate = () => (terminating ??= stopProcessTree(child));
-  let rejectAbort: (cause: unknown) => void;
-  const aborted = new Promise<never>((_resolve, reject) => (rejectAbort = reject));
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let tracked = false;
   const onAbort = () => {
-    void terminate();
-    rejectAbort(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
+    if (tracked) {
+      rejectStartup(abortReason());
+      void terminate();
+    }
   };
   signal?.addEventListener("abort", onAbort, { once: true });
 
   try {
+    await trackManagedProcess(child, "opencode-server");
+    tracked = true;
     signal?.throwIfAborted();
-    const baseUrl = await Promise.race([
-      serverUrl,
-      aborted,
-      Bun.sleep(15_000).then(() => {
-        throw new Error("Timed out starting OpenCode");
-      }),
-    ]);
+    if (!(child.stdout instanceof ReadableStream) || !(child.stderr instanceof ReadableStream))
+      throw new Error("OpenCode server output pipes are unavailable");
+
+    const inspectLine = (line: string) => {
+      const match = line.match(/opencode server listening on (http:\/\/\S+)/i);
+      if (match?.[1]) resolveUrl(match[1]);
+    };
+    void readStream(child.stdout, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectStartup);
+    void readStream(child.stderr, { onLine: inspectLine, lineLimit: 128_000 }).catch(rejectStartup);
+    void child.exited.then((code) =>
+      rejectStartup(new Error(`OpenCode server exited with code ${code}`)),
+    );
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error("Timed out starting OpenCode")), 15_000);
+    });
+    const baseUrl = await Promise.race([serverUrl, timedOut]);
+    signal?.throwIfAborted();
     return {
       baseUrl,
       password,
@@ -102,8 +104,9 @@ export const startOpenCodeServer = async (
     };
   } catch (cause) {
     await terminate();
-    throw cause;
+    throw signal?.aborted ? abortReason() : cause;
   } finally {
+    if (timeout) clearTimeout(timeout);
     signal?.removeEventListener("abort", onAbort);
   }
 };
