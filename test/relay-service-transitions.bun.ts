@@ -4,10 +4,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Harness, HarnessControlInput, HarnessTurnInput } from "../src/domain.ts";
-import { HarnessError } from "../src/errors.ts";
+import { HarnessError, type CliError, type StoreError, type ThreadBusy } from "../src/errors.ts";
 import { buildHandoff } from "../src/handoff.ts";
 import { HarnessService } from "../src/harnesses/harness-service.ts";
-import { RelayService } from "../src/services/relay-service.ts";
+import {
+  RelayService,
+  type RelayCurrentError,
+  type RelayHarnessError,
+  type RelayLookupError,
+  type RelayMutationError,
+} from "../src/services/relay-service.ts";
 import { ThreadStore } from "../src/services/thread-store.ts";
 
 let directory: string | undefined;
@@ -17,6 +23,25 @@ const makeLayer = (harnesses: typeof HarnessService.Service) =>
     Layer.provide(Layer.mergeAll(ThreadStore.layer, Layer.succeed(HarnessService, harnesses))),
   );
 
+type ErrorOf<T> = T extends Effect.Effect<unknown, infer E, unknown> ? E : never;
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
+    ? true
+    : false;
+type Expect<Value extends true> = Value;
+type Service = typeof RelayService.Service;
+type PublicErrorAssertions = [
+  Expect<Equal<ErrorOf<ReturnType<Service["newThread"]>>, StoreError>>,
+  Expect<Equal<ErrorOf<ReturnType<Service["list"]>>, StoreError>>,
+  Expect<Equal<ErrorOf<ReturnType<Service["current"]>>, RelayCurrentError>>,
+  Expect<Equal<ErrorOf<ReturnType<Service["capabilities"]>>, RelayHarnessError>>,
+  Expect<Equal<ErrorOf<ReturnType<Service["nativeDelta"]>>, RelayLookupError | CliError>>,
+  Expect<Equal<ErrorOf<ReturnType<Service["ask"]>>, RelayMutationError | RelayHarnessError>>,
+  Expect<Equal<ErrorOf<ReturnType<Service["acquireNativeLease"]>>, RelayLookupError | ThreadBusy>>,
+];
+
+const publicErrorAssertions: PublicErrorAssertions = [true, true, true, true, true, true, true];
+
 afterEach(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
   directory = undefined;
@@ -24,6 +49,10 @@ afterEach(async () => {
 });
 
 describe("Relay session transitions", () => {
+  it("keeps public method errors narrower than the application-wide union", () => {
+    expect(publicErrorAssertions).toHaveLength(7);
+  });
+
   it("rejects a headless turn while the native task owner is active", async () => {
     directory = await mkdtemp(join(tmpdir(), "relay-run-lease-"));
     process.env.RELAY_DATA_DIR = directory;

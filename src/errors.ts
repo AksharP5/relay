@@ -38,7 +38,7 @@ export class HarnessError extends Schema.TaggedErrorClass<HarnessError>()("Harne
 }) {}
 
 export class ProcessError extends Schema.TaggedErrorClass<ProcessError>()("ProcessError", {
-  operation: Schema.String,
+  operation: Schema.Literal("run"),
   command: Schema.String,
   message: Schema.String,
   cause: Schema.optional(Schema.Defect),
