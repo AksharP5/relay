@@ -5,8 +5,13 @@ import { join } from "node:path";
 
 const directory = await mkdtemp(join(tmpdir(), "relay-process-registry-"));
 Bun.env.RELAY_DATA_DIR = directory;
-const { cleanupOrphanedProcesses, trackManagedProcess } =
-  await import("../src/services/process-registry.ts");
+const {
+  cleanupOrphanedProcesses,
+  ProcessRecoveryError,
+  ProcessRecoveryFailure,
+  trackManagedProcess,
+} = await import("../src/services/process-registry.ts");
+const { renderProcessRecoveryError } = await import("../src/cli.ts");
 
 const waitFor = async (predicate: () => Promise<boolean>, timeoutMs = 3_000) => {
   const deadline = Date.now() + timeoutMs;
@@ -32,6 +37,150 @@ afterAll(async () => {
 });
 
 describe("managed process recovery", () => {
+  it("renders process and process-group identities with safe scope-specific remediation", () => {
+    const processFailure = ProcessRecoveryFailure.make({
+      claimFile: "reader.json",
+      claimToken: "reader-token",
+      kind: "terminal-reader",
+      scope: "process",
+      pid: 4242,
+      startedAt: "process-start",
+    });
+    const groupFailure = ProcessRecoveryFailure.make({
+      claimFile: "command.json",
+      claimToken: "command-token",
+      kind: "command",
+      scope: "group",
+      pid: 5252,
+      pgid: 5353,
+      startedAt: "group-leader-start",
+    });
+
+    const output = renderProcessRecoveryError(
+      new ProcessRecoveryError({ failures: [processFailure, groupFailure] }),
+    );
+
+    expect(output).toContain('Claim file "reader.json" · token "reader-token"');
+    expect(output).toContain('Kind "terminal-reader" · scope process');
+    expect(output).toContain('Identity PID 4242, start "process-start"');
+    expect(output).toContain("Never signal a reused PID.");
+    expect(output).toContain('Claim file "command.json" · token "command-token"');
+    expect(output).toContain('Kind "command" · scope group');
+    expect(output).toContain('Identity leader PID 5252, PGID 5353, start "group-leader-start"');
+    expect(output).toContain("Never signal a reused process group.");
+    expect(output.match(/Relay kept this claim for a later retry\./g)).toHaveLength(2);
+  });
+
+  it("returns actionable identity and retains a failed process claim for retry", async () => {
+    const processes = join(directory, "processes");
+    await mkdir(processes, { recursive: true, mode: 0o700 });
+    const claimFile = "blocked-process.json";
+    const claimPath = join(processes, claimFile);
+    await writeFile(
+      claimPath,
+      `${JSON.stringify({
+        version: 1,
+        token: "blocked-process",
+        owner: { pid: 9001, startedAt: "former-owner" },
+        child: { pid: 4242, pgid: 4343, startedAt: "fixture-start" },
+        scope: "process",
+        kind: "terminal-reader",
+        createdAt: "2026-07-20T00:00:00.000Z",
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const signals: Array<readonly [number, NodeJS.Signals]> = [];
+    const result = await cleanupOrphanedProcesses({
+      operations: {
+        processSnapshot: async (pid) =>
+          pid === 4242 ? { pgid: 4343, startedAt: "fixture-start" } : undefined,
+        signalGroup: () => {
+          throw new Error("process-scoped recovery must not signal a group");
+        },
+        signalProcess: (pid, signal) => {
+          signals.push([pid, signal]);
+        },
+        groupIsAlive: () => false,
+        waitForGroupExit: async () => false,
+        waitForProcessExit: async () => false,
+      },
+    });
+
+    expect(signals).toEqual([
+      [4242, "SIGTERM"],
+      [4242, "SIGKILL"],
+    ]);
+    expect(result.failed).toBe(1);
+    expect(result.failures).toEqual([
+      {
+        claimFile,
+        claimToken: "blocked-process",
+        kind: "terminal-reader",
+        scope: "process",
+        pid: 4242,
+        startedAt: "fixture-start",
+      },
+    ]);
+    expect(await readFile(claimPath, "utf8")).toContain('"token":"blocked-process"');
+    await rm(claimPath);
+  });
+
+  it("preserves PGID details when a process-group claim cannot be recovered", async () => {
+    const processes = join(directory, "processes");
+    await mkdir(processes, { recursive: true, mode: 0o700 });
+    const claimFile = "blocked-group.json";
+    const claimPath = join(processes, claimFile);
+    await writeFile(
+      claimPath,
+      `${JSON.stringify({
+        version: 1,
+        token: "blocked-group",
+        owner: { pid: 9001, startedAt: "former-owner" },
+        child: { pid: 5252, pgid: 5353, startedAt: "group-leader-start" },
+        scope: "group",
+        kind: "command",
+        createdAt: "2026-07-20T00:00:00.000Z",
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const signals: Array<readonly [number, NodeJS.Signals]> = [];
+    const result = await cleanupOrphanedProcesses({
+      operations: {
+        processSnapshot: async (pid) =>
+          pid === 5252 ? { pgid: 5353, startedAt: "group-leader-start" } : undefined,
+        signalGroup: (pgid, signal) => {
+          signals.push([pgid, signal]);
+        },
+        signalProcess: () => {
+          throw new Error("group-scoped recovery must not signal one process");
+        },
+        groupIsAlive: () => false,
+        waitForGroupExit: async () => false,
+        waitForProcessExit: async () => false,
+      },
+    });
+
+    expect(signals).toEqual([
+      [5353, "SIGTERM"],
+      [5353, "SIGKILL"],
+    ]);
+    expect(result.failures).toEqual([
+      {
+        claimFile,
+        claimToken: "blocked-group",
+        kind: "command",
+        scope: "group",
+        pid: 5252,
+        pgid: 5353,
+        startedAt: "group-leader-start",
+      },
+    ]);
+    expect(await readFile(claimPath, "utf8")).toContain('"token":"blocked-group"');
+    await rm(claimPath);
+  });
+
   it("kills a registered process group after its Relay owner is SIGKILLed", async () => {
     const ready = join(directory, "orphan-ready.json");
     const marker = join(directory, "orphan-marker.txt");
