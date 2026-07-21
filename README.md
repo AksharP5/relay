@@ -132,9 +132,12 @@ relay
 relay .
 relay ../another-project
 relay /absolute/path/to/project
+relay -- native
 ```
 
-All four forms select the same directory-bound workspace behavior. Relative paths resolve from the current shell directory. Relay uses the most recent task bound to the selected directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
+These forms select the same directory-bound workspace behavior. Relative paths resolve from the current shell directory. Relay uses the most recent task bound to the selected directory or creates a new local task. It opens that task’s active harness—Codex by default for a new task.
+
+If a directory name matches a Relay command, place `--` before exactly one directory operand. For example, `relay -- native` opens the `native` directory instead of running `relay native`. A path such as `relay ./native` continues to work without the delimiter.
 
 | Input                                    | Owner      | Action                                         |
 | ---------------------------------------- | ---------- | ---------------------------------------------- |
@@ -183,6 +186,8 @@ Selecting an existing session is an intentional context reset for the current Re
 The native TUI is the primary interface. Relay also keeps a headless surface for scripts and diagnostics:
 
 ```bash
+relay help # aliases: --help, -h
+relay version # aliases: --version, -v
 relay doctor
 relay config
 relay config set switch-key ctrl+g
