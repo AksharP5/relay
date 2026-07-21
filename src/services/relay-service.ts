@@ -299,7 +299,8 @@ export class RelayService extends Context.Service<
           const matches = threads.filter(
             (thread) => thread.id === threadId || thread.id.startsWith(threadId),
           );
-          if (matches.length === 0) {
+          const [match] = matches;
+          if (!match) {
             return yield* new ThreadNotFound({
               threadId,
               message: `Relay task ${threadId} was not found`,
@@ -310,7 +311,7 @@ export class RelayService extends Context.Service<
               message: `Task id ${threadId} is ambiguous; provide more characters`,
             });
           }
-          return matches[0]!;
+          return match;
         }),
       );
 

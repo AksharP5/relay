@@ -66,8 +66,8 @@ export interface NativeRelayController {
   ) => Promise<RelayThread>;
 }
 
-export const makeNativeRelayController = (
-  runtime: ManagedRuntime.ManagedRuntime<RelayService, never>,
+export const makeNativeRelayController = <R, E>(
+  runtime: ManagedRuntime.ManagedRuntime<RelayService | R, E>,
 ): NativeRelayController => {
   const run = <A>(effect: Effect.Effect<A, RelayError, RelayService>) => runtime.runPromise(effect);
 

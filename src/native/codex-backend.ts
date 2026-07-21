@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { Schema } from "effect";
 import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { AppServerError, WebSocketAppServerConnection } from "../harnesses/codex-app-server.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
@@ -11,9 +12,11 @@ import { NativeSessionUnavailable } from "./errors.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
 type JsonObject = Record<string, unknown>;
+const JsonObject = Schema.Record(Schema.String, Schema.Unknown);
 
+const isJsonObject = Schema.is(JsonObject);
 const asObject = (value: unknown): JsonObject | undefined =>
-  value !== null && typeof value === "object" ? (value as JsonObject) : undefined;
+  isJsonObject(value) ? value : undefined;
 
 const reservePort = () =>
   new Promise<number>((resolve, reject) => {
@@ -212,7 +215,7 @@ export class CodexNativeBackend {
     this.#cwd = input.cwd;
   }
 
-  static async start(executable: string, cwd: string, signal?: AbortSignal) {
+  static async start(executable: string, cwd: string, dataRoot: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const runtimeDirectory = await mkdtemp(join(tmpdir(), "relay-codex-"));
     await chmod(runtimeDirectory, 0o700);
@@ -240,7 +243,7 @@ export class CodexNativeBackend {
         detached: process.platform !== "win32",
       },
     );
-    await trackManagedProcess(child, "codex-native-backend");
+    await trackManagedProcess(dataRoot, child, "codex-native-backend");
     let stderr = "";
     if (child.stdout instanceof ReadableStream) void readStream(child.stdout, { limit: 128_000 });
     if (child.stderr instanceof ReadableStream) {

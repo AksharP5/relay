@@ -1,15 +1,27 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "bun:test";
 
 import type { Harness, NativeTranscriptTurn, RelayMessage, RelayThread } from "../src/domain.ts";
 import type { NativeRelayController } from "../src/native/controller.ts";
 import { NativeSessionUnavailable } from "../src/native/errors.ts";
 import {
-  launchNativeRelay,
+  launchNativeRelay as launchNativeRelayWithRoot,
   nativeSubmitProtectionMs,
   openCodeSessionIdFromExit,
   type NativeBackend,
 } from "../src/native/relay-host.ts";
+
+const dataRoot = await mkdtemp(join(tmpdir(), "relay-native-host-root-"));
+const launchNativeRelay = (
+  controller: Parameters<typeof launchNativeRelayWithRoot>[0],
+  overrides: Parameters<typeof launchNativeRelayWithRoot>[1] = {},
+  options: Omit<Parameters<typeof launchNativeRelayWithRoot>[2], "dataRoot"> = {},
+) => launchNativeRelayWithRoot(controller, overrides, { ...options, dataRoot });
+
+afterAll(() => rm(dataRoot, { recursive: true, force: true }));
 
 const now = "2026-07-13T00:00:00.000Z";
 

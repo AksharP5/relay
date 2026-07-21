@@ -14,6 +14,18 @@ const executable = fileURLToPath(new URL("./fixtures/fake-opencode-server.ts", i
 
 beforeAll(() => chmod(executable, 0o755));
 
+const waitFor = async (
+  predicate: () => boolean | Promise<boolean>,
+  label: string,
+  timeoutMs = 2_000,
+) => {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${label}`);
+    await Bun.sleep(5);
+  }
+};
+
 describe("OpenCode native backend", () => {
   it("finds the newest completed cursor without treating a streaming turn as complete", () => {
     expect(
@@ -264,7 +276,7 @@ describe("OpenCode native backend", () => {
     const marker = join(directory, "attempts");
     const previousMarker = Bun.env.RELAY_TEST_RECOVERY_FILE;
     Bun.env.RELAY_TEST_RECOVERY_FILE = marker;
-    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), directory);
     try {
       await expect(backend.read("ses_recover")).resolves.toEqual({
         turns: [],
@@ -283,7 +295,7 @@ describe("OpenCode native backend", () => {
     const marker = join(directory, "attempts");
     const previousMarker = Bun.env.RELAY_TEST_RECOVERY_FILE;
     Bun.env.RELAY_TEST_RECOVERY_FILE = marker;
-    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), directory);
     try {
       await expect(backend.read("ses_missing")).rejects.toMatchObject({
         name: "NativeSessionUnavailable",
@@ -299,7 +311,8 @@ describe("OpenCode native backend", () => {
   });
 
   it("creates authenticated sessions and returns the native attach command", async () => {
-    const backend = await OpenCodeNativeBackend.start(executable, process.cwd());
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-live-root-"));
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), directory);
     try {
       const coldCommand = backend.command();
       expect(coldCommand.args).toContain("attach");
@@ -368,32 +381,47 @@ describe("OpenCode native backend", () => {
       });
       expect(nativeSession.ok).toBe(true);
       const created = (await nativeSession.json()) as { id: string };
-      await Bun.sleep(10);
+      await waitFor(
+        async () => (await backend.resolveSession()) === created.id,
+        "created session observation",
+      );
       expect(await backend.resolveSession()).toBe(created.id);
 
+      const childEventCount = backend.observerState().events;
       const childSession = await fetch(new URL(`/session?directory=${process.cwd()}`, baseUrl), {
         method: "POST",
         headers,
         body: JSON.stringify({ parentID: created.id }),
       });
       expect(childSession.ok).toBe(true);
-      await Bun.sleep(10);
+      await waitFor(
+        () => backend.observerState().events > childEventCount,
+        "child session observation",
+      );
       expect(await backend.resolveSession(sessionId)).toBe(created.id);
 
+      const messageIdEventCount = backend.observerState().events;
       const messageIdOnlyEvent = await fetch(new URL("/test/message-id-event", baseUrl), {
         method: "POST",
         headers,
       });
       expect(messageIdOnlyEvent.ok).toBe(true);
-      await Bun.sleep(10);
+      await waitFor(
+        () => backend.observerState().events > messageIdEventCount,
+        "message-id event observation",
+      );
       expect(await backend.resolveSession(sessionId)).toBe(created.id);
 
+      const messageEventCount = backend.observerState().events;
       const messageOnlyEvent = await fetch(new URL("/test/message-event", baseUrl), {
         method: "POST",
         headers,
       });
       expect(messageOnlyEvent.ok).toBe(true);
-      await Bun.sleep(10);
+      await waitFor(
+        () => backend.observerState().events > messageEventCount,
+        "message event observation",
+      );
       expect(await backend.resolveSession(sessionId)).toBe(created.id);
 
       const closeEvents = await fetch(new URL("/test/close-events", baseUrl), {
@@ -407,15 +435,21 @@ describe("OpenCode native backend", () => {
         body: JSON.stringify({}),
       });
       expect(missedDuringGap.ok).toBe(true);
-      await Bun.sleep(150);
+      await waitFor(() => backend.observerState().gap, "observer gap");
       await expect(backend.resolveSession(sessionId, true)).rejects.toThrow("reconnecting");
+      await waitFor(() => backend.observerState().healthy, "event observer reconnect");
       const afterReconnect = await fetch(new URL(`/session?directory=${process.cwd()}`, baseUrl), {
         method: "POST",
         headers,
         body: JSON.stringify({}),
       });
       const reconnectedSession = (await afterReconnect.json()) as { id: string };
-      await Bun.sleep(50);
+      await waitFor(
+        async () =>
+          (await backend.resolveSession(sessionId, true).catch(() => undefined)) ===
+          reconnectedSession.id,
+        "post-reconnect session observation",
+      );
       expect(await backend.resolveSession(sessionId, true)).toBe(reconnectedSession.id);
 
       const closeAgain = await fetch(new URL("/test/close-events", baseUrl), {
@@ -423,7 +457,8 @@ describe("OpenCode native backend", () => {
         headers,
       });
       expect(closeAgain.ok).toBe(true);
-      await Bun.sleep(250);
+      await waitFor(() => backend.observerState().gap, "second observer gap");
+      await waitFor(() => backend.observerState().healthy, "second event observer reconnect");
       const afterSecondReconnect = await fetch(
         new URL(`/session?directory=${process.cwd()}`, baseUrl),
         {
@@ -433,10 +468,68 @@ describe("OpenCode native backend", () => {
         },
       );
       const secondReconnectedSession = (await afterSecondReconnect.json()) as { id: string };
-      await Bun.sleep(50);
+      await waitFor(
+        async () =>
+          (await backend.resolveSession(sessionId, true).catch(() => undefined)) ===
+          secondReconnectedSession.id,
+        "second post-reconnect session observation",
+      );
       expect(await backend.resolveSession(sessionId, true)).toBe(secondReconnectedSession.id);
     } finally {
       await backend.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects valid JSON with the wrong native OpenCode response shape", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-invalid-shape-"));
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), directory);
+    try {
+      await expect(backend.ensureSession({ title: "invalid-shape" })).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "created session",
+      });
+      await expect(backend.completedCursor("ses_invalid_history")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "recent history",
+      });
+      await expect(backend.read("ses_invalid_history")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "history page",
+      });
+      await expect(backend.sessionCwd("ses_invalid_session")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "session lookup",
+      });
+    } finally {
+      await backend.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects native OpenCode responses with invalid consumed fields", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "relay-opencode-invalid-fields-"));
+    const backend = await OpenCodeNativeBackend.start(executable, process.cwd(), directory);
+    try {
+      await expect(backend.ensureSession({ title: "invalid-fields" })).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "created session",
+      });
+      await expect(backend.completedCursor("ses_invalid_history_fields")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "recent history",
+      });
+      await expect(backend.read("ses_invalid_history_fields")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "history page",
+      });
+      await expect(backend.sessionCwd("ses_invalid_session_fields")).rejects.toMatchObject({
+        _tag: "OpenCodeProtocolError",
+        operation: "session lookup",
+      });
+    } finally {
+      await backend.close();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });

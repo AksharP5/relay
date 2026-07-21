@@ -1,9 +1,34 @@
 import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 
 import { NativeInputRouter } from "../src/native/input-router.ts";
-import { releaseNativeTuiInput, runNativeTui } from "../src/native/pty-host.ts";
+import {
+  releaseNativeTuiInput,
+  runNativeTui as runNativeTuiWithRoot,
+} from "../src/native/pty-host.ts";
 import { legacySwitchSequences, parseSwitchKey } from "../src/switch-key.ts";
+
+const dataRoot = await mkdtemp(join(tmpdir(), "relay-native-pty-root-"));
+const runNativeTui = (
+  command: Parameters<typeof runNativeTuiWithRoot>[0],
+  io: NonNullable<Parameters<typeof runNativeTuiWithRoot>[1]>,
+  options: Omit<Parameters<typeof runNativeTuiWithRoot>[2], "dataRoot"> = {},
+) => {
+  runningResizeSources.add(io.resizeSource);
+  return runNativeTuiWithRoot(command, io, {
+    ...options,
+    dataRoot,
+    onReady: () => {
+      options.onReady?.();
+      io.output.write("RELAY_HOST_READY");
+    },
+  });
+};
+
+afterAll(() => rm(dataRoot, { recursive: true, force: true }));
 
 class TestInput extends EventEmitter {
   isTTY = true;
@@ -63,16 +88,32 @@ class BlockedOutput extends TestOutput {
 }
 
 const running: Array<Promise<unknown>> = [];
+const runningResizeSources = new Set<EventEmitter>();
 
-const waitForOutput = async (output: TestOutput, expected: string, timeoutMs = 1_000) => {
+const waitFor = async (
+  predicate: () => boolean | Promise<boolean>,
+  label: string,
+  timeoutMs = 1_000,
+) => {
   const deadline = Date.now() + timeoutMs;
-  while (!output.text().includes(expected)) {
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for native output: ${expected}`);
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${label}`);
     await Bun.sleep(5);
   }
 };
 
+const waitForOutput = (output: TestOutput, expected: string, timeoutMs = 1_000) =>
+  waitFor(
+    () =>
+      output.text().includes(expected) &&
+      (expected !== "FAKE_NATIVE_READY:" || output.text().includes("RELAY_HOST_READY")),
+    `native output: ${expected}`,
+    timeoutMs,
+  );
+
 afterEach(async () => {
+  for (const resize of runningResizeSources) resize.emit("SIGTERM");
+  runningResizeSources.clear();
   await Promise.allSettled(running.splice(0));
 });
 
@@ -389,9 +430,9 @@ describe("native PTY host", () => {
     );
     running.push(result);
 
-    await Bun.sleep(50);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.from("/resume"));
-    await Bun.sleep(50);
+    await waitForOutput(output, `INPUT:${Buffer.from("/resume").toString("hex")}`);
     expect(output.text()).toContain("\u001b[2J\u001b[HFAKE_NATIVE_READY:");
     expect(output.text()).toContain(`INPUT:${Buffer.from("/resume").toString("hex")}`);
 
@@ -406,6 +447,7 @@ describe("native PTY host", () => {
 
   it("extracts a session hint from bounded graceful-exit output", async () => {
     const input = new TestInput();
+    const output = new TestOutput();
     const result = runNativeTui(
       {
         executable: process.execPath,
@@ -416,7 +458,7 @@ describe("native PTY host", () => {
           FAKE_NATIVE_TRAILING_OUTPUT: "\nContinue opencode -s ses_selected123\n",
         },
       },
-      { input, output: new TestOutput(), resizeSource: new EventEmitter() },
+      { input, output, resizeSource: new EventEmitter() },
       {
         sessionIdHint: {
           maxBytes: 128,
@@ -426,7 +468,8 @@ describe("native PTY host", () => {
     );
     running.push(result);
 
-    await Bun.sleep(75);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
+    await waitForOutput(output, "FAKE_NATIVE_OUTPUT_READY");
     input.emit("data", Buffer.from([0x11]));
     expect(await result).toEqual({ reason: "switch", sessionIdHint: "ses_selected123" });
   });
@@ -451,7 +494,7 @@ describe("native PTY host", () => {
       { preserveInputOnSwitch: true },
     );
     running.push(first);
-    await Bun.sleep(50);
+    await waitForOutput(firstOutput, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.concat([Buffer.from([0x11]), Buffer.from("after-switch")]));
     expect(await first).toEqual({ reason: "switch" });
     expect(input.isRaw).toBe(true);
@@ -471,10 +514,9 @@ describe("native PTY host", () => {
       { preserveInputOnSwitch: true },
     );
     running.push(second);
-    await Bun.sleep(75);
-    expect(secondOutput.text()).toContain(
-      `INPUT:${Buffer.from("after-switch capability-reply").toString("hex")}`,
-    );
+    const bufferedInput = `INPUT:${Buffer.from("after-switch capability-reply").toString("hex")}`;
+    await waitForOutput(secondOutput, bufferedInput);
+    expect(secondOutput.text()).toContain(bufferedInput);
     secondResize.emit("SIGTERM");
     expect(await second).toEqual({ reason: "signal", signal: "SIGTERM" });
     expect(input.rawModes).toEqual([true, false]);
@@ -494,13 +536,14 @@ describe("native PTY host", () => {
       args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
       cwd: process.cwd(),
     };
+    const firstOutput = new TestOutput();
     const first = runNativeTui(
       command,
-      { input, output: new TestOutput(), resizeSource: resize },
+      { input, output: firstOutput, resizeSource: resize },
       { preserveInputOnSwitch: true },
     );
     running.push(first);
-    await Bun.sleep(50);
+    await waitForOutput(firstOutput, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.from("\u001b[17~"));
     expect(await first).toEqual({ reason: "switch" });
 
@@ -513,7 +556,7 @@ describe("native PTY host", () => {
       { preserveInputOnSwitch: true },
     );
     running.push(second);
-    await Bun.sleep(50);
+    await waitForOutput(secondOutput, "FAKE_NATIVE_READY:");
     expect(secondOutput.text()).not.toContain("INPUT:03");
     resize.emit("SIGTERM");
     expect(await second).toEqual({ reason: "signal", signal: "SIGTERM" });
@@ -527,13 +570,14 @@ describe("native PTY host", () => {
       args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
       cwd: process.cwd(),
     };
+    const firstOutput = new TestOutput();
     const first = runNativeTui(
       command,
-      { input, output: new TestOutput(), resizeSource: resize },
+      { input, output: firstOutput, resizeSource: resize },
       { preserveInputOnSwitch: true, handoffInputLimitBytes: 8 },
     );
     running.push(first);
-    await Bun.sleep(50);
+    await waitForOutput(firstOutput, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.from("\u001b[17~"));
     expect(await first).toEqual({ reason: "switch" });
     input.emit("data", Buffer.from("\u001b[200~0123456789"));
@@ -545,19 +589,20 @@ describe("native PTY host", () => {
       { preserveInputOnSwitch: true },
     );
     running.push(second);
-    await Bun.sleep(50);
+    await waitForOutput(secondOutput, "FAKE_NATIVE_READY:");
     expect(secondOutput.text()).not.toContain("INPUT:");
     expect(secondOutput.chunks.some((chunk) => chunk.includes(0x07))).toBe(true);
     input.emit("data", Buffer.from("\u001b[17~"));
     expect(await second).toEqual({ reason: "switch" });
 
+    const thirdOutput = new TestOutput();
     const third = runNativeTui(
       command,
-      { input, output: new TestOutput(), resizeSource: resize },
+      { input, output: thirdOutput, resizeSource: resize },
       { preserveInputOnSwitch: true },
     );
     running.push(third);
-    await Bun.sleep(50);
+    await waitForOutput(thirdOutput, "FAKE_NATIVE_READY:");
     resize.emit("SIGTERM");
     expect(await third).toEqual({ reason: "signal", signal: "SIGTERM" });
   });
@@ -565,17 +610,18 @@ describe("native PTY host", () => {
   it("can release an abandoned preserved custom input", async () => {
     const input = new TestInput();
     const resize = new EventEmitter();
+    const output = new TestOutput();
     const first = runNativeTui(
       {
         executable: process.execPath,
         args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
         cwd: process.cwd(),
       },
-      { input, output: new TestOutput(), resizeSource: resize },
+      { input, output, resizeSource: resize },
       { preserveInputOnSwitch: true },
     );
     running.push(first);
-    await Bun.sleep(50);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.from("\u001b[17~"));
     expect(await first).toEqual({ reason: "switch" });
 
@@ -642,10 +688,10 @@ describe("native PTY host", () => {
     );
     running.push(result);
 
-    await Bun.sleep(50);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.from("first prompt\r"));
     input.emit("data", Buffer.from([0x11]));
-    await Bun.sleep(25);
+    await waitForOutput(output, "INPUT:66697273742070726f6d70740d");
     expect(statusChecks).toBe(0);
     expect(output.text()).toContain("INPUT:66697273742070726f6d70740d");
     expect(output.chunks.some((chunk) => chunk.includes(0x07))).toBe(true);
@@ -685,11 +731,11 @@ describe("native PTY host", () => {
     );
     running.push(result);
 
-    await Bun.sleep(50);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.from("first prompt\r"));
     clock = 1_100;
     input.emit("data", Buffer.from([0x11]));
-    await Bun.sleep(25);
+    await waitFor(() => recentSubmits.length === 1, "first cold-session guard result");
     clock = 10_100;
     input.emit("data", Buffer.from([0x11]));
 
@@ -719,7 +765,7 @@ describe("native PTY host", () => {
     );
     running.push(result);
 
-    await Bun.sleep(50);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.from("warm prompt\r"));
     input.emit("data", Buffer.from([0x11]));
 
@@ -743,10 +789,11 @@ describe("native PTY host", () => {
     );
     running.push(result);
 
-    await Bun.sleep(50);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.concat([Buffer.from([0x11]), Buffer.from("/resume")]));
-    await Bun.sleep(25);
-    expect(output.text()).toContain(`INPUT:${Buffer.from("/resume").toString("hex")}`);
+    const resumedInput = `INPUT:${Buffer.from("/resume").toString("hex")}`;
+    await waitForOutput(output, resumedInput);
+    expect(output.text()).toContain(resumedInput);
 
     idle = true;
     input.emit("data", Buffer.from([0x11]));
@@ -774,20 +821,25 @@ describe("native PTY host", () => {
     );
     running.push(result);
 
-    await Bun.sleep(50);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.concat([Buffer.from([0x11]), Buffer.from("abc")]));
     input.emit("data", Buffer.from("def"));
-    await Bun.sleep(20);
+    await waitFor(() => resolveIdle !== undefined, "asynchronous switch guard");
     expect(output.text()).not.toContain(`INPUT:${Buffer.from("def").toString("hex")}`);
 
     resolveIdle?.(false);
-    await Bun.sleep(30);
-    const nativeInput = output
-      .text()
-      .split("INPUT:")
-      .slice(1)
-      .join("")
-      .replaceAll(/[^0-9a-f]/g, "");
+    const readNativeInput = () =>
+      output
+        .text()
+        .split("INPUT:")
+        .slice(1)
+        .join("")
+        .replaceAll(/[^0-9a-f]/g, "");
+    await waitFor(
+      () => Buffer.from(readNativeInput(), "hex").toString() === "abcdef",
+      "buffered input replay",
+    );
+    const nativeInput = readNativeInput();
     expect(Buffer.from(nativeInput, "hex").toString()).toBe("abcdef");
 
     resize.emit("SIGTERM");
@@ -816,11 +868,12 @@ describe("native PTY host", () => {
     );
     running.push(result);
 
-    await Bun.sleep(50);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.concat([Buffer.from([0x11]), Buffer.from("\u001b[200~")]));
     input.emit("data", Buffer.alloc(1_000_000, "x"));
+    await waitFor(() => resolveIdle !== undefined, "bounded asynchronous switch guard");
     resolveIdle?.(false);
-    await Bun.sleep(30);
+    await waitFor(() => output.chunks.some((chunk) => chunk.includes(0x07)), "overflow bell");
 
     expect(output.text()).not.toContain(`INPUT:${Buffer.from("\u001b[200~").toString("hex")}`);
     expect(output.chunks.some((chunk) => chunk.includes(0x07))).toBe(true);
@@ -831,18 +884,19 @@ describe("native PTY host", () => {
   it("allows Ctrl+C to interrupt an asynchronous switch guard", async () => {
     const input = new TestInput();
     const resize = new EventEmitter();
+    const output = new TestOutput();
     const result = runNativeTui(
       {
         executable: process.execPath,
         args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
         cwd: process.cwd(),
       },
-      { input, output: new TestOutput(), resizeSource: resize },
+      { input, output, resizeSource: resize },
       { onSwitchRequest: () => new Promise<boolean>(() => undefined) },
     );
     running.push(result);
 
-    await Bun.sleep(50);
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
     input.emit("data", Buffer.from("\u001b[17~"));
     input.emit("data", Buffer.from([0x03]));
     expect(await result).toEqual({ reason: "signal", signal: "SIGINT" });
@@ -850,18 +904,21 @@ describe("native PTY host", () => {
 
   it("terminates instead of accumulating unbounded output under backpressure", async () => {
     const input = new TestInput();
+    const output = new BlockedOutput();
     const result = runNativeTui(
       {
         executable: process.execPath,
         args: [new URL("./fixtures/fake-native-tui.ts", import.meta.url).pathname],
         cwd: process.cwd(),
-        env: { FAKE_NATIVE_OUTPUT_BYTES: "32" },
+        env: { FAKE_NATIVE_OUTPUT_BYTES: "32", FAKE_NATIVE_OUTPUT_ON_INPUT: "1" },
       },
-      { input, output: new BlockedOutput(), resizeSource: new EventEmitter() },
+      { input, output, resizeSource: new EventEmitter() },
       { ioQueueLimitBytes: 8 },
     );
     running.push(result);
 
+    await waitForOutput(output, "FAKE_NATIVE_READY:");
+    input.emit("data", Buffer.from("overflow"));
     await expect(result).rejects.toThrow("output backpressure exceeded");
     expect(input.isRaw).toBe(false);
     expect(input.listenerCount("data")).toBe(0);

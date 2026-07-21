@@ -1,15 +1,15 @@
+import { Context, Effect, Layer, Option, Schema } from "effect";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { Context, Effect, Layer, Option, Schema } from "effect";
 import { SettingsError } from "../errors.ts";
 import { DEFAULT_SWITCH_KEY, parseSwitchKey, type SwitchKeyBinding } from "../switch-key.ts";
-import { relayDataRoot } from "./data-root.ts";
+import { RelayPaths, type RelayPathsShape } from "./data-root.ts";
 
 export interface RelaySettings {
   readonly switchKey: SwitchKeyBinding;
 }
 
-export const relayConfigPath = () => `${relayDataRoot()}/config.json`;
+export const relayConfigPath = (paths: RelayPathsShape) => `${paths.root}/config.json`;
 const defaultSettings = (): RelaySettings => ({ switchKey: DEFAULT_SWITCH_KEY });
 const StoredRelaySettings = Schema.Struct({
   version: Schema.Literal(1),
@@ -76,7 +76,7 @@ const decodeSettingsSource = (path: string, source: string) =>
     ),
   );
 
-const loadRelaySettings = (path: string) =>
+const loadRelaySettingsAt = (path: string) =>
   Effect.tryPromise({
     try: async () => {
       try {
@@ -95,7 +95,7 @@ const loadRelaySettings = (path: string) =>
     ),
   );
 
-const saveRelaySettings = (operation: "save" | "reset", path: string, settings: RelaySettings) =>
+const saveRelaySettingsAt = (operation: "save" | "reset", path: string, settings: RelaySettings) =>
   Effect.tryPromise({
     try: async () => {
       await secureDirectory(dirname(path));
@@ -111,6 +111,15 @@ const saveRelaySettings = (operation: "save" | "reset", path: string, settings: 
     catch: (cause) => settingsError(operation, path, cause),
   });
 
+export const loadRelaySettings = (paths: RelayPathsShape) =>
+  Effect.runPromise(loadRelaySettingsAt(relayConfigPath(paths)));
+
+export const saveRelaySettings = (paths: RelayPathsShape, settings: RelaySettings) =>
+  Effect.runPromise(saveRelaySettingsAt("save", relayConfigPath(paths), settings));
+
+export const resetRelaySettings = (paths: RelayPathsShape) =>
+  Effect.runPromise(saveRelaySettingsAt("reset", relayConfigPath(paths), defaultSettings()));
+
 export interface SettingsServiceInterface {
   readonly path: () => string;
   readonly load: () => Effect.Effect<RelaySettings, SettingsError>;
@@ -120,21 +129,30 @@ export interface SettingsServiceInterface {
 
 const makeSettingsService = (path: string): SettingsServiceInterface => ({
   path: () => path,
-  load: Effect.fn("SettingsService.load")(() => loadRelaySettings(path)),
+  load: Effect.fn("SettingsService.load")(() => loadRelaySettingsAt(path)),
   save: Effect.fn("SettingsService.save")((settings: RelaySettings) =>
-    saveRelaySettings("save", path, settings),
+    saveRelaySettingsAt("save", path, settings),
   ),
   reset: Effect.fn("SettingsService.reset")(() =>
-    saveRelaySettings("reset", path, defaultSettings()),
+    saveRelaySettingsAt("reset", path, defaultSettings()),
   ),
 });
 
 export class SettingsService extends Context.Service<SettingsService, SettingsServiceInterface>()(
   "@relay/SettingsService",
 ) {
-  static readonly layer = Layer.sync(SettingsService, () =>
-    SettingsService.of(makeSettingsService(relayConfigPath())),
+  static readonly configuredLayer = Layer.effect(
+    SettingsService,
+    Effect.gen(function* () {
+      const paths = yield* RelayPaths;
+      return SettingsService.of(makeSettingsService(relayConfigPath(paths)));
+    }),
   );
+
+  static readonly layer = SettingsService.configuredLayer.pipe(Layer.provide(RelayPaths.layer));
+
+  static readonly layerFromRoot = (root: string) =>
+    SettingsService.configuredLayer.pipe(Layer.provide(RelayPaths.layerFromRoot(root)));
 
   static readonly layerAt = (path: string) =>
     Layer.succeed(SettingsService, SettingsService.of(makeSettingsService(path)));

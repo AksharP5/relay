@@ -1,9 +1,41 @@
 import packageJson from "../../package.json" with { type: "json" };
+import { Schema } from "effect";
 import type { HarnessTurnProgress } from "../domain.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
 import { trackManagedProcess } from "../services/process-registry.ts";
 
 type JsonObject = Record<string, unknown>;
+const JsonObject = Schema.Record(Schema.String, Schema.Unknown);
+const CodexRpcMessage = Schema.Struct({
+  id: Schema.optionalKey(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
+  method: Schema.optionalKey(Schema.String),
+  params: Schema.optionalKey(Schema.Unknown),
+  error: Schema.optionalKey(Schema.Unknown),
+  result: Schema.optionalKey(Schema.Unknown),
+});
+type CodexRpcMessage = typeof CodexRpcMessage.Type;
+
+export class AppServerProtocolError extends Schema.TaggedErrorClass<AppServerProtocolError>()(
+  "AppServerProtocolError",
+  {
+    source: Schema.String,
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+const decodeCodexRpcMessage = (raw: string, source: string): CodexRpcMessage => {
+  try {
+    return Schema.decodeUnknownSync(CodexRpcMessage)(JSON.parse(raw));
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    throw new AppServerProtocolError({
+      source,
+      message: `${source} returned an invalid RPC payload: ${detail}`,
+      cause,
+    });
+  }
+};
 
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
@@ -26,8 +58,9 @@ export interface CodexCommandResult {
   readonly text: string;
 }
 
+const isJsonObject = Schema.is(JsonObject);
 const asObject = (value: unknown): JsonObject | undefined =>
-  value !== null && typeof value === "object" ? (value as JsonObject) : undefined;
+  isJsonObject(value) ? value : undefined;
 
 const errorMessage = (value: unknown) => {
   const object = asObject(value);
@@ -50,7 +83,7 @@ export class AppServerError extends Error {
 export class AppServerConnection {
   readonly #child: ReturnType<typeof Bun.spawn>;
   readonly #pending = new Map<number, PendingRequest>();
-  readonly #listeners = new Set<(message: JsonObject) => void>();
+  readonly #listeners = new Set<(message: CodexRpcMessage) => void>();
   #nextId = 1;
   #closed = false;
   #stderr = "";
@@ -75,6 +108,7 @@ export class AppServerConnection {
     args: ReadonlyArray<string>,
     cwd: string,
     timeoutMs: number,
+    dataRoot: string,
   ) {
     const child = Bun.spawn([command, ...args], {
       cwd,
@@ -84,7 +118,7 @@ export class AppServerConnection {
       stderr: "pipe",
       detached: process.platform !== "win32",
     });
-    await trackManagedProcess(child, "codex-app-server");
+    await trackManagedProcess(dataRoot, child, "codex-app-server");
     const connection = new AppServerConnection(child);
     try {
       await connection.#requestRaw(
@@ -103,16 +137,23 @@ export class AppServerConnection {
     }
   }
 
-  static start(command: string, cwd: string, timeoutMs: number) {
-    return AppServerConnection.#start(command, ["app-server", "--stdio"], cwd, timeoutMs);
+  static start(command: string, cwd: string, timeoutMs: number, dataRoot: string) {
+    return AppServerConnection.#start(command, ["app-server", "--stdio"], cwd, timeoutMs, dataRoot);
   }
 
-  static connectSocket(command: string, cwd: string, socketPath: string, timeoutMs: number) {
+  static connectSocket(
+    command: string,
+    cwd: string,
+    socketPath: string,
+    timeoutMs: number,
+    dataRoot: string,
+  ) {
     return AppServerConnection.#start(
       command,
       ["app-server", "proxy", "--sock", socketPath],
       cwd,
       timeoutMs,
+      dataRoot,
     );
   }
 
@@ -156,21 +197,23 @@ export class AppServerConnection {
     return this.#requestRaw(method, params, timeoutMs);
   }
 
-  subscribe(listener: (message: JsonObject) => void) {
+  subscribe(listener: (message: CodexRpcMessage) => void) {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
 
   #handleLine(line: string) {
     if (!line.trim()) return;
-    let message: JsonObject;
     try {
-      message = JSON.parse(line) as JsonObject;
-    } catch {
-      this.#fail(new Error("codex app-server returned invalid JSON"));
+      const message = decodeCodexRpcMessage(line, "codex app-server");
+      this.#handleMessage(message);
+    } catch (cause) {
+      this.#fail(cause instanceof Error ? cause : new Error(String(cause)));
       return;
     }
+  }
 
+  #handleMessage(message: CodexRpcMessage) {
     if ((typeof message.id === "number" || typeof message.id === "string") && message.method) {
       this.#write({
         id: message.id,
@@ -300,14 +343,16 @@ export class WebSocketAppServerConnection {
   }
 
   #handleMessage(raw: string) {
-    let message: JsonObject;
     try {
-      message = JSON.parse(raw) as JsonObject;
-    } catch {
-      this.#fail(new Error("Codex websocket returned invalid JSON"));
+      const message = decodeCodexRpcMessage(raw, "Codex websocket");
+      this.#handleDecodedMessage(message);
+    } catch (cause) {
+      this.#fail(cause instanceof Error ? cause : new Error(String(cause)));
       return;
     }
+  }
 
+  #handleDecodedMessage(message: CodexRpcMessage) {
     if ((typeof message.id === "number" || typeof message.id === "string") && message.method) {
       this.#write({
         id: message.id,
@@ -409,9 +454,10 @@ const waitForCommand = (
 export const runCodexCommand = async (
   executable: string,
   input: CodexCommandInput,
+  dataRoot: string,
 ): Promise<CodexCommandResult> => {
   const timeoutMs = input.timeoutMs ?? 30 * 60 * 1_000;
-  const connection = await AppServerConnection.start(executable, input.cwd, timeoutMs);
+  const connection = await AppServerConnection.start(executable, input.cwd, timeoutMs, dataRoot);
   try {
     const threadResult = input.sessionId
       ? await connection.request(
