@@ -89,7 +89,7 @@ export class CodexModelCatalogError extends Schema.TaggedErrorClass<CodexModelCa
   "CodexModelCatalogError",
   {
     message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 

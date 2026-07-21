@@ -20,7 +20,7 @@ export class AppServerProtocolError extends Schema.TaggedErrorClass<AppServerPro
   {
     source: Schema.String,
     message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 

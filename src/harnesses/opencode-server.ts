@@ -63,7 +63,7 @@ export class OpenCodeProtocolError extends Schema.TaggedErrorClass<OpenCodeProto
   {
     operation: Schema.String,
     message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
