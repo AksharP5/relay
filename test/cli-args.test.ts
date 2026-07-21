@@ -16,6 +16,35 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["project", "extra"])).toThrow("invalid directory arguments");
   });
 
+  it("uses -- to open exactly one command-like directory", () => {
+    expect(parseArgs(["--", "native"])).toEqual({ name: "open", directory: "native" });
+    expect(parseArgs(["./native"])).toEqual({ name: "open", directory: "./native" });
+    expect(() => parseArgs(["--"])).toThrow("Usage: relay -- <directory>");
+    expect(() => parseArgs(["--", "native", "extra"])).toThrow("Usage: relay -- <directory>");
+  });
+
+  it("rejects trailing operands for every fixed-arity command", () => {
+    const cases: ReadonlyArray<readonly [ReadonlyArray<string>, string]> = [
+      [["help", "unexpected"], "Usage: relay help | --help | -h"],
+      [["--help", "unexpected"], "Usage: relay help | --help | -h"],
+      [["-h", "unexpected"], "Usage: relay help | --help | -h"],
+      [["version", "unexpected"], "Usage: relay version | --version | -v"],
+      [["--version", "unexpected"], "Usage: relay version | --version | -v"],
+      [["-v", "unexpected"], "Usage: relay version | --version | -v"],
+      [["doctor", "unexpected"], "Usage: relay doctor"],
+      [["status", "unexpected"], "Usage: relay status"],
+      [["list", "unexpected"], "Usage: relay list"],
+      [["history", "unexpected"], "Usage: relay history"],
+      [["native", "codex", "unexpected"], "Usage: relay native [codex|opencode]"],
+      [["use", "codex", "unexpected"], "Usage: relay use codex|opencode"],
+      [["thread", "abc123", "unexpected"], "Usage: relay thread <id>"],
+    ];
+
+    for (const [args, usage] of cases) {
+      expect(() => parseArgs(args)).toThrow(usage);
+    }
+  });
+
   it("parses a per-turn harness and model", () => {
     expect(
       parseArgs(["ask", "--with", "opencode", "--model", "openai/gpt-5", "Review", "this"]),
@@ -73,5 +102,7 @@ describe("parseArgs", () => {
       threadId: "abc123",
       force: true,
     });
+    expect(() => parseArgs(["export", "abc123", "extra"])).toThrow("Usage: relay export [task-id]");
+    expect(() => parseArgs(["delete", "abc123", "extra"])).toThrow("Usage: relay delete [task-id]");
   });
 });
