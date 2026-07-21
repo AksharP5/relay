@@ -10,7 +10,7 @@ import type {
   RelayTaskExport,
   RelayThread,
 } from "../domain.ts";
-import { CliError, ThreadNotFound } from "../errors.ts";
+import { CliError, HarnessError, ThreadNotFound } from "../errors.ts";
 import { HarnessService, type HarnessStatus } from "../harnesses/harness-service.ts";
 import { ThreadStore } from "./thread-store.ts";
 
@@ -49,6 +49,15 @@ const messagesInActiveContext = (thread: RelayThread, messages: ReadonlyArray<Re
 
 const handoffStartSeq = (thread: RelayThread, binding?: HarnessBinding) =>
   Math.max(contextStartSeq(thread), binding?.lastSyncedSeq ?? 0);
+
+const uncertainSessionRecoveryError = (error: HarnessError) =>
+  new HarnessError({
+    harness: error.harness,
+    message: `${error.message}\nRelay retired the uncertain ${error.harness} session binding to prevent a retry from duplicating the prompt. The native session remains in ${error.harness} history; retrying will create a fresh session from confirmed Relay context.`,
+    ...(error.exitCode === undefined ? {} : { exitCode: error.exitCode }),
+    ...(error.stderr === undefined ? {} : { stderr: error.stderr }),
+    sessionState: "uncertain",
+  });
 
 export class RelayService extends Context.Service<
   RelayService,
@@ -210,7 +219,9 @@ export class RelayService extends Context.Service<
                     binding && error.sessionState === "uncertain"
                       ? store
                           .dropBinding(thread, harness)
-                          .pipe(Effect.flatMap(() => Effect.fail(error)))
+                          .pipe(
+                            Effect.flatMap(() => Effect.fail(uncertainSessionRecoveryError(error))),
+                          )
                       : Effect.fail(error),
                   ),
                 );
