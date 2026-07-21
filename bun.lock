@@ -5,7 +5,7 @@
     "": {
       "name": "@akshar5/relay",
       "dependencies": {
-        "@effect/platform-bun": "4.0.0-beta.59",
+        "@effect/platform-bun": "4.0.0-beta.99",
         "effect": "4.0.0-beta.99",
         "picocolors": "^1.1.1",
       },
@@ -21,7 +21,7 @@
     "@effect/platform-node-shared": "4.0.0-beta.59",
   },
   "packages": {
-    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-beta.59", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-beta.59" }, "peerDependencies": { "effect": "^4.0.0-beta.59" } }, "sha512-1jXCIx34X80ojiK9ACO9Q7RST9CXudRmlAbsP4kPqjUo6aqOuGSWXq9ueBO4LbaIZiioRxtTciom35U9ldfTkQ=="],
+    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-beta.99", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-beta.99" }, "peerDependencies": { "effect": "^4.0.0-beta.99" } }, "sha512-CCjzD7BY6wvG8tWEBvup2Ko4ME65RX2zZnt8sD+SLwrSEEGJhTliwmQyjyesm8WjAJpALv8NL9/Tv17ocxUPNg=="],
 
     "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.0-beta.59", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.20.0" }, "peerDependencies": { "effect": "^4.0.0-beta.59" } }, "sha512-fGwFJuG0Te9U/ZeqeDZ2HcSKZBhX5wLjX2/Rxb5+yaOkvvFAN9MvIh05R0QQK5DCcERvnbhHSl1CjSIAN4aEwQ=="],
 
