@@ -3,6 +3,7 @@ import { isHarness } from "./domain.ts";
 import { CliError } from "./errors.ts";
 
 export type CliCommand =
+  | { readonly name: "open"; readonly directory: string }
   | { readonly name: "help" }
   | { readonly name: "version" }
   | { readonly name: "doctor" }
@@ -155,5 +156,9 @@ export const parseArgs = (args: ReadonlyArray<string>): CliCommand => {
     }
     return { name: "new", title: titleWords.join(" ").trim() || "Untitled task", harness };
   }
-  throw new CliError({ message: `Unknown command: ${command}` });
+  if (command.startsWith("-")) throw new CliError({ message: `Unknown option: ${command}` });
+  if (rest.length === 0) return { name: "open", directory: command };
+  throw new CliError({
+    message: `Unknown command or invalid directory arguments: ${args.join(" ")}`,
+  });
 };

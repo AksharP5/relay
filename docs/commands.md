@@ -6,9 +6,12 @@ Run Relay from the project directory you want the harnesses to edit.
 
 ```bash
 relay
+relay .
+relay ../another-project
+relay /absolute/path/to/project
 ```
 
-Relay selects the most recent task for the current directory or creates one, then starts its active native TUI.
+With no argument, Relay uses the current directory. A relative or absolute directory argument selects that workspace without requiring a separate `cd`. Relay selects the most recent task for that directory or creates one, then starts its active native TUI.
 
 Inside Codex, Codex owns its composer and slash commands. Inside OpenCode, OpenCode owns them. Relay does not translate `/resume` into `/sessions`, replace `/undo`, or focus a second command dialog. Type commands exactly as you would when launching that CLI directly.
 

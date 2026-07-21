@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { parseArgs } from "../src/cli-args.ts";
 
 describe("parseArgs", () => {
+  it("treats one positional argument as a native workspace directory", () => {
+    expect(parseArgs(["."])).toEqual({ name: "open", directory: "." });
+    expect(parseArgs(["../another-project"])).toEqual({
+      name: "open",
+      directory: "../another-project",
+    });
+    expect(parseArgs(["/tmp/relay-project"])).toEqual({
+      name: "open",
+      directory: "/tmp/relay-project",
+    });
+    expect(() => parseArgs(["--project"])).toThrow("Unknown option: --project");
+    expect(() => parseArgs(["project", "extra"])).toThrow("invalid directory arguments");
+  });
+
   it("parses a per-turn harness and model", () => {
     expect(
       parseArgs(["ask", "--with", "opencode", "--model", "openai/gpt-5", "Review", "this"]),
