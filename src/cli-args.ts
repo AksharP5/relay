@@ -32,6 +32,10 @@ const valueAfter = (args: ReadonlyArray<string>, index: number, flag: string) =>
   return value;
 };
 
+const expectNoArguments = (args: ReadonlyArray<string>, usage: string) => {
+  if (args.length > 0) throw new CliError({ message: `Usage: ${usage}` });
+};
+
 const parseAsk = (args: ReadonlyArray<string>): CliCommand => {
   let harness: Harness | undefined;
   let model: string | undefined;
@@ -109,17 +113,33 @@ const parseConfig = (args: ReadonlyArray<string>): CliCommand => {
 
 export const parseArgs = (args: ReadonlyArray<string>): CliCommand => {
   const [command, ...rest] = args;
-  if (!command || command === "help" || command === "--help" || command === "-h")
+  if (!command) return { name: "help" };
+  if (command === "--") {
+    const directory = rest[0];
+    if (rest.length !== 1 || directory === undefined) {
+      throw new CliError({ message: "Usage: relay -- <directory>" });
+    }
+    return { name: "open", directory };
+  }
+  if (command === "help" || command === "--help" || command === "-h") {
+    expectNoArguments(rest, "relay help | --help | -h");
     return { name: "help" };
-  if (command === "--version" || command === "-v" || command === "version")
+  }
+  if (command === "--version" || command === "-v" || command === "version") {
+    expectNoArguments(rest, "relay version | --version | -v");
     return { name: "version" };
+  }
   if (command === "doctor" || command === "status" || command === "list" || command === "history") {
+    expectNoArguments(rest, `relay ${command}`);
     return { name: command };
   }
   if (command === "ask") return parseAsk(rest);
   if (command === "config") return parseConfig(rest);
   if (command === "export" || command === "delete") return parseTaskFileCommand(command, rest);
   if (command === "native") {
+    if (rest.length > 1) {
+      throw new CliError({ message: "Usage: relay native [codex|opencode]" });
+    }
     const harness = rest[0];
     if (!harness) return { name: "native" };
     if (!isHarness(harness)) {
@@ -129,13 +149,15 @@ export const parseArgs = (args: ReadonlyArray<string>): CliCommand => {
   }
   if (command === "use") {
     const harness = rest[0];
-    if (!harness || !isHarness(harness))
+    if (rest.length !== 1 || !harness || !isHarness(harness))
       throw new CliError({ message: "Usage: relay use codex|opencode" });
     return { name: "use", harness };
   }
   if (command === "thread") {
     const threadId = rest[0];
-    if (!threadId) throw new CliError({ message: "Usage: relay thread <id>" });
+    if (rest.length !== 1 || !threadId) {
+      throw new CliError({ message: "Usage: relay thread <id>" });
+    }
     return { name: "thread", threadId };
   }
   if (command === "new") {
