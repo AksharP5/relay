@@ -572,10 +572,7 @@ const acquireThreadLock = (id: string) =>
 let indexQueue = Promise.resolve();
 
 const acquireLocalIndexLock = async () => {
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const { promise: current, resolve: release } = Promise.withResolvers<void>();
   const previous = indexQueue;
   indexQueue = previous.then(() => current);
   await previous;
@@ -1470,7 +1467,7 @@ export class ThreadStore extends Context.Service<
               return [user, assistant];
             });
             const existingBinding = thread.bindings[input.harness];
-            const latestTurn = input.turns.at(-1);
+            const latestTurnId = input.turns.at(-1)?.id;
             const binding: HarnessBinding = {
               harness: input.harness,
               sessionId: input.sessionId,
@@ -1480,8 +1477,8 @@ export class ThreadStore extends Context.Service<
                   ? { model: existingBinding.model }
                   : {}),
               lastSyncedSeq: messages.length > 0 ? nextSeq : (existingBinding?.lastSyncedSeq ?? 0),
-              ...(latestTurn
-                ? { nativeCursor: latestTurn.id }
+              ...(latestTurnId
+                ? { nativeCursor: latestTurnId }
                 : existingBinding?.nativeCursor
                   ? { nativeCursor: existingBinding.nativeCursor }
                   : {}),
