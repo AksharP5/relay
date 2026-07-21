@@ -26,6 +26,7 @@
     "relay": "bun src/cli.ts",
     "build": "bun scripts/build.ts",
     "check": "bun run format:check && bun run typecheck && bun run test",
+    "audit": "bun audit",
     "compat:latest": "bun scripts/compat-latest.ts",
     "format": "oxfmt . --write",
     "format:check": "oxfmt . --check",
@@ -41,8 +42,8 @@
   },
   "devDependencies": {
     "@types/bun": "1.3.14",
-    "oxfmt": "^0.27.0",
-    "typescript": "^5.9.3",
+    "oxfmt": "0.59.0",
+    "typescript": "7.0.2",
     "vitest": "^4.1.0"
   },
   "overrides": {
