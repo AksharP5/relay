@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 import type {
   Harness,
   HarnessCapabilities,
@@ -69,17 +69,40 @@ const opencodeBuiltins: ReadonlyArray<HarnessCommand> = [
   },
 ];
 
-const parseCodexModels = (stdout: string): ReadonlyArray<HarnessModel> => {
-  const value = JSON.parse(stdout) as {
-    models?: Array<{
-      slug?: unknown;
-      display_name?: unknown;
-      description?: unknown;
-      visibility?: unknown;
-      priority?: unknown;
-      is_default?: unknown;
-    }>;
-  };
+const CodexModelCatalog = Schema.Struct({
+  models: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        slug: Schema.optionalKey(Schema.Unknown),
+        display_name: Schema.optionalKey(Schema.Unknown),
+        description: Schema.optionalKey(Schema.Unknown),
+        visibility: Schema.optionalKey(Schema.Unknown),
+        priority: Schema.optionalKey(Schema.Unknown),
+        is_default: Schema.optionalKey(Schema.Unknown),
+      }),
+    ),
+  ),
+});
+
+export class CodexModelCatalogError extends Schema.TaggedErrorClass<CodexModelCatalogError>()(
+  "CodexModelCatalogError",
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+export const parseCodexModels = (stdout: string): ReadonlyArray<HarnessModel> => {
+  let value: typeof CodexModelCatalog.Type;
+  try {
+    value = Schema.decodeUnknownSync(CodexModelCatalog)(JSON.parse(stdout));
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    throw new CodexModelCatalogError({
+      message: `Codex returned an invalid model catalog payload: ${detail}`,
+      cause,
+    });
+  }
   return (value.models ?? [])
     .filter(
       (model): model is typeof model & { slug: string } =>

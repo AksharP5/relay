@@ -1,9 +1,33 @@
 import packageJson from "../../package.json" with { type: "json" };
+import { Schema } from "effect";
 import type { HarnessTurnProgress } from "../domain.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
 import { trackManagedProcess } from "../services/process-registry.ts";
 
 type JsonObject = Record<string, unknown>;
+const JsonObject = Schema.Record(Schema.String, Schema.Unknown);
+
+export class AppServerProtocolError extends Schema.TaggedErrorClass<AppServerProtocolError>()(
+  "AppServerProtocolError",
+  {
+    source: Schema.String,
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+const decodeJsonObject = (raw: string, source: string): JsonObject => {
+  try {
+    return Schema.decodeUnknownSync(JsonObject)(JSON.parse(raw));
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    throw new AppServerProtocolError({
+      source,
+      message: `${source} returned invalid JSON object: ${detail}`,
+      cause,
+    });
+  }
+};
 
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
@@ -26,8 +50,9 @@ export interface CodexCommandResult {
   readonly text: string;
 }
 
+const isJsonObject = Schema.is(JsonObject);
 const asObject = (value: unknown): JsonObject | undefined =>
-  value !== null && typeof value === "object" ? (value as JsonObject) : undefined;
+  isJsonObject(value) ? value : undefined;
 
 const errorMessage = (value: unknown) => {
   const object = asObject(value);
@@ -163,14 +188,16 @@ export class AppServerConnection {
 
   #handleLine(line: string) {
     if (!line.trim()) return;
-    let message: JsonObject;
     try {
-      message = JSON.parse(line) as JsonObject;
-    } catch {
-      this.#fail(new Error("codex app-server returned invalid JSON"));
+      const message = decodeJsonObject(line, "codex app-server");
+      this.#handleMessage(message);
+    } catch (cause) {
+      this.#fail(cause instanceof Error ? cause : new Error(String(cause)));
       return;
     }
+  }
 
+  #handleMessage(message: JsonObject) {
     if ((typeof message.id === "number" || typeof message.id === "string") && message.method) {
       this.#write({
         id: message.id,
@@ -300,14 +327,16 @@ export class WebSocketAppServerConnection {
   }
 
   #handleMessage(raw: string) {
-    let message: JsonObject;
     try {
-      message = JSON.parse(raw) as JsonObject;
-    } catch {
-      this.#fail(new Error("Codex websocket returned invalid JSON"));
+      const message = decodeJsonObject(raw, "Codex websocket");
+      this.#handleDecodedMessage(message);
+    } catch (cause) {
+      this.#fail(cause instanceof Error ? cause : new Error(String(cause)));
       return;
     }
+  }
 
+  #handleDecodedMessage(message: JsonObject) {
     if ((typeof message.id === "number" || typeof message.id === "string") && message.method) {
       this.#write({
         id: message.id,

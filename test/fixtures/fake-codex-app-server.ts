@@ -13,6 +13,10 @@ for await (const line of lines) {
   };
   if (message.id === undefined) continue;
   if (message.method === "initialize") {
+    if (Bun.env.RELAY_TEST_CODEX_INVALID_JSON === "1") {
+      send(null);
+      continue;
+    }
     send({ id: message.id, result: { userAgent: "fake" } });
     continue;
   }

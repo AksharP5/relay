@@ -1,11 +1,85 @@
+import { Schema } from "effect";
 import type { HarnessCommand } from "../domain.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
 import { trackManagedProcess } from "../services/process-registry.ts";
 
-interface OpenCodeCommand {
-  readonly name?: unknown;
-  readonly description?: unknown;
-}
+const OpenCodeCommand = Schema.Struct({
+  name: Schema.optionalKey(Schema.Unknown),
+  description: Schema.optionalKey(Schema.Unknown),
+});
+const OpenCodeCommands = Schema.Array(OpenCodeCommand);
+const OpenCodeModelMessages = Schema.Array(
+  Schema.Struct({
+    info: Schema.optionalKey(
+      Schema.Struct({
+        role: Schema.optionalKey(Schema.Unknown),
+        providerID: Schema.optionalKey(Schema.Unknown),
+        modelID: Schema.optionalKey(Schema.Unknown),
+      }),
+    ),
+  }),
+);
+const OpenCodeUndoSession = Schema.Struct({
+  revert: Schema.optionalKey(Schema.Struct({ messageID: Schema.optionalKey(Schema.Unknown) })),
+});
+const OpenCodeUndoMessages = Schema.Array(
+  Schema.Struct({
+    info: Schema.optionalKey(
+      Schema.Struct({
+        id: Schema.optionalKey(Schema.Unknown),
+        role: Schema.optionalKey(Schema.Unknown),
+      }),
+    ),
+    parts: Schema.optionalKey(
+      Schema.Array(
+        Schema.Struct({
+          type: Schema.optionalKey(Schema.Unknown),
+          text: Schema.optionalKey(Schema.Unknown),
+        }),
+      ),
+    ),
+  }),
+);
+const OpenCodeSharedSession = Schema.Struct({
+  share: Schema.optionalKey(Schema.Struct({ url: Schema.optionalKey(Schema.Unknown) })),
+});
+const OpenCodeCreatedSession = Schema.Struct({ id: Schema.String });
+const OpenCodeCommandMessage = Schema.Struct({
+  parts: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        type: Schema.optionalKey(Schema.Unknown),
+        text: Schema.optionalKey(Schema.Unknown),
+      }),
+    ),
+  ),
+});
+
+export class OpenCodeProtocolError extends Schema.TaggedErrorClass<OpenCodeProtocolError>()(
+  "OpenCodeProtocolError",
+  {
+    operation: Schema.String,
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+export const decodeOpenCodePayload = <A>(
+  schema: Schema.Decoder<A>,
+  value: unknown,
+  operation: string,
+): A => {
+  try {
+    return Schema.decodeUnknownSync(schema)(value);
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    throw new OpenCodeProtocolError({
+      operation,
+      message: `OpenCode returned an invalid ${operation} payload: ${detail}`,
+      cause,
+    });
+  }
+};
 
 const fetchOpenCode = (input: URL, init: RequestInit = {}) =>
   fetch(input, { ...init, signal: init.signal ?? AbortSignal.timeout(30 * 60 * 1_000) });
@@ -159,7 +233,11 @@ export const discoverOpenCodeCommands = async (
     const response = await fetchOpenCode(endpoint, { headers: { authorization } });
     if (!response.ok)
       throw new Error(`OpenCode command discovery failed with HTTP ${response.status}`);
-    const commands = (await response.json()) as Array<OpenCodeCommand>;
+    const commands = decodeOpenCodePayload(
+      OpenCodeCommands,
+      await response.json(),
+      "command catalog",
+    );
     return commands.flatMap((command) =>
       typeof command.name === "string"
         ? [
@@ -243,9 +321,11 @@ export const runOpenCodeControl = async (
         messagesUrl.searchParams.set("directory", input.cwd);
         const messagesResponse = await fetchOpenCode(messagesUrl, { headers });
         if (messagesResponse.ok) {
-          const messages = (await messagesResponse.json()) as Array<{
-            info?: { role?: unknown; providerID?: unknown; modelID?: unknown };
-          }>;
+          const messages = decodeOpenCodePayload(
+            OpenCodeModelMessages,
+            await messagesResponse.json(),
+            "message model history",
+          );
           const latest = messages.findLast(
             (item) =>
               typeof item.info?.providerID === "string" && typeof item.info?.modelID === "string",
@@ -273,11 +353,16 @@ export const runOpenCodeControl = async (
       ]);
       if (!sessionResponse.ok || !messagesResponse.ok)
         throw new Error("Could not read the OpenCode undo state");
-      const session = (await sessionResponse.json()) as { revert?: { messageID?: unknown } };
-      const messages = (await messagesResponse.json()) as Array<{
-        info?: { id?: unknown; role?: unknown };
-        parts?: Array<{ type?: unknown; text?: unknown }>;
-      }>;
+      const session = decodeOpenCodePayload(
+        OpenCodeUndoSession,
+        await sessionResponse.json(),
+        "undo session",
+      );
+      const messages = decodeOpenCodePayload(
+        OpenCodeUndoMessages,
+        await messagesResponse.json(),
+        "undo history",
+      );
       const users = messages
         .filter(
           (item): item is typeof item & { info: { id: string; role?: unknown } } =>
@@ -320,7 +405,11 @@ export const runOpenCodeControl = async (
       throw new Error(`OpenCode ${input.action} failed with HTTP ${response.status}`);
     }
     if (input.action === "share") {
-      const session = (await response.json()) as { share?: { url?: unknown } };
+      const session = decodeOpenCodePayload(
+        OpenCodeSharedSession,
+        await response.json(),
+        "shared session",
+      );
       return typeof session.share?.url === "string"
         ? `OpenCode shared this session: ${session.share.url}`
         : "OpenCode shared this session.";
@@ -398,8 +487,11 @@ export const runOpenCodeCommand = async (
       });
       if (!createResponse.ok)
         throw new Error(`OpenCode session creation failed with HTTP ${createResponse.status}`);
-      const session = (await createResponse.json()) as { id?: unknown };
-      if (typeof session.id !== "string") throw new Error("OpenCode did not return a session id");
+      const session = decodeOpenCodePayload(
+        OpenCodeCreatedSession,
+        await createResponse.json(),
+        "created session",
+      );
       sessionId = session.id;
     }
     const commandUrl = new URL(`/session/${encodeURIComponent(sessionId)}/command`, baseUrl);
@@ -417,9 +509,11 @@ export const runOpenCodeCommand = async (
     });
     if (!commandResponse.ok)
       throw new Error(`OpenCode /${input.command} failed with HTTP ${commandResponse.status}`);
-    const message = (await commandResponse.json()) as {
-      parts?: Array<{ type?: unknown; text?: unknown }>;
-    };
+    const message = decodeOpenCodePayload(
+      OpenCodeCommandMessage,
+      await commandResponse.json(),
+      "command response",
+    );
     const text = (message.parts ?? [])
       .filter((part) => part.type === "text" && typeof part.text === "string")
       .map((part) => part.text)

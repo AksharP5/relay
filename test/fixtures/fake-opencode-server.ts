@@ -47,6 +47,7 @@ const server = Bun.serve({
     if (request.headers.get("authorization") !== expected)
       return new Response("unauthorized", { status: 401 });
     if (url.pathname === "/command") {
+      if (Bun.env.RELAY_TEST_OPENCODE_INVALID_COMMANDS === "1") return Response.json(null);
       return Response.json([
         { name: "commit", description: "Create a conventional commit", source: "command" },
         { name: "skill-command", source: "skill" },
@@ -99,7 +100,8 @@ const server = Bun.serve({
     }
     if (url.pathname === "/session" && request.method === "POST") {
       createdSessions += 1;
-      const body = (await request.json()) as { parentID?: unknown };
+      const body = (await request.json()) as { parentID?: unknown; title?: unknown };
+      if (body.title === "invalid-shape") return Response.json(null);
       const id = createdSessions === 1 ? "ses_created" : `ses_native_${createdSessions}`;
       latestSessionId = id;
       emitEvent({
@@ -130,6 +132,8 @@ const server = Bun.serve({
     if (url.pathname.endsWith("/ses_paged") && request.method === "GET") return Response.json({});
     if (url.pathname.endsWith("/ses_grouped_undo") && request.method === "GET")
       return Response.json({ revert: { messageID: "undo-user-2" } });
+    if (url.pathname.endsWith("/ses_invalid_session") && request.method === "GET")
+      return Response.json(null);
     if (
       url.pathname.includes("/ses_missing") &&
       request.method === "GET" &&
@@ -160,6 +164,7 @@ const server = Bun.serve({
       return Response.json({ info: { id: "hidden", role: "user" }, parts: body.parts });
     }
     if (url.pathname.endsWith("/message") && request.method === "GET") {
+      if (url.pathname.includes("/ses_invalid_history/")) return Response.json(null);
       if (url.pathname.includes("/ses_grouped_undo/")) {
         return Response.json([
           {
@@ -265,6 +270,7 @@ const server = Bun.serve({
       ) {
         return new Response("command ran before its handoff", { status: 409 });
       }
+      if (Bun.env.RELAY_TEST_OPENCODE_INVALID_RESPONSE === "1") return Response.json(null);
       return Response.json({ parts: [{ type: "text", text: "Command response" }] });
     }
     if (url.pathname.endsWith("/summarize") && request.method === "POST")
