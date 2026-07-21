@@ -1,4 +1,5 @@
 import { Context, Effect, Layer } from "effect";
+import { RelayPaths } from "./data-root.ts";
 import { trackManagedProcess, untrackManagedProcess } from "./process-registry.ts";
 
 export interface ProcessInput {
@@ -121,78 +122,88 @@ export class ProcessRunner extends Context.Service<
     readonly which: (command: string) => Effect.Effect<string | undefined>;
   }
 >()("@relay/ProcessRunner") {
-  static readonly layer = Layer.succeed(ProcessRunner, {
-    run: Effect.fn("ProcessRunner.run")((input: ProcessInput) => {
-      let terminate: (() => Promise<void>) | undefined;
-      const operation = Effect.tryPromise({
-        try: async (signal) => {
-          let onAbort: (() => void) | undefined;
-          let timeout: ReturnType<typeof setTimeout> | undefined;
+  static readonly configuredLayer = Layer.effect(
+    ProcessRunner,
+    Effect.gen(function* () {
+      const paths = yield* RelayPaths;
+      return ProcessRunner.of({
+        run: Effect.fn("ProcessRunner.run")((input: ProcessInput) => {
+          let terminate: (() => Promise<void>) | undefined;
+          const operation = Effect.tryPromise({
+            try: async (signal) => {
+              let onAbort: (() => void) | undefined;
+              let timeout: ReturnType<typeof setTimeout> | undefined;
 
-          try {
-            const child = Bun.spawn([input.command, ...(input.args ?? [])], {
-              ...(input.cwd ? { cwd: input.cwd } : {}),
-              env: { ...Bun.env, ...input.env },
-              stdin: input.stdin === undefined ? "ignore" : "pipe",
-              stdout: "pipe",
-              stderr: "pipe",
-              detached: process.platform !== "win32",
-            });
-            await trackManagedProcess(child, "command");
-            terminate = makeTerminator(child);
-            onAbort = () => void terminate?.();
-            signal.addEventListener("abort", onAbort, { once: true });
-            timeout = setTimeout(() => void terminate?.(), input.timeoutMs ?? 30 * 60 * 1000);
+              try {
+                const child = Bun.spawn([input.command, ...(input.args ?? [])], {
+                  ...(input.cwd ? { cwd: input.cwd } : {}),
+                  env: { ...Bun.env, ...input.env },
+                  stdin: input.stdin === undefined ? "ignore" : "pipe",
+                  stdout: "pipe",
+                  stderr: "pipe",
+                  detached: process.platform !== "win32",
+                });
+                await trackManagedProcess(paths.root, child, "command");
+                terminate = makeTerminator(child);
+                onAbort = () => void terminate?.();
+                signal.addEventListener("abort", onAbort, { once: true });
+                timeout = setTimeout(() => void terminate?.(), input.timeoutMs ?? 30 * 60 * 1000);
 
-            const stdin = child.stdin;
-            try {
-              if (input.stdin !== undefined && stdin && typeof stdin !== "number") {
-                stdin.write(input.stdin);
-                stdin.end();
+                const stdin = child.stdin;
+                try {
+                  if (input.stdin !== undefined && stdin && typeof stdin !== "number") {
+                    stdin.write(input.stdin);
+                    stdin.end();
+                  }
+                } catch (cause) {
+                  await terminate();
+                  throw cause;
+                }
+
+                let result: [string, string, number];
+                try {
+                  result = await Promise.all([
+                    readStream(child.stdout, {
+                      ...(input.onStdoutLine ? { onLine: input.onStdoutLine } : {}),
+                      ...(input.captureLimitChars ? { limit: input.captureLimitChars } : {}),
+                      ...(input.lineLimitChars ? { lineLimit: input.lineLimitChars } : {}),
+                    }),
+                    readStream(child.stderr, {
+                      ...(input.captureLimitChars ? { limit: input.captureLimitChars } : {}),
+                    }),
+                    child.exited,
+                  ]);
+                } catch (cause) {
+                  await terminate();
+                  throw cause;
+                }
+                const [stdout, stderr, exitCode] = result;
+                await stopProcessTree(child);
+
+                return { exitCode, stdout, stderr };
+              } finally {
+                if (timeout) clearTimeout(timeout);
+                if (onAbort) signal.removeEventListener("abort", onAbort);
               }
-            } catch (cause) {
-              await terminate();
-              throw cause;
-            }
+            },
+            catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+          });
 
-            let result: [string, string, number];
-            try {
-              result = await Promise.all([
-                readStream(child.stdout, {
-                  ...(input.onStdoutLine ? { onLine: input.onStdoutLine } : {}),
-                  ...(input.captureLimitChars ? { limit: input.captureLimitChars } : {}),
-                  ...(input.lineLimitChars ? { lineLimit: input.lineLimitChars } : {}),
-                }),
-                readStream(child.stderr, {
-                  ...(input.captureLimitChars ? { limit: input.captureLimitChars } : {}),
-                }),
-                child.exited,
-              ]);
-            } catch (cause) {
-              await terminate();
-              throw cause;
-            }
-            const [stdout, stderr, exitCode] = result;
-            await stopProcessTree(child);
-
-            return { exitCode, stdout, stderr };
-          } finally {
-            if (timeout) clearTimeout(timeout);
-            if (onAbort) signal.removeEventListener("abort", onAbort);
-          }
-        },
-        catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+          return operation.pipe(
+            Effect.onInterrupt(() =>
+              terminate ? Effect.promise(() => terminate!()) : Effect.void,
+            ),
+          );
+        }),
+        which: Effect.fn("ProcessRunner.which")((command: string) =>
+          Effect.tryPromise({
+            try: async () => Bun.which(command) ?? undefined,
+            catch: () => undefined,
+          }).pipe(Effect.orElseSucceed(() => undefined)),
+        ),
       });
-
-      return operation.pipe(
-        Effect.onInterrupt(() => (terminate ? Effect.promise(() => terminate!()) : Effect.void)),
-      );
     }),
-    which: Effect.fn("ProcessRunner.which")((command: string) =>
-      Effect.tryPromise({
-        try: async () => Bun.which(command) ?? undefined,
-        catch: () => undefined,
-      }).pipe(Effect.orElseSucceed(() => undefined)),
-    ),
-  });
+  );
+
+  static readonly layer = ProcessRunner.configuredLayer.pipe(Layer.provide(RelayPaths.layer));
 }

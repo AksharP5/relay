@@ -49,6 +49,8 @@ export interface NativePtyIo {
 }
 
 export interface NativePtyOptions {
+  /** Stable Relay process-ownership root supplied by the production paths layer. */
+  readonly dataRoot?: string;
   /** Primary Relay switch binding. F6 remains available as a fixed fallback. */
   readonly switchKey?: SwitchKeyBinding;
   readonly sequenceTimeoutMs?: number;
@@ -421,11 +423,14 @@ export const runNativeTui = async (
             env: {},
           });
           if (inputProxy.pid === undefined) throw new Error("Relay input reader did not start");
-          await trackManagedProcess(
-            inputProxy as typeof inputProxy & { readonly pid: number },
-            "terminal-input-reader",
-            { processOnly: true },
-          );
+          if (options.dataRoot) {
+            await trackManagedProcess(
+              options.dataRoot,
+              inputProxy as typeof inputProxy & { readonly pid: number },
+              "terminal-input-reader",
+              { processOnly: true },
+            );
+          }
           let reading = true;
           let proxyFailed = false;
           let proxyClosed = false;
@@ -499,7 +504,8 @@ export const runNativeTui = async (
       },
       detached: process.platform !== "win32",
     });
-    await trackManagedProcess(child, `${command.executable}-native-tui`);
+    if (options.dataRoot)
+      await trackManagedProcess(options.dataRoot, child, `${command.executable}-native-tui`);
     terminal = child.terminal;
     if (!terminal) throw new Error("Relay could not create a native pseudo-terminal");
     flushInput();

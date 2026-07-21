@@ -1,7 +1,6 @@
 import { Schema } from "effect";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { relayDataRoot } from "./data-root.ts";
 
 interface ProcessLike {
   readonly pid: number;
@@ -19,17 +18,17 @@ const ProcessClaim = Schema.Struct({
 type ProcessClaim = typeof ProcessClaim.Type;
 
 const registrations = new WeakMap<object, string>();
-const registryDirectory = () => `${relayDataRoot()}/processes`;
-const quarantineDirectory = () => `${registryDirectory()}/quarantine`;
+const registryDirectory = (root: string) => `${root}/processes`;
+const quarantineDirectory = (root: string) => `${registryDirectory(root)}/quarantine`;
 
 const ensureDirectory = async (path: string) => {
   await mkdir(path, { recursive: true, mode: 0o700 });
   await chmod(path, 0o700);
 };
 
-const ensureRegistry = async () => {
-  await ensureDirectory(relayDataRoot());
-  await ensureDirectory(registryDirectory());
+const ensureRegistry = async (root: string) => {
+  await ensureDirectory(root);
+  await ensureDirectory(registryDirectory(root));
 };
 
 const writeClaim = async (path: string, claim: ProcessClaim) => {
@@ -119,6 +118,7 @@ const waitForProcessExit = async (pid: number, startedAt: string, timeoutMs: num
 };
 
 export const trackManagedProcess = async (
+  root: string,
   child: ProcessLike,
   kind: string,
   options: { readonly processOnly?: boolean } = {},
@@ -134,9 +134,9 @@ export const trackManagedProcess = async (
     else signalGroup(spawned.pgid, "SIGKILL");
     throw new Error(`Relay could not identify the owner of its ${kind} process`);
   }
-  await ensureRegistry();
+  await ensureRegistry(root);
   const token = crypto.randomUUID();
-  const path = `${registryDirectory()}/${token}.json`;
+  const path = `${registryDirectory(root)}/${token}.json`;
   try {
     await writeClaim(path, {
       version: 1,
@@ -162,25 +162,25 @@ export const untrackManagedProcess = async (child: ProcessLike) => {
   await rm(path, { force: true });
 };
 
-export const cleanupOrphanedProcesses = async () => {
+export const cleanupOrphanedProcesses = async (root: string) => {
   if (process.platform === "win32")
     return { terminated: 0, discarded: 0, quarantined: 0, failed: 0 };
-  await ensureRegistry();
-  await ensureDirectory(quarantineDirectory());
+  await ensureRegistry(root);
+  await ensureDirectory(quarantineDirectory(root));
   let terminated = 0;
   let discarded = 0;
   let quarantined = 0;
   let failed = 0;
 
-  for (const entry of await readdir(registryDirectory())) {
+  for (const entry of await readdir(registryDirectory(root))) {
     if (!entry.endsWith(".json")) continue;
-    const path = `${registryDirectory()}/${entry}`;
+    const path = `${registryDirectory(root)}/${entry}`;
     let claim: ProcessClaim;
     try {
       await chmod(path, 0o600);
       claim = Schema.decodeUnknownSync(ProcessClaim)(JSON.parse(await readFile(path, "utf8")));
     } catch {
-      await rename(path, `${quarantineDirectory()}/${entry}.${Date.now()}.invalid`);
+      await rename(path, `${quarantineDirectory(root)}/${entry}.${Date.now()}.invalid`);
       quarantined += 1;
       continue;
     }

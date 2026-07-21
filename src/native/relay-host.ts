@@ -85,10 +85,11 @@ const startBackend = async (
   harness: Harness,
   cwd: string,
   signal?: AbortSignal,
+  dataRoot?: string,
 ): Promise<NativeBackend> => {
   const executable = executableFor(harness);
   if (harness === "codex") {
-    const backend = await CodexNativeBackend.start(executable, cwd, signal);
+    const backend = await CodexNativeBackend.start(executable, cwd, signal, dataRoot);
     return {
       preparesColdHandoff: true,
       prepareSession: ({ sessionId, model, handoff, handoffOmittedMessages }) =>
@@ -111,7 +112,7 @@ const startBackend = async (
     };
   }
 
-  const backend = await OpenCodeNativeBackend.start(executable, cwd, signal);
+  const backend = await OpenCodeNativeBackend.start(executable, cwd, signal, dataRoot);
   return {
     prepareSession: async ({ sessionId, title, handoff }) =>
       !sessionId && handoff.length === 0
@@ -157,15 +158,23 @@ export interface NativeRelayHostDependencies {
 
 export interface NativeRelayHostOptions {
   readonly switchKey?: SwitchKeyBinding;
+  readonly dataRoot?: string;
 }
 
+const requiredDataRoot = (options: NativeRelayHostOptions) => {
+  if (!options.dataRoot) throw new Error("Relay data root is unavailable");
+  return options.dataRoot;
+};
+
 const defaultDependencies = (options: NativeRelayHostOptions): NativeRelayHostDependencies => ({
-  startBackend,
+  startBackend: (harness, cwd, signal) =>
+    startBackend(harness, cwd, signal, requiredDataRoot(options)),
   runTui: (command, onSwitchRequest, onSubmitObserved, coldLaunch, harness) =>
     runNativeTui(
       command,
       { input: process.stdin, output: process.stdout, resizeSource: process },
       {
+        dataRoot: requiredDataRoot(options),
         ...(options.switchKey ? { switchKey: options.switchKey } : {}),
         onSwitchRequest,
         onSubmitObserved,
