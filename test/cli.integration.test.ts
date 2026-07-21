@@ -11,6 +11,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -113,6 +114,34 @@ describe("Relay CLI storage", () => {
     expect(future.exitCode).toBe(1);
     expect(future.stderr).toContain("unsupported settings version 2");
     expect(await readFile(configPath, "utf8")).toBe(futureConfig);
+  });
+
+  it("returns a failure status when doctor finds missing or unhealthy harnesses", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-doctor-"));
+    const bin = join(root, "bin");
+    tempRoots.push(root);
+    await mkdir(bin);
+
+    const { stdout: bunPath } = await execFileAsync("sh", ["-c", "command -v bun"]);
+    await symlink(bunPath.trim(), join(bin, "bun"));
+    const env = { PATH: `${bin}:/usr/bin:/bin` };
+
+    const missing = await runRelay(root, ["doctor"], projectRoot, env);
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stdout).toContain("codex      missing");
+    expect(missing.stdout).toContain("opencode   missing");
+
+    const unhealthyHarness = "#!/bin/sh\nexit 1\n";
+    await Promise.all([
+      writeFile(join(bin, "codex"), unhealthyHarness),
+      writeFile(join(bin, "opencode"), unhealthyHarness),
+    ]);
+    await Promise.all([chmod(join(bin, "codex"), 0o755), chmod(join(bin, "opencode"), 0o755)]);
+
+    const unhealthy = await runRelay(root, ["doctor"], projectRoot, env);
+    expect(unhealthy.exitCode).toBe(1);
+    expect(unhealthy.stdout).toContain("codex      unhealthy");
+    expect(unhealthy.stdout).toContain("opencode   unhealthy");
   });
 
   it("hands off only unseen context across a real Codex → OpenCode → Codex process flow", async () => {
