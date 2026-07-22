@@ -11,7 +11,7 @@ const ProcessClaim = Schema.Struct({
   token: Schema.String,
   owner: Schema.Struct({ pid: Schema.Number, startedAt: Schema.String }),
   child: Schema.Struct({ pid: Schema.Number, pgid: Schema.Number, startedAt: Schema.String }),
-  scope: Schema.optional(Schema.Literals(["group", "process"])),
+  scope: Schema.optionalKey(Schema.Literals(["group", "process"])),
   kind: Schema.String,
   createdAt: Schema.String,
 });
