@@ -421,21 +421,27 @@ export interface ThreadLockOperations {
 const processStartIdentity = async (pid: number) => {
   if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
   if (process.platform === "linux") {
+    let processStat: string;
     try {
-      const processStat = await readFile(`/proc/${pid}/stat`, "utf8");
-      const commandEnd = processStat.lastIndexOf(") ");
-      if (commandEnd < 0) return undefined;
-      const fields = processStat
-        .slice(commandEnd + 2)
-        .trim()
-        .split(/\s+/);
-      const startTicks = fields[19];
-      return startTicks && /^\d+$/.test(startTicks) ? `linux:${startTicks}` : undefined;
+      processStat = await readFile(`/proc/${pid}/stat`, "utf8");
     } catch (cause) {
       const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
       if (code === "ENOENT" || code === "ESRCH") return undefined;
       throw cause;
     }
+    const commandEnd = processStat.lastIndexOf(") ");
+    if (commandEnd < 0) throw new Error(`Relay could not parse process ${pid} status`);
+    const fields = processStat
+      .slice(commandEnd + 2)
+      .trim()
+      .split(/\s+/);
+    const startTicks = fields[19];
+    if (!startTicks || !/^\d+$/.test(startTicks)) {
+      throw new Error(`Relay could not parse the start identity for process ${pid}`);
+    }
+    const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+    if (bootId.length === 0) throw new Error("Relay could not read the Linux boot identity");
+    return `linux:${bootId}:${startTicks}`;
   }
 
   const ps = ["/bin/ps", "/usr/bin/ps"].find(existsSync);
@@ -447,9 +453,21 @@ const processStartIdentity = async (pid: number) => {
     env: {},
   });
   const [output, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-  if (exitCode !== 0) return undefined;
+  if (exitCode !== 0) {
+    try {
+      process.kill(pid, 0);
+    } catch (cause) {
+      const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+      if (code === "ESRCH") return undefined;
+      throw cause;
+    }
+    throw new Error(`Relay could not inspect the start identity for live process ${pid}`);
+  }
   const startedAt = output.trim();
-  return startedAt.length > 0 ? startedAt : undefined;
+  if (startedAt.length === 0) {
+    throw new Error(`Relay could not parse the start identity for process ${pid}`);
+  }
+  return startedAt;
 };
 
 const liveThreadLockOperations: ThreadLockOperations = {
@@ -511,16 +529,7 @@ const claimState = async (
   return "stale";
 };
 
-const releaseClaim = async (path: string, owner: LockClaim, operations: ThreadLockOperations) => {
-  if (process.pid !== owner.pid) return;
-  let releasingIdentity: string | undefined;
-  try {
-    releasingIdentity = await operations.processStartIdentity(process.pid);
-  } catch {
-    return;
-  }
-  if (releasingIdentity !== owner.startedAt) return;
-
+const removeClaimIfOwned = async (path: string, owner: LockClaim) => {
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -545,6 +554,18 @@ const releaseClaim = async (path: string, owner: LockClaim, operations: ThreadLo
     return;
   }
   await rm(path, { force: true });
+};
+
+const releaseClaim = async (path: string, owner: LockClaim, operations: ThreadLockOperations) => {
+  if (process.pid !== owner.pid) return;
+  let releasingIdentity: string | undefined;
+  try {
+    releasingIdentity = await operations.processStartIdentity(process.pid);
+  } catch {
+    return;
+  }
+  if (releasingIdentity !== owner.startedAt) return;
+  await removeClaimIfOwned(path, owner);
 };
 
 async function liveLockExists(
@@ -703,15 +724,24 @@ async function acquireLockAt(
   await atomicJsonWrite(paths, claim, owner);
 
   let conflict: "live" | "starting" | undefined;
-  for (const entry of await readdir(path)) {
-    if (!entry.endsWith(".json") || entry === `${token}.json`) continue;
-    const otherClaim = `${path}/${entry}`;
-    const state = await claimState(otherClaim, operations);
-    if (state === "stale") await rm(otherClaim, { force: true });
-    else conflict ??= state;
+  try {
+    for (const entry of await readdir(path)) {
+      if (!entry.endsWith(".json") || entry === `${token}.json`) continue;
+      const otherClaim = `${path}/${entry}`;
+      const state = await claimState(otherClaim, operations);
+      if (state === "stale") await rm(otherClaim, { force: true });
+      else conflict ??= state;
+    }
+  } catch (cause) {
+    try {
+      await removeClaimIfOwned(claim, owner);
+    } catch (cleanupCause) {
+      throw new AggregateError([cause, cleanupCause], "Relay lock inspection and cleanup failed");
+    }
+    throw cause;
   }
   if (conflict) {
-    await releaseClaim(claim, owner, operations);
+    await removeClaimIfOwned(claim, owner);
     throw new ThreadBusy({
       threadId: id,
       message: conflict === "live" ? busyMessage : startingMessage,

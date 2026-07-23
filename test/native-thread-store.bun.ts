@@ -787,6 +787,25 @@ describe("thread store lock ownership", () => {
     await lease.release();
   });
 
+  it("includes the Linux boot identity in live process claims", async () => {
+    if (process.platform !== "linux") return;
+    const root = await mkdtemp(join(directory, "lock-linux-boot-identity-"));
+    const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+    const lease = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        return yield* store.acquireLock("linux-boot-identity");
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+    );
+
+    const claimPath = await onlyLockClaim(join(root, "locks", "linux-boot-identity"));
+    const claim = Schema.decodeUnknownSync(StoredLockClaim)(
+      JSON.parse(await readFile(claimPath, "utf8")),
+    );
+    expect(claim.startedAt).toMatch(new RegExp(`^linux:${bootId}:\\d+$`));
+    await lease.release();
+  });
+
   it("reclaims a live PID when its process start identity does not match", async () => {
     const root = await mkdtemp(join(directory, "lock-reused-pid-"));
     const threadId = "reused-pid";
@@ -846,6 +865,43 @@ describe("thread store lock ownership", () => {
         }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, lockOperations(identities)))),
       ),
     ).rejects.toThrow("already open");
+    expect((await readdir(claimDirectory)).filter((entry) => entry.endsWith(".json"))).toEqual([
+      "owner.json",
+    ]);
+  });
+
+  it("keeps a claim when its process identity cannot be inspected", async () => {
+    const root = await mkdtemp(join(directory, "lock-owner-lookup-failure-"));
+    const threadId = "owner-lookup-failure";
+    const ownerPid = 53_535;
+    const claimDirectory = join(root, "run-locks", threadId);
+    const ownerClaim = join(claimDirectory, "owner.json");
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(
+      ownerClaim,
+      `${JSON.stringify({
+        pid: ownerPid,
+        startedAt: "owner-start",
+        token: "owner",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    const operations: ThreadLockOperations = {
+      processStartIdentity: async (pid) => {
+        if (pid === process.pid) return "contender-start";
+        throw new Error("identity lookup denied");
+      },
+    };
+
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.acquireRunLease(threadId);
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, operations))),
+      ),
+    ).rejects.toThrow("identity lookup denied");
+    expect(await Bun.file(ownerClaim).exists()).toBe(true);
     expect((await readdir(claimDirectory)).filter((entry) => entry.endsWith(".json"))).toEqual([
       "owner.json",
     ]);
