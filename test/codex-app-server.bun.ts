@@ -51,6 +51,7 @@ describe("Codex app-server commands", () => {
   it("times out and closes an unresponsive app-server request", async () => {
     const timeoutDataRoot = await mkdtemp(join(tmpdir(), "relay-codex-timeout-root-"));
     const reviewStarted = Promise.withResolvers<void>();
+    // Freeze only the caller's timeout; the fixture must reach review/start on real process I/O.
     vi.useFakeTimers();
     try {
       const command = runCodexCommand(
