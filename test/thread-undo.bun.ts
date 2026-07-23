@@ -3,14 +3,98 @@ import { Effect, Schema } from "effect";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ThreadStore } from "../src/services/thread-store.ts";
+import type { RelayMessage, RelayThread } from "../src/domain.ts";
+import {
+  ThreadStore,
+  type ThreadStoreTestHooks,
+  type UndoRedoPersistenceBoundary,
+} from "../src/services/thread-store.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "relay-undo-"));
 const StoredUndoFixture = Schema.Struct({ entries: Schema.Array(Schema.Unknown) });
+const undoRedoBoundaries: ReadonlyArray<UndoRedoPersistenceBoundary> = [
+  "before-journal",
+  "journal",
+  "events",
+  "metadata",
+  "visibility",
+  "undo-state",
+  "committed",
+];
 
 afterAll(async () => {
   await rm(directory, { recursive: true, force: true });
 });
+
+const failAtBoundary = (target: UndoRedoPersistenceBoundary): ThreadStoreTestHooks => ({
+  onUndoRedoPersistenceBoundary: (boundary) => {
+    if (boundary === target) throw new Error(`Injected interruption at ${boundary}`);
+  },
+});
+
+const createTwoTurns = (root: string) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* ThreadStore;
+      const created = yield* store.create({
+        title: "Undo transaction test",
+        cwd: process.cwd(),
+        harness: "opencode",
+      });
+      const first = yield* store.commitTurn(created, {
+        harness: "opencode",
+        prompt: "first",
+        response: "first response",
+        sessionId: "ses_transaction",
+        bindingCreatedAt: created.createdAt,
+      });
+      const second = yield* store.commitTurn(first.thread, {
+        harness: "opencode",
+        prompt: "second",
+        response: "second response",
+        sessionId: "ses_transaction",
+        bindingCreatedAt: created.createdAt,
+      });
+      return {
+        thread: second.thread,
+        messages: yield* store.messages(created.id),
+      };
+    }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+  );
+
+const interruptUndo = (root: string, thread: RelayThread, boundary: UndoRedoPersistenceBoundary) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* ThreadStore;
+      return yield* Effect.exit(store.undoLastTurn(thread, "opencode"));
+    }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, failAtBoundary(boundary)))),
+  );
+
+const interruptRedo = (root: string, thread: RelayThread, boundary: UndoRedoPersistenceBoundary) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* ThreadStore;
+      return yield* Effect.exit(store.redoLastTurn(thread, "opencode"));
+    }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, failAtBoundary(boundary)))),
+  );
+
+const recover = (root: string, threadId: string) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* ThreadStore;
+      const thread = yield* store.get(threadId);
+      return {
+        thread,
+        messages: yield* store.messages(threadId),
+        canRedo: yield* store.canRedoLastTurn(thread, "opencode"),
+      };
+    }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+  );
+
+const expectCanonicalIdentities = (messages: ReadonlyArray<RelayMessage>) => {
+  expect(new Set(messages.map((message) => message.id)).size).toBe(messages.length);
+  expect(new Set(messages.map((message) => message.seq)).size).toBe(messages.length);
+};
 
 describe("canonical undo and redo", () => {
   it("keeps Relay history aligned with an OpenCode native revert", async () => {
@@ -126,4 +210,64 @@ describe("canonical undo and redo", () => {
       }).pipe(Effect.provide(ThreadStore.layerFromRoot(directory))),
     );
   });
+
+  for (const boundary of undoRedoBoundaries) {
+    it(`recovers an interrupted undo at the ${boundary} boundary`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "relay-undo-atomic-"));
+      try {
+        const before = await createTwoTurns(root);
+        const exit = await interruptUndo(root, before.thread, boundary);
+        expect(exit._tag).toBe("Failure");
+
+        const recovered = await recover(root, before.thread.id);
+        const expectPostOperation = boundary !== "before-journal";
+        const expectedMessages = expectPostOperation
+          ? before.messages.slice(0, -2)
+          : before.messages;
+        expect(recovered.thread.lastSeq).toBe(expectPostOperation ? 2 : 4);
+        expect(recovered.canRedo).toBe(expectPostOperation);
+        expect(recovered.messages).toEqual(expectedMessages);
+        expectCanonicalIdentities(recovered.messages);
+        expect(
+          await Bun.file(
+            join(root, "threads", before.thread.id, "undo-redo-transaction.json"),
+          ).exists(),
+        ).toBe(false);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it(`recovers an interrupted redo at the ${boundary} boundary without duplicates`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "relay-redo-atomic-"));
+      try {
+        const before = await createTwoTurns(root);
+        const undone = await Effect.runPromise(
+          Effect.gen(function* () {
+            const store = yield* ThreadStore;
+            return yield* store.undoLastTurn(before.thread, "opencode");
+          }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+        );
+        const exit = await interruptRedo(root, undone, boundary);
+        expect(exit._tag).toBe("Failure");
+
+        const recovered = await recover(root, before.thread.id);
+        const expectPostOperation = boundary !== "before-journal";
+        const expectedMessages = expectPostOperation
+          ? before.messages
+          : before.messages.slice(0, -2);
+        expect(recovered.thread.lastSeq).toBe(expectPostOperation ? 4 : 2);
+        expect(recovered.canRedo).toBe(!expectPostOperation);
+        expect(recovered.messages).toEqual(expectedMessages);
+        expectCanonicalIdentities(recovered.messages);
+        expect(
+          await Bun.file(
+            join(root, "threads", before.thread.id, "undo-redo-transaction.json"),
+          ).exists(),
+        ).toBe(false);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
 });
