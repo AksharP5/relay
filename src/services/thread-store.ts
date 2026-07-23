@@ -489,6 +489,9 @@ const recoverThreadLocked = async (
         { encoding: "utf8", mode: 0o600 },
       );
     }
+    if (latestPending.visibility !== undefined) {
+      await atomicJsonWrite(paths, visibilityPath(paths, thread.id), latestPending.visibility);
+    }
     await writeThread(paths, latestPending.thread);
     await rm(pendingPath(paths, thread.id), { force: true });
     return {
@@ -1578,6 +1581,7 @@ export class ThreadStore extends Context.Service<
             const visibilityChanged =
               hidden.size !== hiddenBefore.size ||
               [...hidden].some((key) => !hiddenBefore.has(key));
+            const linksChanged = links.size !== (visibility.links?.length ?? 0);
             const bindings = { ...thread.bindings, [input.harness]: binding };
             if (visibilityChanged) {
               const other = input.harness === "codex" ? "opencode" : "codex";
@@ -1602,14 +1606,23 @@ export class ThreadStore extends Context.Service<
               lastSeq: nextSeq,
               updatedAt: now,
             };
+            const nextVisibility: NativeVisibility = {
+              hidden: [...hidden],
+              links: [...links].map(([messageId, key]) => ({ messageId, key })),
+            };
+            const visibilityNeedsWrite = visibilityChanged || linksChanged;
+            const needsJournal = messages.length > 0 || visibilityNeedsWrite;
 
-            if (messages.length > 0) {
+            if (needsJournal) {
               const pending: PendingTurn = {
                 version: 1,
                 messages: [...messages],
                 thread: updated,
+                ...(visibilityNeedsWrite ? { visibility: nextVisibility } : {}),
               };
               await atomicJsonWrite(paths, pendingPath(paths, thread.id), pending);
+            }
+            if (messages.length > 0) {
               await appendFile(
                 eventsPath(paths, thread.id),
                 `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
@@ -1617,22 +1630,11 @@ export class ThreadStore extends Context.Service<
               );
               await chmod(eventsPath(paths, thread.id), 0o600);
             }
-            if (
-              hidden.size !== hiddenBefore.size ||
-              [...hidden].some((key) => !hiddenBefore.has(key))
-            ) {
-              await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
-                hidden: [...hidden],
-                links: [...links].map(([messageId, key]) => ({ messageId, key })),
-              });
-            } else if (links.size !== (visibility.links?.length ?? 0)) {
-              await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
-                hidden: [...hidden],
-                links: [...links].map(([messageId, key]) => ({ messageId, key })),
-              });
+            if (visibilityNeedsWrite) {
+              await atomicJsonWrite(paths, visibilityPath(paths, thread.id), nextVisibility);
             }
             await writeThread(paths, updated);
-            if (messages.length > 0) await rm(pendingPath(paths, thread.id), { force: true });
+            if (needsJournal) await rm(pendingPath(paths, thread.id), { force: true });
             await rm(undoPath(paths, thread.id), { force: true });
             return updated;
           },
