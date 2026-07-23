@@ -19,6 +19,14 @@ const sharedMetadata = {
 const semver =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
+const launcherContentFiles = [
+  "README.md",
+  "LICENSE",
+  "CONTRIBUTING.md",
+  "docs/how-relay-works.md",
+  "docs/commands.md",
+] as const;
+
 const resetDirectory = async (path: string) => {
   await rm(path, { recursive: true, force: true });
   await mkdir(path, { recursive: true });
@@ -27,8 +35,11 @@ const resetDirectory = async (path: string) => {
 const writeJson = (path: string, value: unknown) =>
   writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 
-const copyProjectFile = (name: string, outputDirectory: string) =>
-  copyFile(resolve(name), join(outputDirectory, name));
+const copyProjectFile = async (name: string, outputDirectory: string) => {
+  const destination = join(outputDirectory, name);
+  await mkdir(dirname(destination), { recursive: true });
+  await copyFile(resolve(name), destination);
+};
 
 export const readReleaseVersion = async (): Promise<string> => {
   const packageJson = JSON.parse(await readFile(resolve("package.json"), "utf8")) as {
@@ -58,14 +69,11 @@ export const createLauncherPackage = async (outputDirectory: string, version: st
     keywords: ["cli", "codex", "coding-agent", "opencode", "tui"],
     ...sharedMetadata,
     bin: { relay: "bin/relay" },
-    files: ["bin", "README.md", "LICENSE"],
+    files: ["bin", ...launcherContentFiles],
     os: ["darwin", "linux"],
     optionalDependencies,
   });
-  await Promise.all([
-    copyProjectFile("README.md", outputDirectory),
-    copyProjectFile("LICENSE", outputDirectory),
-  ]);
+  await Promise.all(launcherContentFiles.map((name) => copyProjectFile(name, outputDirectory)));
   return outputDirectory;
 };
 

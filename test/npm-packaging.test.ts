@@ -82,6 +82,27 @@ describe("npm package assembly", () => {
     await expect(createLauncherPackage(launcher, "01.2.3")).rejects.toThrow("Invalid npm");
   });
 
+  it("publishes every local README link target", async () => {
+    const root = await temporaryDirectory();
+    const launcher = join(root, "launcher");
+    await createLauncherPackage(launcher, "1.2.3");
+
+    const readme = await readFile(join(launcher, "README.md"), "utf8");
+    const localTargets = [...readme.matchAll(/\[[^\]]+\]\(([^)\s]+)\)/g)]
+      .map(([, target]) => target!)
+      .filter((target) => !target.startsWith("#") && !/^[a-z][a-z\d+.-]*:/i.test(target))
+      .map((target) => decodeURIComponent(target.split(/[?#]/, 1)[0]!));
+    const { stdout } = await execFileAsync("npm", ["pack", launcher, "--dry-run", "--json"], {
+      cwd: root,
+    });
+    const [{ files }] = JSON.parse(stdout) as [
+      { readonly files: ReadonlyArray<{ readonly path: string }> },
+    ];
+    const publishedPaths = new Set(files.map(({ path }) => path));
+
+    expect(localTargets.filter((target) => !publishedPaths.has(target))).toEqual([]);
+  });
+
   it.each([
     ["Darwin", "arm64", "relay-darwin-arm64", "nested", "ok"],
     ["Darwin", "x86_64", "relay-darwin-x64", "hoisted", "ok"],
