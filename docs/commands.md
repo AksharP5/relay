@@ -126,9 +126,11 @@ The native workspace is the primary interface, but scripts can run turns directl
 relay ask "Reproduce the import failure and add a focused test"
 relay ask --with opencode "Review the fix for encoding edge cases"
 relay ask --with codex --model <model-name> "Apply the useful findings"
+relay ask -- --help
 ```
 
 `--with` chooses the harness for this turn and makes it active. `--model` is forwarded to that harness and remembered on its binding.
+Use `--` to end option parsing when the prompt starts with an option-like word. Every argument after the delimiter is prompt content.
 
 Headless turns use the supported non-interactive interface of each CLI. Interactive approvals and questions are best handled in bare `relay`, where the real native TUI is present.
 

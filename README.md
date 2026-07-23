@@ -194,6 +194,7 @@ relay config set switch-key ctrl+g
 relay new "Improve the parser" --with codex
 relay ask "Find the edge case and add a focused test"
 relay ask --with opencode "Review the implementation"
+relay ask -- --help
 relay use codex
 relay status
 relay history
@@ -202,6 +203,8 @@ relay thread <id>
 relay export [id] [--out relay-task.json]
 relay delete [id] --force
 ```
+
+For `relay ask`, `--` ends option parsing so prompts can begin with option-like text. Every argument after the delimiter is treated as prompt content.
 
 See the [command guide](docs/commands.md) for full examples.
 

@@ -56,6 +56,26 @@ describe("parseArgs", () => {
     });
   });
 
+  it("treats every ask argument after -- as prompt text", () => {
+    expect(parseArgs(["ask", "--", "--help"])).toEqual({
+      name: "ask",
+      prompt: "--help",
+    });
+    expect(
+      parseArgs(["ask", "--with", "opencode", "--", "--model", "latest", "--with", "codex"]),
+    ).toEqual({
+      name: "ask",
+      harness: "opencode",
+      prompt: "--model latest --with codex",
+    });
+  });
+
+  it("still rejects unknown ask options before --", () => {
+    expect(() => parseArgs(["ask", "--unknown", "--", "prompt"])).toThrow(
+      "Unknown option: --unknown",
+    );
+  });
+
   it("defaults new tasks to Codex", () => {
     expect(parseArgs(["new", "Fix", "checkout"])).toEqual({
       name: "new",
