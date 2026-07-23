@@ -14,6 +14,7 @@ import {
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { NoCurrentThread, StoreError, ThreadBusy, ThreadNotFound } from "../errors.ts";
 import {
   RelayIndex,
@@ -394,6 +395,7 @@ type PendingTurn = typeof PendingTurn.Type;
 const UndoEntry = Schema.Struct({
   messages: Schema.Array(RelayMessage),
   thread: RelayThread,
+  redoFrom: Schema.optionalKey(RelayThread),
 });
 type UndoEntry = typeof UndoEntry.Type;
 
@@ -548,6 +550,7 @@ const validateUndoRedoTransaction = (transaction: UndoRedoTransaction) => {
 };
 
 const canRestoreUndoEntry = (
+  thread: RelayThread,
   messages: ReadonlyArray<RelayMessage>,
   entry: UndoEntry,
   harness: Harness,
@@ -562,9 +565,13 @@ const canRestoreUndoEntry = (
   if (
     entry.messages.length !== 2 ||
     user?.role !== "user" ||
+    user.harness !== harness ||
     assistant?.role !== "assistant" ||
     assistant.harness !== harness ||
-    entry.thread.activeHarness !== harness
+    assistant.seq !== user.seq + 1 ||
+    entry.thread.activeHarness !== harness ||
+    entry.redoFrom === undefined ||
+    !isDeepStrictEqual(entry.redoFrom, thread)
   ) {
     return false;
   }
@@ -1465,11 +1472,16 @@ export class ThreadStore extends Context.Service<
       (thread: RelayThread, harness: Harness) =>
         Effect.tryPromise({
           try: async () => {
-            const [entry, messages] = await Promise.all([
+            const [entry, messages, current] = await Promise.all([
               readUndoState(paths, thread.id).then((state) => state.entries.at(-1)),
               readRawMessages(paths, thread.id),
+              readThreadFile(paths, thread.id).then((stored) => stored?.value),
             ]);
-            return entry !== undefined && canRestoreUndoEntry(messages, entry, harness);
+            return (
+              entry !== undefined &&
+              current !== undefined &&
+              canRestoreUndoEntry(current, messages, entry, harness)
+            );
           },
           catch: (cause) =>
             new StoreError({
@@ -2110,7 +2122,7 @@ export class ThreadStore extends Context.Service<
             messages: remainingRaw,
             thread: updated,
             visibility,
-            undoEntries: [...state.entries, { messages: removed, thread }],
+            undoEntries: [...state.entries, { messages: removed, thread, redoFrom: updated }],
           };
           await persistUndoRedoTransaction(paths, thread.id, transaction, testHooks);
           return updated;
@@ -2125,13 +2137,14 @@ export class ThreadStore extends Context.Service<
     redoLastTurn: Effect.fn("ThreadStore.redoLastTurn")((thread: RelayThread, harness: Harness) =>
       Effect.tryPromise({
         try: async () => {
-          const [state, messages, visibility] = await Promise.all([
+          const [state, messages, visibility, current] = await Promise.all([
             readUndoState(paths, thread.id),
             readRawMessages(paths, thread.id),
             readVisibility(paths, thread.id),
+            readThreadFile(paths, thread.id).then((stored) => stored?.value),
           ]);
           const entry = state.entries.at(-1);
-          if (!entry || !canRestoreUndoEntry(messages, entry, harness)) {
+          if (!entry || !current || !canRestoreUndoEntry(current, messages, entry, harness)) {
             if (entry) await rm(undoPath(paths, thread.id), { force: true });
             throw new NoCurrentThread({ message: "There is no turn to redo" });
           }

@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RelayMessage, RelayThread } from "../src/domain.ts";
+import { RelayMessage, type RelayThread } from "../src/domain.ts";
 import {
   ThreadStore,
   type ThreadStoreTestHooks,
@@ -144,6 +144,32 @@ describe("canonical undo and redo", () => {
     );
   });
 
+  it("preserves exact redo snapshots across multiple undo and redo operations", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-redo-chain-"));
+    try {
+      const before = await createTwoTurns(root);
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          const firstUndo = yield* store.undoLastTurn(before.thread, "opencode");
+          const secondUndo = yield* store.undoLastTurn(firstUndo, "opencode");
+          expect(secondUndo.lastSeq).toBe(0);
+
+          const firstRedo = yield* store.redoLastTurn(secondUndo, "opencode");
+          expect(firstRedo.lastSeq).toBe(2);
+          expect(yield* store.canRedoLastTurn(firstRedo, "opencode")).toBe(true);
+          const secondRedo = yield* store.redoLastTurn(firstRedo, "opencode");
+          expect(secondRedo.lastSeq).toBe(4);
+          const messages = yield* store.messages(before.thread.id);
+          expect(messages).toEqual(before.messages);
+          expectCanonicalIdentities(messages);
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("invalidates redo before adopting a different native context", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -251,6 +277,98 @@ describe("canonical undo and redo", () => {
             "replacement response",
           ]);
           expectCanonicalIdentities(messages);
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects stale redo across gaps left by hidden native turns", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-redo-hidden-gap-"));
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          const created = yield* store.create({
+            title: "Hidden redo gap",
+            cwd: process.cwd(),
+            harness: "opencode",
+          });
+          const first = yield* store.commitTurn(created, {
+            harness: "opencode",
+            prompt: "first",
+            response: "first response",
+            sessionId: "ses_hidden_gap",
+            bindingCreatedAt: created.createdAt,
+          });
+          const second = yield* store.commitTurn(first.thread, {
+            harness: "opencode",
+            prompt: "undo this",
+            response: "undo this response",
+            sessionId: "ses_hidden_gap",
+            bindingCreatedAt: created.createdAt,
+          });
+          const hiddenTurn = yield* store.commitTurn(second.thread, {
+            harness: "opencode",
+            prompt: "hidden",
+            response: "hidden response",
+            sessionId: "ses_hidden_gap",
+            bindingCreatedAt: created.createdAt,
+          });
+          const allMessages = yield* store.messages(created.id);
+          const hiddenMessages = allMessages.slice(-2);
+          yield* Effect.promise(() =>
+            writeFile(
+              join(root, "threads", created.id, "native-visibility.json"),
+              `${JSON.stringify({
+                hidden: ["hidden-user", "hidden-assistant"],
+                links: hiddenMessages.map((message, index) => ({
+                  messageId: message.id,
+                  key: index === 0 ? "hidden-user" : "hidden-assistant",
+                })),
+              })}\n`,
+            ),
+          );
+
+          const undone = yield* store.undoLastTurn(hiddenTurn.thread, "opencode");
+          expect(undone.lastSeq).toBe(6);
+          const storedRedo = yield* Effect.promise(() =>
+            readFile(join(root, "threads", created.id, "undo-stack.json"), "utf8"),
+          );
+          const replacement = yield* store.commitTurn(undone, {
+            harness: "opencode",
+            prompt: "replacement",
+            response: "replacement response",
+            sessionId: "ses_hidden_gap",
+            bindingCreatedAt: created.createdAt,
+          });
+          expect(replacement.thread.lastSeq).toBe(8);
+          yield* Effect.promise(() =>
+            writeFile(join(root, "threads", created.id, "undo-stack.json"), storedRedo),
+          );
+
+          expect(yield* store.canRedoLastTurn(replacement.thread, "opencode")).toBe(false);
+          const redoExit = yield* Effect.exit(store.redoLastTurn(replacement.thread, "opencode"));
+          expect(redoExit._tag).toBe("Failure");
+          const followup = yield* store.commitTurn(replacement.thread, {
+            harness: "opencode",
+            prompt: "followup",
+            response: "followup response",
+            sessionId: "ses_hidden_gap",
+            bindingCreatedAt: created.createdAt,
+          });
+          expect(followup.thread.lastSeq).toBe(10);
+
+          const eventText = yield* Effect.promise(() =>
+            readFile(join(root, "threads", created.id, "events.jsonl"), "utf8"),
+          );
+          const rawMessages = eventText
+            .trimEnd()
+            .split("\n")
+            .map((line) => Schema.decodeUnknownSync(RelayMessage)(JSON.parse(line)));
+          expect(rawMessages.map((message) => message.seq)).toEqual([1, 2, 5, 6, 7, 8, 9, 10]);
+          expectCanonicalIdentities(rawMessages);
         }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
       );
     } finally {
