@@ -7,12 +7,24 @@ import { Schema } from "effect";
 import type { NativeTranscriptTurn, RelayMessage } from "../domain.ts";
 import { AppServerError, WebSocketAppServerConnection } from "../harnesses/codex-app-server.ts";
 import { readStream, stopProcessTree } from "../services/process-runner.ts";
-import { trackManagedProcess } from "../services/process-registry.ts";
+import { trackManagedProcess, untrackManagedProcess } from "../services/process-registry.ts";
 import { NativeSessionUnavailable } from "./errors.ts";
 import type { NativeTuiCommand } from "./pty-host.ts";
 
 type JsonObject = Record<string, unknown>;
 const JsonObject = Schema.Record(Schema.String, Schema.Unknown);
+
+interface CodexNativeStartOperations {
+  readonly track: typeof trackManagedProcess;
+  readonly stop: typeof stopProcessTree;
+  readonly untrack: typeof untrackManagedProcess;
+}
+
+const liveCodexNativeStartOperations: CodexNativeStartOperations = {
+  track: trackManagedProcess,
+  stop: stopProcessTree,
+  untrack: untrackManagedProcess,
+};
 
 const isJsonObject = Schema.is(JsonObject);
 const asObject = (value: unknown): JsonObject | undefined =>
@@ -215,50 +227,77 @@ export class CodexNativeBackend {
     this.#cwd = input.cwd;
   }
 
-  static async start(executable: string, cwd: string, dataRoot: string, signal?: AbortSignal) {
+  static async start(
+    executable: string,
+    cwd: string,
+    dataRoot: string,
+    signal?: AbortSignal,
+    operations: CodexNativeStartOperations = liveCodexNativeStartOperations,
+  ) {
     signal?.throwIfAborted();
     const runtimeDirectory = await mkdtemp(join(tmpdir(), "relay-codex-"));
-    await chmod(runtimeDirectory, 0o700);
-    const token = `${crypto.randomUUID()}${crypto.randomUUID()}`;
-    const tokenPath = join(runtimeDirectory, "token");
-    await writeFile(tokenPath, token, { encoding: "utf8", mode: 0o600 });
-    const remoteUrl = `ws://127.0.0.1:${await reservePort()}`;
-    const child = Bun.spawn(
-      [
-        executable,
-        "app-server",
-        "--listen",
-        remoteUrl,
-        "--ws-auth",
-        "capability-token",
-        "--ws-token-file",
-        tokenPath,
-      ],
-      {
-        cwd,
-        env: Bun.env,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        detached: process.platform !== "win32",
-      },
-    );
-    await trackManagedProcess(dataRoot, child, "codex-native-backend");
-    let stderr = "";
-    if (child.stdout instanceof ReadableStream) void readStream(child.stdout, { limit: 128_000 });
-    if (child.stderr instanceof ReadableStream) {
-      void readStream(child.stderr, { limit: 128_000 }).then((value) => (stderr = value));
-    }
+    let child: ReturnType<typeof Bun.spawn> | undefined;
     let terminating: Promise<void> | undefined;
-    const terminate = () => (terminating ??= stopProcessTree(child));
-    const onAbort = () => void terminate();
-    signal?.addEventListener("abort", onAbort, { once: true });
+    let onAbort: (() => void) | undefined;
 
     try {
+      await chmod(runtimeDirectory, 0o700);
+      const token = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+      const tokenPath = join(runtimeDirectory, "token");
+      await writeFile(tokenPath, token, { encoding: "utf8", mode: 0o600 });
+      const remoteUrl = `ws://127.0.0.1:${await reservePort()}`;
+      const spawnedChild = Bun.spawn(
+        [
+          executable,
+          "app-server",
+          "--listen",
+          remoteUrl,
+          "--ws-auth",
+          "capability-token",
+          "--ws-token-file",
+          tokenPath,
+        ],
+        {
+          cwd,
+          env: Bun.env,
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+          detached: process.platform !== "win32",
+        },
+      );
+      child = spawnedChild;
+      const registration = Promise.withResolvers<void>();
+      const terminate = () =>
+        (terminating ??= Promise.allSettled([
+          operations.stop(spawnedChild),
+          registration.promise,
+        ]).then(async ([stopped]) => {
+          await operations.untrack(spawnedChild);
+          if (stopped.status === "rejected") throw stopped.reason;
+        }));
+      onAbort = () => void terminate();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        registration.resolve();
+        await terminate();
+      }
       signal?.throwIfAborted();
-      await waitForServer(remoteUrl, token, child, () => stderr, signal);
+      try {
+        await operations.track(dataRoot, spawnedChild, "codex-native-backend");
+      } finally {
+        registration.resolve();
+      }
+      let stderr = "";
+      if (spawnedChild.stdout instanceof ReadableStream)
+        void readStream(spawnedChild.stdout, { limit: 128_000 });
+      if (spawnedChild.stderr instanceof ReadableStream) {
+        void readStream(spawnedChild.stderr, { limit: 128_000 }).then((value) => (stderr = value));
+      }
+      signal?.throwIfAborted();
+      await waitForServer(remoteUrl, token, spawnedChild, () => stderr, signal);
       return new CodexNativeBackend({
-        child,
+        child: spawnedChild,
         runtimeDirectory,
         remoteUrl,
         token,
@@ -266,11 +305,25 @@ export class CodexNativeBackend {
         cwd,
       });
     } catch (cause) {
-      await terminate();
-      await rm(runtimeDirectory, { recursive: true, force: true });
+      try {
+        if (child) {
+          terminating ??= operations.stop(child);
+          await terminating;
+        }
+      } catch {
+        // Preserve the startup failure while still removing credential files.
+      }
+      try {
+        await rm(runtimeDirectory, { recursive: true, force: true });
+      } catch (cleanupCause) {
+        throw new AggregateError(
+          [cause, cleanupCause],
+          "Codex startup failed and its runtime directory could not be removed",
+        );
+      }
       throw cause;
     } finally {
-      signal?.removeEventListener("abort", onAbort);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
     }
   }
 
@@ -284,7 +337,8 @@ export class CodexNativeBackend {
   }
 
   async ensureSession(input: { sessionId?: string; model?: string }) {
-    if (!input.sessionId) {
+    const requestedSessionId = input.sessionId;
+    if (!requestedSessionId) {
       throw new Error(
         "An empty Codex thread cannot be resumed; use prepareSession so the native TUI creates it",
       );
@@ -293,13 +347,13 @@ export class CodexNativeBackend {
     try {
       const result = await connection
         .request("thread/resume", {
-          threadId: input.sessionId,
+          threadId: requestedSessionId,
           cwd: this.#cwd,
           ...(input.model ? { model: input.model } : {}),
         })
         .catch((cause) => {
-          if (isMissingCodexSession(cause, input.sessionId!)) {
-            throw new NativeSessionUnavailable("codex", input.sessionId!, cause.message);
+          if (isMissingCodexSession(cause, requestedSessionId)) {
+            throw new NativeSessionUnavailable("codex", requestedSessionId, cause.message);
           }
           throw cause;
         });
