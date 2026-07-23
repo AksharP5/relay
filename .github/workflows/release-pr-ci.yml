@@ -11,15 +11,13 @@ permissions:
 jobs:
   release-check:
     name: >-
-      ${{ github.event.pull_request.user.login == 'github-actions[bot]' &&
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          startsWith(github.event.pull_request.head.ref, 'release-please--branches--') &&
+      ${{ github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.head.ref == 'release-please--branches--main--components--relay' &&
           'check' || 'release-pr-check-not-applicable' }}
     if: >-
       ${{
-        github.event.pull_request.user.login == 'github-actions[bot]' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
-        startsWith(github.event.pull_request.head.ref, 'release-please--branches--')
+        github.event.pull_request.head.ref == 'release-please--branches--main--components--relay'
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
