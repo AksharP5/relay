@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.1](https://github.com/AksharP5/relay/compare/v0.2.0...v0.2.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* clean Codex startup runtime files ([#73](https://github.com/AksharP5/relay/issues/73)) ([7ad5b50](https://github.com/AksharP5/relay/commit/7ad5b5073f3bd668a9edfcadec465f2ede39a06b))
+* **cli:** support ask end-of-options delimiter ([#74](https://github.com/AksharP5/relay/issues/74)) ([12dcd7c](https://github.com/AksharP5/relay/commit/12dcd7c210dc7477095fb0d4744dce3771a65eae))
+* dispatch release PR checks reliably ([#58](https://github.com/AksharP5/relay/issues/58)) ([9eb62ce](https://github.com/AksharP5/relay/commit/9eb62ce3d3e815f54fc3c5901e6922e8bdaf5912))
+* enforce exact optional schemas ([#55](https://github.com/AksharP5/relay/issues/55)) ([d99fd64](https://github.com/AksharP5/relay/commit/d99fd64dacd67cd17ba5d9c29879a81dba33ce42))
+* expose relay from Bun source installs ([#76](https://github.com/AksharP5/relay/issues/76)) ([9ed868d](https://github.com/AksharP5/relay/commit/9ed868d623919697be79ab06b989ed017cdb27ec))
+* keep thread mutations schema-valid ([#70](https://github.com/AksharP5/relay/issues/70)) ([1874503](https://github.com/AksharP5/relay/commit/18745033b0ab2079338ddf3fa157bca72e262742))
+* make process cleanup concurrency-safe ([#69](https://github.com/AksharP5/relay/issues/69)) ([0c93bf3](https://github.com/AksharP5/relay/commit/0c93bf3ee4caaf92a4f440d14b6763a5748bacd5))
+* package linked README docs ([#78](https://github.com/AksharP5/relay/issues/78)) ([1ad0590](https://github.com/AksharP5/relay/commit/1ad0590ca8838e24f0f92a971d6613631250a8e9))
+
 ## [0.2.0](https://github.com/AksharP5/relay/compare/v0.1.4...v0.2.0) (2026-07-21)
 
 
