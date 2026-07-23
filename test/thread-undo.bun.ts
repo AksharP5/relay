@@ -67,7 +67,9 @@ const interruptUndo = (root: string, thread: RelayThread, boundary: UndoRedoPers
     Effect.gen(function* () {
       const store = yield* ThreadStore;
       return yield* Effect.exit(store.undoLastTurn(thread, "opencode"));
-    }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, failAtBoundary(boundary)))),
+    }).pipe(
+      Effect.provide(ThreadStore.layerFromRoot(root, { testHooks: failAtBoundary(boundary) })),
+    ),
   );
 
 const interruptRedo = (root: string, thread: RelayThread, boundary: UndoRedoPersistenceBoundary) =>
@@ -75,7 +77,9 @@ const interruptRedo = (root: string, thread: RelayThread, boundary: UndoRedoPers
     Effect.gen(function* () {
       const store = yield* ThreadStore;
       return yield* Effect.exit(store.redoLastTurn(thread, "opencode"));
-    }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, failAtBoundary(boundary)))),
+    }).pipe(
+      Effect.provide(ThreadStore.layerFromRoot(root, { testHooks: failAtBoundary(boundary) })),
+    ),
   );
 
 const recover = (root: string, threadId: string) =>
