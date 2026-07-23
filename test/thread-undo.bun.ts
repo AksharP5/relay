@@ -215,6 +215,156 @@ describe("canonical undo and redo", () => {
     );
   });
 
+  it("rejects a stale redo entry instead of replacing a newer turn", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-redo-stale-"));
+    try {
+      const before = await createTwoTurns(root);
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          const undone = yield* store.undoLastTurn(before.thread, "opencode");
+          const storedRedo = yield* Effect.promise(() =>
+            readFile(join(root, "threads", before.thread.id, "undo-stack.json"), "utf8"),
+          );
+          const replacement = yield* store.commitTurn(undone, {
+            harness: "opencode",
+            prompt: "replacement",
+            response: "replacement response",
+            sessionId: "ses_transaction",
+            bindingCreatedAt: before.thread.createdAt,
+          });
+
+          // Model an older Relay process stopping after it committed the new
+          // turn but before it removed the now-obsolete redo stack.
+          yield* Effect.promise(() =>
+            writeFile(join(root, "threads", before.thread.id, "undo-stack.json"), storedRedo),
+          );
+
+          expect(yield* store.canRedoLastTurn(replacement.thread, "opencode")).toBe(false);
+          const redoExit = yield* Effect.exit(store.redoLastTurn(replacement.thread, "opencode"));
+          expect(redoExit._tag).toBe("Failure");
+          const messages = yield* store.messages(before.thread.id);
+          expect(messages.map((message) => message.content)).toEqual([
+            "first",
+            "first response",
+            "replacement",
+            "replacement response",
+          ]);
+          expectCanonicalIdentities(messages);
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates redo while recovering a pending replacement turn", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-redo-pending-"));
+    try {
+      const before = await createTwoTurns(root);
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          const undone = yield* store.undoLastTurn(before.thread, "opencode");
+          const now = new Date().toISOString();
+          const pendingMessages: ReadonlyArray<RelayMessage> = [
+            {
+              id: crypto.randomUUID(),
+              seq: undone.lastSeq + 1,
+              role: "user",
+              content: "recovered replacement",
+              harness: "opencode",
+              nativeSessionId: "ses_transaction",
+              createdAt: now,
+            },
+            {
+              id: crypto.randomUUID(),
+              seq: undone.lastSeq + 2,
+              role: "assistant",
+              content: "recovered replacement response",
+              harness: "opencode",
+              nativeSessionId: "ses_transaction",
+              createdAt: now,
+            },
+          ];
+          const pendingThread: RelayThread = {
+            ...undone,
+            lastSeq: undone.lastSeq + 2,
+            updatedAt: now,
+          };
+          yield* Effect.promise(() =>
+            writeFile(
+              join(root, "threads", before.thread.id, "pending-turn.json"),
+              `${JSON.stringify({
+                version: 1,
+                messages: pendingMessages,
+                thread: pendingThread,
+              })}\n`,
+            ),
+          );
+
+          const recovered = yield* store.get(before.thread.id);
+          expect(recovered.lastSeq).toBe(4);
+          expect(yield* store.canRedoLastTurn(recovered, "opencode")).toBe(false);
+          expect(
+            yield* Effect.promise(() =>
+              Bun.file(join(root, "threads", before.thread.id, "undo-stack.json")).exists(),
+            ),
+          ).toBe(false);
+          expect(
+            yield* Effect.promise(() =>
+              Bun.file(join(root, "threads", before.thread.id, "pending-turn.json")).exists(),
+            ),
+          ).toBe(false);
+          const messages = yield* store.messages(before.thread.id);
+          expect(messages.map((message) => message.content)).toEqual([
+            "first",
+            "first response",
+            "recovered replacement",
+            "recovered replacement response",
+          ]);
+          expectCanonicalIdentities(messages);
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("validates canonical history before writing an undo journal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-undo-invalid-"));
+    try {
+      const before = await createTwoTurns(root);
+      const events = join(root, "threads", before.thread.id, "events.jsonl");
+      const original = await readFile(events, "utf8");
+      const lines = original.trimEnd().split("\n");
+      const first = lines[0];
+      expect(first).toBeDefined();
+      if (first === undefined) throw new Error("Missing test fixture event");
+      await writeFile(events, `${[lines[0], first, ...lines.slice(1)].join("\n")}\n`);
+
+      const exit = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* Effect.exit(store.undoLastTurn(before.thread, "opencode"));
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+      );
+      expect(exit._tag).toBe("Failure");
+      expect(
+        await Bun.file(
+          join(root, "threads", before.thread.id, "undo-redo-transaction.json"),
+        ).exists(),
+      ).toBe(false);
+
+      await writeFile(events, original);
+      const recovered = await recover(root, before.thread.id);
+      expect(recovered.messages).toEqual(before.messages);
+      expectCanonicalIdentities(recovered.messages);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   for (const boundary of undoRedoBoundaries) {
     it(`recovers an interrupted undo at the ${boundary} boundary`, async () => {
       const root = await mkdtemp(join(tmpdir(), "relay-undo-atomic-"));

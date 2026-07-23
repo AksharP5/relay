@@ -540,6 +540,41 @@ const assertCanonicalMessageIdentities = (messages: ReadonlyArray<RelayMessage>)
   }
 };
 
+const validateUndoRedoTransaction = (transaction: UndoRedoTransaction) => {
+  assertCanonicalMessageIdentities(transaction.messages);
+  for (const entry of transaction.undoEntries) {
+    assertCanonicalMessageIdentities(entry.messages);
+  }
+};
+
+const canRestoreUndoEntry = (
+  messages: ReadonlyArray<RelayMessage>,
+  entry: UndoEntry,
+  harness: Harness,
+) => {
+  try {
+    assertCanonicalMessageIdentities(messages);
+    assertCanonicalMessageIdentities(entry.messages);
+  } catch {
+    return false;
+  }
+  const [user, assistant] = entry.messages;
+  if (
+    entry.messages.length !== 2 ||
+    user?.role !== "user" ||
+    assistant?.role !== "assistant" ||
+    assistant.harness !== harness ||
+    entry.thread.activeHarness !== harness
+  ) {
+    return false;
+  }
+  const existingIds = new Set(messages.map((message) => message.id));
+  const existingSequences = new Set(messages.map((message) => message.seq));
+  return entry.messages.every(
+    (message) => !existingIds.has(message.id) && !existingSequences.has(message.seq),
+  );
+};
+
 const eventText = (messages: ReadonlyArray<RelayMessage>) =>
   messages.length > 0 ? `${messages.map((message) => JSON.stringify(message)).join("\n")}\n` : "";
 
@@ -548,7 +583,7 @@ const readUndoRedoTransaction = async (
   id: string,
 ): Promise<UndoRedoTransaction | undefined> => {
   const transaction = await readJson(undoRedoTransactionPath(paths, id), UndoRedoTransaction);
-  if (transaction) assertCanonicalMessageIdentities(transaction.messages);
+  if (transaction) validateUndoRedoTransaction(transaction);
   return transaction;
 };
 
@@ -565,7 +600,7 @@ const applyUndoRedoTransaction = async (
   transaction: UndoRedoTransaction,
   hooks: ThreadStoreTestHooks = {},
 ) => {
-  assertCanonicalMessageIdentities(transaction.messages);
+  validateUndoRedoTransaction(transaction);
   await atomicTextWrite(paths, eventsPath(paths, id), eventText(transaction.messages));
   await reachUndoRedoBoundary(hooks, "events");
   await writeThread(paths, transaction.thread);
@@ -588,6 +623,7 @@ const persistUndoRedoTransaction = async (
   transaction: UndoRedoTransaction,
   hooks: ThreadStoreTestHooks,
 ) => {
+  validateUndoRedoTransaction(transaction);
   await reachUndoRedoBoundary(hooks, "before-journal");
   if (await Bun.file(undoRedoTransactionPath(paths, id)).exists()) {
     throw new Error("An unfinished undo/redo transaction requires recovery");
@@ -741,6 +777,7 @@ const recoverThreadLocked = async (
       await atomicJsonWrite(paths, visibilityPath(paths, thread.id), latestPending.visibility);
     }
     await writeThread(paths, latestPending.thread);
+    await rm(undoPath(paths, thread.id), { force: true });
     await rm(pendingPath(paths, thread.id), { force: true });
     return {
       thread: latestPending.thread,
@@ -1428,8 +1465,11 @@ export class ThreadStore extends Context.Service<
       (thread: RelayThread, harness: Harness) =>
         Effect.tryPromise({
           try: async () => {
-            const entry = (await readUndoState(paths, thread.id)).entries.at(-1);
-            return entry?.thread.activeHarness === harness;
+            const [entry, messages] = await Promise.all([
+              readUndoState(paths, thread.id).then((state) => state.entries.at(-1)),
+              readRawMessages(paths, thread.id),
+            ]);
+            return entry !== undefined && canRestoreUndoEntry(messages, entry, harness);
           },
           catch: (cause) =>
             new StoreError({
@@ -1498,8 +1538,8 @@ export class ThreadStore extends Context.Service<
           );
           await chmod(eventsPath(paths, thread.id), 0o600);
           await writeThread(paths, updated);
-          await rm(pendingPath(paths, thread.id), { force: true });
           await rm(undoPath(paths, thread.id), { force: true });
+          await rm(pendingPath(paths, thread.id), { force: true });
           return { thread: updated, response };
         },
         catch: (cause) =>
@@ -1721,7 +1761,10 @@ export class ThreadStore extends Context.Service<
       (requestedThread: RelayThread, input: ImportNativeTurnsInput) =>
         Effect.tryPromise({
           try: async () => {
-            const recovered = (await Bun.file(pendingPath(paths, requestedThread.id)).exists())
+            const needsRecovery =
+              (await Bun.file(pendingPath(paths, requestedThread.id)).exists()) ||
+              (await Bun.file(undoRedoTransactionPath(paths, requestedThread.id)).exists());
+            const recovered = needsRecovery
               ? await recoverThreadLocked(paths, requestedThread)
               : {
                   thread: requestedThread,
@@ -1917,8 +1960,8 @@ export class ThreadStore extends Context.Service<
               await atomicJsonWrite(paths, visibilityPath(paths, thread.id), nextVisibility);
             }
             await writeThread(paths, updated);
-            if (needsJournal) await rm(pendingPath(paths, thread.id), { force: true });
             await rm(undoPath(paths, thread.id), { force: true });
+            if (needsJournal) await rm(pendingPath(paths, thread.id), { force: true });
             return updated;
           },
           catch: (cause) =>
@@ -2088,17 +2131,13 @@ export class ThreadStore extends Context.Service<
             readVisibility(paths, thread.id),
           ]);
           const entry = state.entries.at(-1);
-          if (!entry || entry.thread.activeHarness !== harness) {
+          if (!entry || !canRestoreUndoEntry(messages, entry, harness)) {
+            if (entry) await rm(undoPath(paths, thread.id), { force: true });
             throw new NoCurrentThread({ message: "There is no turn to redo" });
           }
-          const restoredIds = new Set(entry.messages.map((message) => message.id));
-          const restoredSequences = new Set(entry.messages.map((message) => message.seq));
-          const restored = [
-            ...messages.filter(
-              (message) => !restoredIds.has(message.id) && !restoredSequences.has(message.seq),
-            ),
-            ...entry.messages,
-          ].sort((left, right) => left.seq - right.seq);
+          const restored = [...messages, ...entry.messages].sort(
+            (left, right) => left.seq - right.seq,
+          );
           assertCanonicalMessageIdentities(restored);
           const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
           const restoredKeys = new Set(
