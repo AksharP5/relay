@@ -38,7 +38,18 @@ for await (const line of lines) {
     continue;
   }
   if (message.method === "review/start") {
-    if (JSON.stringify(message.params).includes("hang forever")) continue;
+    if (JSON.stringify(message.params).includes("hang forever")) {
+      send({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "codex-thread",
+          turnId: "t2",
+          itemId: "i1",
+          delta: "Review request received",
+        },
+      });
+      continue;
+    }
     if (!JSON.stringify(message.params).includes("prior Relay conversation")) {
       send({ id: message.id, error: { code: -32000, message: "review ran before its handoff" } });
       continue;

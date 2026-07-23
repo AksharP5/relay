@@ -1,8 +1,8 @@
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AppServerProtocolError, runCodexCommand } from "../src/harnesses/codex-app-server.ts";
 
 const executable = fileURLToPath(new URL("./fixtures/fake-codex-app-server.ts", import.meta.url));
@@ -49,18 +49,41 @@ describe("Codex app-server commands", () => {
   });
 
   it("times out and closes an unresponsive app-server request", async () => {
-    await expect(
-      runCodexCommand(
+    const timeoutDataRoot = await mkdtemp(join(tmpdir(), "relay-codex-timeout-root-"));
+    const reviewStarted = Promise.withResolvers<void>();
+    vi.useFakeTimers();
+    try {
+      const command = runCodexCommand(
         executable,
         {
           command: "review",
           cwd: process.cwd(),
           arguments: "hang forever",
+          onProgress: () => reviewStarted.resolve(),
           timeoutMs: 50,
         },
-        dataRoot,
-      ),
-    ).rejects.toThrow("Timed out waiting for Codex review/start");
+        timeoutDataRoot,
+      );
+      await Promise.race([
+        reviewStarted.promise,
+        command.then(
+          () => {
+            throw new Error("Codex review unexpectedly completed");
+          },
+          (cause) => {
+            throw cause;
+          },
+        ),
+      ]);
+
+      vi.advanceTimersByTime(50);
+
+      await expect(command).rejects.toThrow("Timed out waiting for Codex review/start");
+      expect(await readdir(join(timeoutDataRoot, "processes"))).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      await rm(timeoutDataRoot, { recursive: true, force: true });
+    }
   });
 
   it("rejects valid JSON that is not a Codex RPC object", async () => {
