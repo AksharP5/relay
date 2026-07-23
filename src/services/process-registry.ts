@@ -83,6 +83,22 @@ const ensureRegistry = async (root: string) => {
   await ensureDirectory(registryDirectory(root));
 };
 
+const errorCode = (cause: unknown) =>
+  typeof cause === "object" && cause !== null && "code" in cause ? cause.code : undefined;
+
+const quarantineInvalidClaim = async (root: string, entry: string, path: string) => {
+  try {
+    await rename(
+      path,
+      `${quarantineDirectory(root)}/${entry}.${Date.now()}.${crypto.randomUUID()}.invalid`,
+    );
+    return true;
+  } catch (cause) {
+    if (errorCode(cause) === "ENOENT") return false;
+    throw cause;
+  }
+};
+
 const writeClaim = async (path: string, claim: ProcessClaim) => {
   const temporary = `${path}.${crypto.randomUUID()}.tmp`;
   await writeFile(temporary, `${JSON.stringify(claim, null, 2)}\n`, {
@@ -251,8 +267,7 @@ export const cleanupOrphanedProcesses = async (
       await chmod(path, 0o600);
       claim = Schema.decodeUnknownSync(ProcessClaim)(JSON.parse(await readFile(path, "utf8")));
     } catch {
-      await rename(path, `${quarantineDirectory(root)}/${entry}.${Date.now()}.invalid`);
-      quarantined += 1;
+      if (await quarantineInvalidClaim(root, entry, path)) quarantined += 1;
       continue;
     }
 

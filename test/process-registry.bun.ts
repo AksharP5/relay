@@ -300,4 +300,26 @@ describe("managed process recovery", () => {
     expect(result.terminated).toBe(1);
     await waitFor(async () => !processIsAlive(descendantPid));
   });
+
+  it("quarantines one malformed claim safely across concurrent cleanup", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-process-registry-race-"));
+    try {
+      const processes = join(root, "processes");
+      await mkdir(processes, { recursive: true, mode: 0o700 });
+      await writeFile(join(processes, "malformed.json"), "{", { mode: 0o600 });
+
+      const [first, second] = await Promise.all([
+        cleanupOrphanedProcesses(root),
+        cleanupOrphanedProcesses(root),
+      ]);
+
+      expect(first.quarantined + second.quarantined).toBe(1);
+      expect((await readdir(processes)).filter((name) => name.endsWith(".json"))).toEqual([]);
+      expect(
+        (await readdir(join(processes, "quarantine"))).filter((name) => name.endsWith(".invalid")),
+      ).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
