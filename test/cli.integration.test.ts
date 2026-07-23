@@ -244,6 +244,30 @@ describe("Relay CLI storage", () => {
     expect(native.stdout).toContain("resume 'codex-native'");
   }, 30_000);
 
+  it("passes option-looking prompt text after the ask delimiter to the harness", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-ask-delimiter-"));
+    const bin = join(root, "bin");
+    const trace = join(root, "trace.jsonl");
+    tempRoots.push(root);
+    await mkdir(bin);
+    await copyFile(join(projectRoot, "test/fixtures/fake-codex-turn.ts"), join(bin, "codex"));
+    await chmod(join(bin, "codex"), 0o755);
+    const env = {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      RELAY_TEST_TRACE: trace,
+    };
+
+    expect((await runRelay(root, ["new", "Ask delimiter"], projectRoot, env)).exitCode).toBe(0);
+    const asked = await runRelay(root, ["ask", "--", "--help"], projectRoot, env);
+    expect(asked.exitCode).toBe(0);
+
+    const events = (await readFile(trace, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(events).toEqual([expect.objectContaining({ harness: "codex", prompt: "--help" })]);
+  });
+
   it("creates, switches, lists, and reopens a task without launching a model", async () => {
     const root = await mkdtemp(join(tmpdir(), "relay-test-"));
     tempRoots.push(root);

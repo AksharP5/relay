@@ -39,23 +39,31 @@ const expectNoArguments = (args: ReadonlyArray<string>, usage: string) => {
 const parseAsk = (args: ReadonlyArray<string>): CliCommand => {
   let harness: Harness | undefined;
   let model: string | undefined;
+  let parsingOptions = true;
   const words: Array<string> = [];
 
   for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]!;
-    if (arg === "--with") {
+    const arg = args[index];
+    if (arg === undefined) continue;
+    if (parsingOptions && arg === "--") {
+      parsingOptions = false;
+      continue;
+    }
+    if (parsingOptions && arg === "--with") {
       const value = valueAfter(args, index, "--with");
       if (!isHarness(value)) throw new CliError({ message: `Unknown harness: ${value}` });
       harness = value;
       index += 1;
       continue;
     }
-    if (arg === "--model") {
+    if (parsingOptions && arg === "--model") {
       model = valueAfter(args, index, "--model");
       index += 1;
       continue;
     }
-    if (arg.startsWith("--")) throw new CliError({ message: `Unknown option: ${arg}` });
+    if (parsingOptions && arg.startsWith("--")) {
+      throw new CliError({ message: `Unknown option: ${arg}` });
+    }
     words.push(arg);
   }
 

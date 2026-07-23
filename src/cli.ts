@@ -39,7 +39,7 @@ ${pc.bold("Usage")}
   relay config set switch-key <binding>
   relay config reset switch-key
   relay new [name] [--with codex|opencode]
-  relay ask [--with codex|opencode] [--model name] <message>
+  relay ask [--with codex|opencode] [--model name] [--] <message>
   relay use codex|opencode
   relay status
   relay history
@@ -58,9 +58,11 @@ ${pc.bold("Examples")}
   relay new "Fix the checkout flow" --with codex
   relay ask "Find the cause and implement a fix"
   relay ask --with opencode "Review the change and run the tests"
+  relay ask -- --help
 
 Bare ${pc.cyan("relay")} opens the selected harness's real native TUI.
 Use ${pc.cyan("relay -- <directory>")} when a directory name matches a Relay command.
+Use ${pc.cyan("relay ask -- <message>")} when a prompt starts with an option-like word.
 Press the configured switch key (${pc.cyan("Ctrl+Q")} by default) to move between harnesses.
 ${pc.cyan("F6")} is available as a fallback.
 Run ${pc.cyan("relay config set switch-key ctrl+g")} to choose any terminal-observable key chord using OpenCode-style key names.
