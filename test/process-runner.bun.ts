@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { Effect, Fiber } from "effect";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { Effect, Fiber, Layer } from "effect";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProcessError } from "../src/errors.ts";
+import { RelayPaths } from "../src/services/data-root.ts";
+import { trackManagedProcess } from "../src/services/process-registry.ts";
 import { ProcessRunner, stopProcessTree } from "../src/services/process-runner.ts";
 
 describe("ProcessRunner on Bun", () => {
@@ -56,6 +58,60 @@ describe("ProcessRunner on Bun", () => {
       await Bun.sleep(1_100);
       await expect(readFile(marker, "utf8")).rejects.toThrow();
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("kills the complete child process group when interrupted during registration", async () => {
+    if (process.platform === "win32") return;
+    // Hold registration open so interruption lands in the post-spawn ownership window.
+    const root = await mkdtemp(join(tmpdir(), "relay-registration-cancel-"));
+    const releaseChild = join(root, "release-child");
+    const marker = join(root, "orphan-finished");
+    const registrationStarted = Promise.withResolvers<ReturnType<typeof Bun.spawn>>();
+    const releaseRegistration = Promise.withResolvers<void>();
+    let interruption: Promise<unknown> | undefined;
+
+    try {
+      const layer = ProcessRunner.configuredLayerWith(async (dataRoot, child, kind) => {
+        registrationStarted.resolve(child);
+        await releaseRegistration.promise;
+        await trackManagedProcess(dataRoot, child, kind);
+      }).pipe(Layer.provide(RelayPaths.layerFromRoot(root)));
+      const program = Effect.gen(function* () {
+        const runner = yield* ProcessRunner;
+        return yield* runner.run({
+          command: "/bin/sh",
+          args: [
+            "-c",
+            '(while [ ! -e "$1" ]; do sleep 0.01; done; printf done > "$2") & wait',
+            "relay-registration-cancel-test",
+            releaseChild,
+            marker,
+          ],
+          timeoutMs: 2_000,
+        });
+      }).pipe(Effect.provide(layer));
+
+      const fiber = Effect.runFork(program);
+      const child = await registrationStarted.promise;
+      interruption = Effect.runPromise(Fiber.interrupt(fiber));
+      const leaderExited = await Promise.race([
+        child.exited.then(() => true),
+        Bun.sleep(500).then(() => false),
+      ]);
+
+      expect(leaderExited).toBe(true);
+      await writeFile(releaseChild, "");
+      await Bun.sleep(100);
+      await expect(readFile(marker, "utf8")).rejects.toThrow();
+
+      releaseRegistration.resolve();
+      await interruption;
+    } finally {
+      await writeFile(releaseChild, "").catch(() => undefined);
+      releaseRegistration.resolve();
+      await interruption?.catch(() => undefined);
       await rm(root, { recursive: true, force: true });
     }
   });

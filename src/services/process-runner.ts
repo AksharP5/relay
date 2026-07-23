@@ -3,6 +3,17 @@ import { ProcessError } from "../errors.ts";
 import { RelayPaths } from "./data-root.ts";
 import { trackManagedProcess, untrackManagedProcess } from "./process-registry.ts";
 
+type TrackProcess = (
+  root: string,
+  child: ReturnType<typeof Bun.spawn>,
+  kind: string,
+) => Promise<void>;
+
+class ManagedProcessTracker extends Context.Service<
+  ManagedProcessTracker,
+  { readonly track: TrackProcess }
+>()("@relay/ManagedProcessTracker") {}
+
 export interface ProcessInput {
   readonly command: string;
   readonly args?: ReadonlyArray<string>;
@@ -54,10 +65,18 @@ export const stopProcessTree = async (child: ReturnType<typeof Bun.spawn>, grace
   }
 };
 
-const makeTerminator = (child: ReturnType<typeof Bun.spawn>) => {
+const makeTerminator = (
+  child: ReturnType<typeof Bun.spawn>,
+  registrationSettled: Promise<void>,
+) => {
   let terminating: Promise<void> | undefined;
   return () => {
-    terminating ??= stopProcessTree(child);
+    terminating ??= Promise.allSettled([stopProcessTree(child), registrationSettled]).then(
+      async ([stopped]) => {
+        await untrackManagedProcess(child);
+        if (stopped.status === "rejected") throw stopped.reason;
+      },
+    );
     return terminating;
   };
 };
@@ -123,10 +142,11 @@ export class ProcessRunner extends Context.Service<
     readonly which: (command: string) => Effect.Effect<string | undefined>;
   }
 >()("@relay/ProcessRunner") {
-  static readonly configuredLayer = Layer.effect(
+  private static readonly configuredLayerWithTracker = Layer.effect(
     ProcessRunner,
     Effect.gen(function* () {
       const paths = yield* RelayPaths;
+      const tracker = yield* ManagedProcessTracker;
       return ProcessRunner.of({
         run: Effect.fn("ProcessRunner.run")((input: ProcessInput) => {
           let terminate: (() => Promise<void>) | undefined;
@@ -144,10 +164,17 @@ export class ProcessRunner extends Context.Service<
                   stderr: "pipe",
                   detached: process.platform !== "win32",
                 });
-                await trackManagedProcess(paths.root, child, "command");
-                terminate = makeTerminator(child);
+                const registration = Promise.withResolvers<void>();
+                terminate = makeTerminator(child, registration.promise);
                 onAbort = () => void terminate?.();
                 signal.addEventListener("abort", onAbort, { once: true });
+                if (signal.aborted) void terminate();
+
+                try {
+                  await tracker.track(paths.root, child, "command");
+                } finally {
+                  registration.resolve();
+                }
                 timeout = setTimeout(() => void terminate?.(), input.timeoutMs ?? 30 * 60 * 1000);
 
                 const stdin = child.stdin;
@@ -197,9 +224,10 @@ export class ProcessRunner extends Context.Service<
           });
 
           return operation.pipe(
-            Effect.onInterrupt(() =>
-              terminate ? Effect.promise(() => terminate!()) : Effect.void,
-            ),
+            Effect.onInterrupt(() => {
+              const currentTerminator = terminate;
+              return currentTerminator ? Effect.promise(currentTerminator) : Effect.void;
+            }),
           );
         }),
         which: Effect.fn("ProcessRunner.which")((command: string) =>
@@ -211,6 +239,13 @@ export class ProcessRunner extends Context.Service<
       });
     }),
   );
+
+  static readonly configuredLayerWith = (track: TrackProcess) =>
+    ProcessRunner.configuredLayerWithTracker.pipe(
+      Layer.provide(Layer.succeed(ManagedProcessTracker, { track })),
+    );
+
+  static readonly configuredLayer = ProcessRunner.configuredLayerWith(trackManagedProcess);
 
   static readonly layer = ProcessRunner.configuredLayer.pipe(Layer.provide(RelayPaths.layer));
 }
