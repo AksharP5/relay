@@ -64,6 +64,7 @@ describe("ProcessRunner on Bun", () => {
 
   it("kills the complete child process group when interrupted during registration", async () => {
     if (process.platform === "win32") return;
+    // Hold registration open so interruption lands in the post-spawn ownership window.
     const root = await mkdtemp(join(tmpdir(), "relay-registration-cancel-"));
     const releaseChild = join(root, "release-child");
     const marker = join(root, "orphan-finished");
