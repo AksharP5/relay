@@ -14,6 +14,7 @@ import {
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { NoCurrentThread, StoreError, ThreadBusy, ThreadNotFound } from "../errors.ts";
 import {
   RelayIndex,
@@ -47,6 +48,8 @@ const deletionPath = (paths: RelayPathsShape, id: string) => `${paths.root}/dele
 const pendingPath = (paths: RelayPathsShape, id: string) =>
   `${threadDir(paths, id)}/pending-turn.json`;
 const undoPath = (paths: RelayPathsShape, id: string) => `${threadDir(paths, id)}/undo-stack.json`;
+const undoRedoTransactionPath = (paths: RelayPathsShape, id: string) =>
+  `${threadDir(paths, id)}/undo-redo-transaction.json`;
 const visibilityPath = (paths: RelayPathsShape, id: string) =>
   `${threadDir(paths, id)}/native-visibility.json`;
 const lockPath = (paths: RelayPathsShape, id: string) => `${paths.root}/locks/${id}`;
@@ -392,12 +395,38 @@ type PendingTurn = typeof PendingTurn.Type;
 const UndoEntry = Schema.Struct({
   messages: Schema.Array(RelayMessage),
   thread: RelayThread,
+  redoFrom: Schema.optionalKey(RelayThread),
 });
 type UndoEntry = typeof UndoEntry.Type;
 
 const StoredUndoState = Schema.Struct({ entries: Schema.Array(Schema.Unknown) });
 interface UndoState {
   readonly entries: ReadonlyArray<UndoEntry>;
+}
+
+const UndoRedoTransaction = Schema.Struct({
+  version: Schema.Literal(1),
+  operation: Schema.Literals(["undo", "redo"]),
+  messages: Schema.Array(RelayMessage),
+  thread: RelayThread,
+  visibility: NativeVisibility,
+  undoEntries: Schema.Array(UndoEntry),
+});
+type UndoRedoTransaction = typeof UndoRedoTransaction.Type;
+
+export type UndoRedoPersistenceBoundary =
+  | "before-journal"
+  | "journal"
+  | "events"
+  | "metadata"
+  | "visibility"
+  | "undo-state"
+  | "committed";
+
+export interface ThreadStoreTestHooks {
+  readonly onUndoRedoPersistenceBoundary?: (
+    boundary: UndoRedoPersistenceBoundary,
+  ) => void | Promise<void>;
 }
 
 const LockClaim = Schema.Struct({
@@ -416,6 +445,11 @@ const LegacyLockClaim = Schema.Struct({
 
 export interface ThreadLockOperations {
   readonly processStartIdentity: (pid: number) => Promise<string | undefined>;
+}
+
+export interface ThreadStoreOptions {
+  readonly lockOperations?: ThreadLockOperations;
+  readonly testHooks?: ThreadStoreTestHooks;
 }
 
 const processStartIdentity = async (pid: number) => {
@@ -491,6 +525,124 @@ const readUndoState = async (paths: RelayPathsShape, id: string): Promise<UndoSt
     }
   });
   return { entries };
+};
+
+const assertCanonicalMessageIdentities = (messages: ReadonlyArray<RelayMessage>) => {
+  const ids = new Set<string>();
+  const sequences = new Set<number>();
+  for (const message of messages) {
+    if (ids.has(message.id)) {
+      throw new Error(`Undo/redo transaction contains duplicate message id ${message.id}`);
+    }
+    if (sequences.has(message.seq)) {
+      throw new Error(`Undo/redo transaction contains duplicate message sequence ${message.seq}`);
+    }
+    ids.add(message.id);
+    sequences.add(message.seq);
+  }
+};
+
+const validateUndoRedoTransaction = (transaction: UndoRedoTransaction) => {
+  assertCanonicalMessageIdentities(transaction.messages);
+  for (const entry of transaction.undoEntries) {
+    assertCanonicalMessageIdentities(entry.messages);
+  }
+};
+
+const canRestoreUndoEntry = (
+  thread: RelayThread,
+  messages: ReadonlyArray<RelayMessage>,
+  entry: UndoEntry,
+  harness: Harness,
+) => {
+  try {
+    assertCanonicalMessageIdentities(messages);
+    assertCanonicalMessageIdentities(entry.messages);
+  } catch {
+    return false;
+  }
+  const [user, assistant] = entry.messages;
+  if (
+    entry.messages.length !== 2 ||
+    user?.role !== "user" ||
+    user.harness !== harness ||
+    assistant?.role !== "assistant" ||
+    assistant.harness !== harness ||
+    assistant.seq !== user.seq + 1 ||
+    entry.thread.activeHarness !== harness ||
+    entry.redoFrom === undefined ||
+    !isDeepStrictEqual(entry.redoFrom, thread)
+  ) {
+    return false;
+  }
+  const existingIds = new Set(messages.map((message) => message.id));
+  const existingSequences = new Set(messages.map((message) => message.seq));
+  return entry.messages.every(
+    (message) => !existingIds.has(message.id) && !existingSequences.has(message.seq),
+  );
+};
+
+const eventText = (messages: ReadonlyArray<RelayMessage>) =>
+  messages.length > 0 ? `${messages.map((message) => JSON.stringify(message)).join("\n")}\n` : "";
+
+const readUndoRedoTransaction = async (
+  paths: RelayPathsShape,
+  id: string,
+): Promise<UndoRedoTransaction | undefined> => {
+  const transaction = await readJson(undoRedoTransactionPath(paths, id), UndoRedoTransaction);
+  if (transaction) validateUndoRedoTransaction(transaction);
+  return transaction;
+};
+
+const reachUndoRedoBoundary = async (
+  hooks: ThreadStoreTestHooks,
+  boundary: UndoRedoPersistenceBoundary,
+) => {
+  await hooks.onUndoRedoPersistenceBoundary?.(boundary);
+};
+
+const applyUndoRedoTransaction = async (
+  paths: RelayPathsShape,
+  id: string,
+  transaction: UndoRedoTransaction,
+  hooks: ThreadStoreTestHooks = {},
+) => {
+  validateUndoRedoTransaction(transaction);
+  await atomicTextWrite(paths, eventsPath(paths, id), eventText(transaction.messages));
+  await reachUndoRedoBoundary(hooks, "events");
+  await writeThread(paths, transaction.thread);
+  await reachUndoRedoBoundary(hooks, "metadata");
+  await atomicJsonWrite(paths, visibilityPath(paths, id), transaction.visibility);
+  await reachUndoRedoBoundary(hooks, "visibility");
+  if (transaction.undoEntries.length > 0) {
+    await atomicJsonWrite(paths, undoPath(paths, id), { entries: transaction.undoEntries });
+  } else {
+    await rm(undoPath(paths, id), { force: true });
+  }
+  await reachUndoRedoBoundary(hooks, "undo-state");
+  await rm(undoRedoTransactionPath(paths, id), { force: true });
+  await reachUndoRedoBoundary(hooks, "committed");
+};
+
+const persistUndoRedoTransaction = async (
+  paths: RelayPathsShape,
+  id: string,
+  transaction: UndoRedoTransaction,
+  hooks: ThreadStoreTestHooks,
+) => {
+  validateUndoRedoTransaction(transaction);
+  await reachUndoRedoBoundary(hooks, "before-journal");
+  if (await Bun.file(undoRedoTransactionPath(paths, id)).exists()) {
+    throw new Error("An unfinished undo/redo transaction requires recovery");
+  }
+  await atomicJsonWrite(paths, undoRedoTransactionPath(paths, id), transaction);
+  await reachUndoRedoBoundary(hooks, "journal");
+  await applyUndoRedoTransaction(paths, id, transaction, hooks);
+};
+
+const recoverUndoRedoTransaction = async (paths: RelayPathsShape, id: string) => {
+  const transaction = await readUndoRedoTransaction(paths, id);
+  if (transaction) await applyUndoRedoTransaction(paths, id, transaction);
 };
 
 const claimState = async (
@@ -598,6 +750,7 @@ const recoverThreadLocked = async (
   paths: RelayPathsShape,
   thread: RelayThread,
 ): Promise<RecoveredThread> => {
+  await recoverUndoRedoTransaction(paths, thread.id);
   const latest = (await readThreadFile(paths, thread.id))?.value ?? thread;
   const latestPending = await readJson<PendingTurn>(pendingPath(paths, thread.id), PendingTurn);
   const latestMessages = await readRawMessages(paths, thread.id, { repairTail: true });
@@ -631,6 +784,7 @@ const recoverThreadLocked = async (
       await atomicJsonWrite(paths, visibilityPath(paths, thread.id), latestPending.visibility);
     }
     await writeThread(paths, latestPending.thread);
+    await rm(undoPath(paths, thread.id), { force: true });
     await rm(pendingPath(paths, thread.id), { force: true });
     return {
       thread: latestPending.thread,
@@ -982,7 +1136,7 @@ export class ThreadStore extends Context.Service<
 >()("@relay/ThreadStore") {
   static readonly make = (
     paths: RelayPathsShape,
-    lockOperations: ThreadLockOperations = liveThreadLockOperations,
+    { lockOperations = liveThreadLockOperations, testHooks = {} }: ThreadStoreOptions = {},
   ) => ({
     root: paths.root,
 
@@ -1318,8 +1472,16 @@ export class ThreadStore extends Context.Service<
       (thread: RelayThread, harness: Harness) =>
         Effect.tryPromise({
           try: async () => {
-            const entry = (await readUndoState(paths, thread.id)).entries.at(-1);
-            return entry?.thread.activeHarness === harness;
+            const [entry, messages, current] = await Promise.all([
+              readUndoState(paths, thread.id).then((state) => state.entries.at(-1)),
+              readRawMessages(paths, thread.id),
+              readThreadFile(paths, thread.id).then((stored) => stored?.value),
+            ]);
+            return (
+              entry !== undefined &&
+              current !== undefined &&
+              canRestoreUndoEntry(current, messages, entry, harness)
+            );
           },
           catch: (cause) =>
             new StoreError({
@@ -1388,8 +1550,8 @@ export class ThreadStore extends Context.Service<
           );
           await chmod(eventsPath(paths, thread.id), 0o600);
           await writeThread(paths, updated);
-          await rm(pendingPath(paths, thread.id), { force: true });
           await rm(undoPath(paths, thread.id), { force: true });
+          await rm(pendingPath(paths, thread.id), { force: true });
           return { thread: updated, response };
         },
         catch: (cause) =>
@@ -1611,7 +1773,10 @@ export class ThreadStore extends Context.Service<
       (requestedThread: RelayThread, input: ImportNativeTurnsInput) =>
         Effect.tryPromise({
           try: async () => {
-            const recovered = (await Bun.file(pendingPath(paths, requestedThread.id)).exists())
+            const needsRecovery =
+              (await Bun.file(pendingPath(paths, requestedThread.id)).exists()) ||
+              (await Bun.file(undoRedoTransactionPath(paths, requestedThread.id)).exists());
+            const recovered = needsRecovery
               ? await recoverThreadLocked(paths, requestedThread)
               : {
                   thread: requestedThread,
@@ -1807,8 +1972,8 @@ export class ThreadStore extends Context.Service<
               await atomicJsonWrite(paths, visibilityPath(paths, thread.id), nextVisibility);
             }
             await writeThread(paths, updated);
-            if (needsJournal) await rm(pendingPath(paths, thread.id), { force: true });
             await rm(undoPath(paths, thread.id), { force: true });
+            if (needsJournal) await rm(pendingPath(paths, thread.id), { force: true });
             return updated;
           },
           catch: (cause) =>
@@ -1899,10 +2064,11 @@ export class ThreadStore extends Context.Service<
     undoLastTurn: Effect.fn("ThreadStore.undoLastTurn")((thread: RelayThread, harness: Harness) =>
       Effect.tryPromise({
         try: async () => {
-          const [messages, rawMessages] = await Promise.all([
-            readMessages(paths, thread.id),
+          const [rawMessages, visibility] = await Promise.all([
             readRawMessages(paths, thread.id),
+            readVisibility(paths, thread.id),
           ]);
+          const messages = visibleMessages(rawMessages, visibility);
           const contextMessages = messages.filter(
             (message) => message.seq > (thread.contextStartSeq ?? 0),
           );
@@ -1920,7 +2086,7 @@ export class ThreadStore extends Context.Service<
           const removedIds = new Set(removed.map((message) => message.id));
           const remaining = messages.filter((message) => !removedIds.has(message.id));
           const remainingRaw = rawMessages.filter((message) => !removedIds.has(message.id));
-          const lastSeq = remainingRaw.at(-1)?.seq ?? 0;
+          const lastSeq = Math.max(thread.contextStartSeq ?? 0, remainingRaw.at(-1)?.seq ?? 0);
           const lastVisibleSeq = remaining.at(-1)?.seq ?? 0;
           const lastHarnessSeq =
             remaining.findLast(
@@ -1950,16 +2116,15 @@ export class ThreadStore extends Context.Service<
             updatedAt: new Date().toISOString(),
           };
           const state = await readUndoState(paths, thread.id);
-          await atomicJsonWrite(paths, undoPath(paths, thread.id), {
-            entries: [...state.entries, { messages: removed, thread }],
-          });
-          await atomicTextWrite(
-            paths,
-            eventsPath(paths, thread.id),
-            remainingRaw.map((message) => JSON.stringify(message)).join("\n") +
-              (remainingRaw.length ? "\n" : ""),
-          );
-          await writeThread(paths, updated);
+          const transaction: UndoRedoTransaction = {
+            version: 1,
+            operation: "undo",
+            messages: remainingRaw,
+            thread: updated,
+            visibility,
+            undoEntries: [...state.entries, { messages: removed, thread, redoFrom: updated }],
+          };
+          await persistUndoRedoTransaction(paths, thread.id, transaction, testHooks);
           return updated;
         },
         catch: (cause) =>
@@ -1972,22 +2137,21 @@ export class ThreadStore extends Context.Service<
     redoLastTurn: Effect.fn("ThreadStore.redoLastTurn")((thread: RelayThread, harness: Harness) =>
       Effect.tryPromise({
         try: async () => {
-          const state = await readUndoState(paths, thread.id);
+          const [state, messages, visibility, current] = await Promise.all([
+            readUndoState(paths, thread.id),
+            readRawMessages(paths, thread.id),
+            readVisibility(paths, thread.id),
+            readThreadFile(paths, thread.id).then((stored) => stored?.value),
+          ]);
           const entry = state.entries.at(-1);
-          if (!entry || entry.thread.activeHarness !== harness) {
+          if (!entry || !current || !canRestoreUndoEntry(current, messages, entry, harness)) {
+            if (entry) await rm(undoPath(paths, thread.id), { force: true });
             throw new NoCurrentThread({ message: "There is no turn to redo" });
           }
-          const messages = await readRawMessages(paths, thread.id);
           const restored = [...messages, ...entry.messages].sort(
             (left, right) => left.seq - right.seq,
           );
-          await atomicTextWrite(
-            paths,
-            eventsPath(paths, thread.id),
-            `${restored.map((message) => JSON.stringify(message)).join("\n")}\n`,
-          );
-          await writeThread(paths, entry.thread);
-          const visibility = await readVisibility(paths, thread.id);
+          assertCanonicalMessageIdentities(restored);
           const links = new Map((visibility.links ?? []).map((link) => [link.messageId, link.key]));
           const restoredKeys = new Set(
             entry.messages.flatMap((message) => {
@@ -1999,15 +2163,19 @@ export class ThreadStore extends Context.Service<
             }),
           );
           const hidden = visibility.hidden.filter((key) => !restoredKeys.has(key));
-          if (hidden.length !== visibility.hidden.length) {
-            await atomicJsonWrite(paths, visibilityPath(paths, thread.id), {
-              hidden,
-              ...(visibility.links ? { links: visibility.links } : {}),
-            });
-          }
-          const entries = state.entries.slice(0, -1);
-          if (entries.length) await atomicJsonWrite(paths, undoPath(paths, thread.id), { entries });
-          else await rm(undoPath(paths, thread.id), { force: true });
+          const updatedVisibility: NativeVisibility = {
+            hidden,
+            ...(visibility.links ? { links: visibility.links } : {}),
+          };
+          const transaction: UndoRedoTransaction = {
+            version: 1,
+            operation: "redo",
+            messages: restored,
+            thread: entry.thread,
+            visibility: updatedVisibility,
+            undoEntries: state.entries.slice(0, -1),
+          };
+          await persistUndoRedoTransaction(paths, thread.id, transaction, testHooks);
           return entry.thread;
         },
         catch: (cause) =>
@@ -2028,15 +2196,12 @@ export class ThreadStore extends Context.Service<
 
   static readonly layer = ThreadStore.configuredLayer.pipe(Layer.provide(RelayPaths.layer));
 
-  static readonly layerFromRoot = (
-    root: string,
-    lockOperations: ThreadLockOperations = liveThreadLockOperations,
-  ) =>
+  static readonly layerFromRoot = (root: string, options: ThreadStoreOptions = {}) =>
     Layer.effect(
       ThreadStore,
       Effect.gen(function* () {
         const paths = yield* RelayPaths;
-        return ThreadStore.of(ThreadStore.make(paths, lockOperations));
+        return ThreadStore.of(ThreadStore.make(paths, options));
       }),
     ).pipe(Layer.provide(RelayPaths.layerFromRoot(root)));
 }

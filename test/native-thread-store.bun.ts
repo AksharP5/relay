@@ -775,7 +775,11 @@ describe("thread store lock ownership", () => {
       Effect.gen(function* () {
         const store = yield* ThreadStore;
         return yield* store.acquireLock("identity-claim");
-      }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, lockOperations(identities)))),
+      }).pipe(
+        Effect.provide(
+          ThreadStore.layerFromRoot(root, { lockOperations: lockOperations(identities) }),
+        ),
+      ),
     );
 
     const claimPath = await onlyLockClaim(join(root, "locks", "identity-claim"));
@@ -831,7 +835,11 @@ describe("thread store lock ownership", () => {
       Effect.gen(function* () {
         const store = yield* ThreadStore;
         return yield* store.acquireRunLease(threadId);
-      }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, lockOperations(identities)))),
+      }).pipe(
+        Effect.provide(
+          ThreadStore.layerFromRoot(root, { lockOperations: lockOperations(identities) }),
+        ),
+      ),
     );
     expect(await Bun.file(staleClaim).exists()).toBe(false);
     await lease.release();
@@ -862,7 +870,11 @@ describe("thread store lock ownership", () => {
         Effect.gen(function* () {
           const store = yield* ThreadStore;
           return yield* store.acquireRunLease(threadId);
-        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, lockOperations(identities)))),
+        }).pipe(
+          Effect.provide(
+            ThreadStore.layerFromRoot(root, { lockOperations: lockOperations(identities) }),
+          ),
+        ),
       ),
     ).rejects.toThrow("already open");
     expect((await readdir(claimDirectory)).filter((entry) => entry.endsWith(".json"))).toEqual([
@@ -898,7 +910,7 @@ describe("thread store lock ownership", () => {
         Effect.gen(function* () {
           const store = yield* ThreadStore;
           return yield* store.acquireRunLease(threadId);
-        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, operations))),
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, { lockOperations: operations }))),
       ),
     ).rejects.toThrow("identity lookup denied");
     expect(await Bun.file(ownerClaim).exists()).toBe(true);
@@ -926,7 +938,9 @@ describe("thread store lock ownership", () => {
       [process.pid, "contender-start"],
       [legacyPid, "legacy-live-start"],
     ]);
-    const layer = ThreadStore.layerFromRoot(root, lockOperations(identities));
+    const layer = ThreadStore.layerFromRoot(root, {
+      lockOperations: lockOperations(identities),
+    });
     const acquire = () =>
       Effect.runPromise(
         Effect.gen(function* () {
@@ -950,7 +964,11 @@ describe("thread store lock ownership", () => {
       Effect.gen(function* () {
         const store = yield* ThreadStore;
         return yield* store.acquireRunLease(threadId);
-      }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, lockOperations(identities)))),
+      }).pipe(
+        Effect.provide(
+          ThreadStore.layerFromRoot(root, { lockOperations: lockOperations(identities) }),
+        ),
+      ),
     );
     const claimPath = await onlyLockClaim(join(root, "run-locks", threadId));
 
