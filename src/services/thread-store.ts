@@ -11,6 +11,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { NoCurrentThread, StoreError, ThreadBusy, ThreadNotFound } from "../errors.ts";
@@ -347,6 +348,7 @@ const readRecentMessages = async (
 
 const loadIndex = async (
   paths: RelayPathsShape,
+  operations: ThreadLockOperations,
   options: { readonly lockHeld?: boolean } = {},
 ): Promise<RelayIndex> => {
   await ensureBase(paths);
@@ -370,9 +372,9 @@ const loadIndex = async (
     }
     return value;
   }
-  const lock = await acquireIndexLock(paths);
+  const lock = await acquireIndexLock(paths, operations);
   try {
-    return await loadIndex(paths, { lockHeld: true });
+    return await loadIndex(paths, operations, { lockHeld: true });
   } finally {
     await lock.release();
   }
@@ -400,7 +402,59 @@ interface UndoState {
 
 const LockClaim = Schema.Struct({
   pid: Schema.Number,
+  startedAt: Schema.String,
+  token: Schema.String,
+  createdAt: Schema.String,
 });
+interface LockClaim extends Schema.Schema.Type<typeof LockClaim> {}
+
+const LegacyLockClaim = Schema.Struct({
+  pid: Schema.Number,
+  token: Schema.optionalKey(Schema.String),
+  createdAt: Schema.optionalKey(Schema.String),
+});
+
+export interface ThreadLockOperations {
+  readonly processStartIdentity: (pid: number) => Promise<string | undefined>;
+}
+
+const processStartIdentity = async (pid: number) => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  if (process.platform === "linux") {
+    try {
+      const processStat = await readFile(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = processStat.lastIndexOf(") ");
+      if (commandEnd < 0) return undefined;
+      const fields = processStat
+        .slice(commandEnd + 2)
+        .trim()
+        .split(/\s+/);
+      const startTicks = fields[19];
+      return startTicks && /^\d+$/.test(startTicks) ? `linux:${startTicks}` : undefined;
+    } catch (cause) {
+      const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+      if (code === "ENOENT" || code === "ESRCH") return undefined;
+      throw cause;
+    }
+  }
+
+  const ps = ["/bin/ps", "/usr/bin/ps"].find(existsSync);
+  if (!ps) throw new Error("Relay requires ps to identify lock owners on this platform");
+  const child = Bun.spawn([ps, "-o", "lstart=", "-p", String(pid)], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+    env: {},
+  });
+  const [output, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  if (exitCode !== 0) return undefined;
+  const startedAt = output.trim();
+  return startedAt.length > 0 ? startedAt : undefined;
+};
+
+const liveThreadLockOperations: ThreadLockOperations = {
+  processStartIdentity,
+};
 
 const readUndoState = async (paths: RelayPathsShape, id: string): Promise<UndoState> => {
   const file = Bun.file(undoPath(paths, id));
@@ -421,10 +475,13 @@ const readUndoState = async (paths: RelayPathsShape, id: string): Promise<UndoSt
   return { entries };
 };
 
-const claimState = async (path: string): Promise<"live" | "starting" | "stale"> => {
+const claimState = async (
+  path: string,
+  operations: ThreadLockOperations,
+): Promise<"live" | "starting" | "stale"> => {
+  let value: unknown;
   try {
-    const owner = Schema.decodeUnknownOption(LockClaim)(JSON.parse(await readFile(path, "utf8")));
-    return Option.isSome(owner) && processIsAlive(owner.value.pid) ? "live" : "stale";
+    value = JSON.parse(await readFile(path, "utf8"));
   } catch {
     try {
       return Date.now() - (await stat(path)).mtimeMs < 5 * 60 * 1000 ? "starting" : "stale";
@@ -432,15 +489,75 @@ const claimState = async (path: string): Promise<"live" | "starting" | "stale"> 
       return "stale";
     }
   }
+
+  const owner = Schema.decodeUnknownOption(LockClaim)(value);
+  if (Option.isSome(owner)) {
+    const identity = await operations.processStartIdentity(owner.value.pid);
+    return identity === owner.value.startedAt ? "live" : "stale";
+  }
+  if (typeof value === "object" && value !== null && Object.hasOwn(value, "startedAt")) {
+    return "stale";
+  }
+
+  const legacyOwner = Schema.decodeUnknownOption(LegacyLockClaim)(value);
+  if (Option.isSome(legacyOwner)) {
+    // A pre-identity claim cannot distinguish its owner from a reused PID.
+    // Preserve mutual exclusion during upgrades and reclaim it once that PID exits.
+    return (await operations.processStartIdentity(legacyOwner.value.pid)) === undefined
+      ? "stale"
+      : "live";
+  }
+
+  return "stale";
 };
 
-async function liveLockExists(paths: RelayPathsShape, id: string) {
+const releaseClaim = async (path: string, owner: LockClaim, operations: ThreadLockOperations) => {
+  if (process.pid !== owner.pid) return;
+  let releasingIdentity: string | undefined;
+  try {
+    releasingIdentity = await operations.processStartIdentity(process.pid);
+  } catch {
+    return;
+  }
+  if (releasingIdentity !== owner.startedAt) return;
+
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (cause) {
+    const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+    if (code === "ENOENT") return;
+    throw cause;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return;
+  }
+  const stored = Schema.decodeUnknownOption(LockClaim)(value);
+  if (
+    Option.isNone(stored) ||
+    stored.value.pid !== owner.pid ||
+    stored.value.startedAt !== owner.startedAt ||
+    stored.value.token !== owner.token
+  ) {
+    return;
+  }
+  await rm(path, { force: true });
+};
+
+async function liveLockExists(
+  paths: RelayPathsShape,
+  id: string,
+  operations: ThreadLockOperations,
+) {
   const path = lockPath(paths, id);
   try {
     for (const entry of await readdir(path)) {
       if (!entry.endsWith(".json")) continue;
       const claim = `${path}/${entry}`;
-      const state = await claimState(claim);
+      const state = await claimState(claim, operations);
       if (state !== "stale") return true;
       await rm(claim, { force: true });
     }
@@ -507,12 +624,16 @@ const recoverThreadLocked = async (
   return { thread: repaired, messages: latestMessages };
 };
 
-const recoverThread = async (paths: RelayPathsShape, thread: RelayThread): Promise<RelayThread> => {
-  if (await liveLockExists(paths, thread.id)) return thread;
+const recoverThread = async (
+  paths: RelayPathsShape,
+  thread: RelayThread,
+  operations: ThreadLockOperations,
+): Promise<RelayThread> => {
+  if (await liveLockExists(paths, thread.id, operations)) return thread;
 
   let lock: Awaited<ReturnType<typeof acquireThreadLock>>;
   try {
-    lock = await acquireThreadLock(paths, thread.id);
+    lock = await acquireThreadLock(paths, thread.id, operations);
   } catch (cause) {
     if (cause instanceof ThreadBusy) return thread;
     throw cause;
@@ -528,13 +649,14 @@ const recoverThread = async (paths: RelayPathsShape, thread: RelayThread): Promi
 const readThreadMetadata = async (
   paths: RelayPathsShape,
   id: string,
+  operations: ThreadLockOperations,
 ): Promise<RelayThread | undefined> => {
   const stored = await readThreadFile(paths, id);
   if (!stored) return undefined;
-  if (stored.legacy && !(await liveLockExists(paths, id))) {
+  if (stored.legacy && !(await liveLockExists(paths, id, operations))) {
     let lock: Awaited<ReturnType<typeof acquireThreadLock>> | undefined;
     try {
-      lock = await acquireThreadLock(paths, id);
+      lock = await acquireThreadLock(paths, id, operations);
       const latest = await readThreadFile(paths, id);
       if (latest?.legacy) await writeThread(paths, latest.value);
     } catch (cause) {
@@ -546,19 +668,14 @@ const readThreadMetadata = async (
   return stored.value;
 };
 
-const readThread = async (paths: RelayPathsShape, id: string): Promise<RelayThread | undefined> => {
-  const thread = await readThreadMetadata(paths, id);
-  return thread ? recoverThread(paths, thread) : undefined;
+const readThread = async (
+  paths: RelayPathsShape,
+  id: string,
+  operations: ThreadLockOperations,
+): Promise<RelayThread | undefined> => {
+  const thread = await readThreadMetadata(paths, id, operations);
+  return thread ? recoverThread(paths, thread, operations) : undefined;
 };
-
-function processIsAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 async function acquireLockAt(
   paths: RelayPathsShape,
@@ -566,43 +683,49 @@ async function acquireLockAt(
   path: string,
   busyMessage: string,
   startingMessage: string,
+  operations: ThreadLockOperations,
 ) {
   await ensureBase(paths);
+  const startedAt = await operations.processStartIdentity(process.pid);
+  if (!startedAt) throw new Error("Relay could not identify the owner of its lock claim");
   const token = crypto.randomUUID();
   await secureDirectory(path);
   const claim = `${path}/${token}.json`;
-  await atomicJsonWrite(paths, claim, {
+  const owner = LockClaim.make({
     pid: process.pid,
+    startedAt,
     token,
     createdAt: new Date().toISOString(),
   });
+  await atomicJsonWrite(paths, claim, owner);
 
   let conflict: "live" | "starting" | undefined;
   for (const entry of await readdir(path)) {
     if (!entry.endsWith(".json") || entry === `${token}.json`) continue;
     const otherClaim = `${path}/${entry}`;
-    const state = await claimState(otherClaim);
+    const state = await claimState(otherClaim, operations);
     if (state === "stale") await rm(otherClaim, { force: true });
     else conflict ??= state;
   }
   if (conflict) {
-    await rm(claim, { force: true });
+    await releaseClaim(claim, owner, operations);
     throw new ThreadBusy({
       threadId: id,
       message: conflict === "live" ? busyMessage : startingMessage,
     });
   }
 
-  return { release: () => rm(claim, { force: true }) };
+  return { release: () => releaseClaim(claim, owner, operations) };
 }
 
-const acquireThreadLock = (paths: RelayPathsShape, id: string) =>
+const acquireThreadLock = (paths: RelayPathsShape, id: string, operations: ThreadLockOperations) =>
   acquireLockAt(
     paths,
     id,
     lockPath(paths, id),
     "This Relay task already has a turn running",
     "This Relay task already has a turn starting",
+    operations,
   );
 
 let indexQueue = Promise.resolve();
@@ -615,13 +738,13 @@ const acquireLocalIndexLock = async () => {
   return release;
 };
 
-const acquireIndexLock = async (paths: RelayPathsShape) => {
+const acquireIndexLock = async (paths: RelayPathsShape, operations: ThreadLockOperations) => {
   const releaseLocal = await acquireLocalIndexLock();
   try {
     const deadline = Date.now() + 5_000;
     while (true) {
       try {
-        const lock = await acquireThreadLock(paths, "__index__");
+        const lock = await acquireThreadLock(paths, "__index__", operations);
         return {
           release: async () => {
             try {
@@ -642,17 +765,26 @@ const acquireIndexLock = async (paths: RelayPathsShape) => {
   }
 };
 
-const acquireTaskRunLease = (paths: RelayPathsShape, id: string) =>
+const acquireTaskRunLease = (
+  paths: RelayPathsShape,
+  id: string,
+  operations: ThreadLockOperations,
+) =>
   acquireLockAt(
     paths,
     id,
     runLockPath(paths, id),
     "This Relay task is already open or running a turn",
     "This Relay task is already starting elsewhere",
+    operations,
   );
 
-const acquireExecutionLease = async (paths: RelayPathsShape, thread: RelayThread) => {
-  const task = await acquireTaskRunLease(paths, thread.id);
+const acquireExecutionLease = async (
+  paths: RelayPathsShape,
+  thread: RelayThread,
+  operations: ThreadLockOperations,
+) => {
+  const task = await acquireTaskRunLease(paths, thread.id, operations);
   try {
     const checkout = await acquireLockAt(
       paths,
@@ -660,6 +792,7 @@ const acquireExecutionLease = async (paths: RelayPathsShape, thread: RelayThread
       await checkoutLockPath(paths, thread.cwd),
       `This checkout is already active in another Relay task. Use a separate git worktree for concurrent agents.`,
       `This checkout is already starting in another Relay task. Try again, or use a separate git worktree.`,
+      operations,
     );
     return {
       release: async () => {
@@ -814,7 +947,10 @@ export class ThreadStore extends Context.Service<
     readonly root: string;
   }
 >()("@relay/ThreadStore") {
-  static readonly make = (paths: RelayPathsShape) => ({
+  static readonly make = (
+    paths: RelayPathsShape,
+    lockOperations: ThreadLockOperations = liveThreadLockOperations,
+  ) => ({
     root: paths.root,
 
     create: Effect.fn("ThreadStore.create")((input: CreateThreadInput) =>
@@ -831,7 +967,7 @@ export class ThreadStore extends Context.Service<
             createdAt: now,
             updatedAt: now,
           };
-          const indexLock = await acquireIndexLock(paths);
+          const indexLock = await acquireIndexLock(paths, lockOperations);
           try {
             try {
               await writeThread(paths, thread);
@@ -840,7 +976,7 @@ export class ThreadStore extends Context.Service<
                 encoding: "utf8",
                 mode: 0o600,
               });
-              const index = await loadIndex(paths, { lockHeld: true });
+              const index = await loadIndex(paths, lockOperations, { lockHeld: true });
               await writeIndex(paths, {
                 currentThreadId: thread.id,
                 threadIds: [thread.id, ...index.threadIds.filter((id) => id !== thread.id)],
@@ -861,7 +997,7 @@ export class ThreadStore extends Context.Service<
 
     current: Effect.fn("ThreadStore.current")(function* () {
       const index = yield* Effect.tryPromise({
-        try: () => loadIndex(paths),
+        try: () => loadIndex(paths, lockOperations),
         catch: (cause) =>
           new StoreError({ operation: "read index", message: errorMessage(cause), cause }),
       });
@@ -874,7 +1010,7 @@ export class ThreadStore extends Context.Service<
 
       return yield* Effect.tryPromise({
         try: async () => {
-          const thread = await readThread(paths, currentThreadId);
+          const thread = await readThread(paths, currentThreadId, lockOperations);
           if (!thread) {
             throw new ThreadNotFound({
               threadId: currentThreadId,
@@ -896,7 +1032,7 @@ export class ThreadStore extends Context.Service<
 
     currentMetadata: Effect.fn("ThreadStore.currentMetadata")(function* () {
       const index = yield* Effect.tryPromise({
-        try: () => loadIndex(paths),
+        try: () => loadIndex(paths, lockOperations),
         catch: (cause) =>
           new StoreError({ operation: "read index", message: errorMessage(cause), cause }),
       });
@@ -909,7 +1045,7 @@ export class ThreadStore extends Context.Service<
 
       return yield* Effect.tryPromise({
         try: async () => {
-          const thread = await readThreadMetadata(paths, currentThreadId);
+          const thread = await readThreadMetadata(paths, currentThreadId, lockOperations);
           if (!thread) {
             throw new ThreadNotFound({
               threadId: currentThreadId,
@@ -932,7 +1068,7 @@ export class ThreadStore extends Context.Service<
     get: Effect.fn("ThreadStore.get")((id: string) =>
       Effect.tryPromise({
         try: async () => {
-          const thread = await readThread(paths, id);
+          const thread = await readThread(paths, id, lockOperations);
           if (!thread)
             throw new ThreadNotFound({
               threadId: id,
@@ -950,9 +1086,9 @@ export class ThreadStore extends Context.Service<
     list: Effect.fn("ThreadStore.list")(() =>
       Effect.tryPromise({
         try: async () => {
-          const index = await loadIndex(paths);
+          const index = await loadIndex(paths, lockOperations);
           const threads = await Promise.all(
-            index.threadIds.map((id) => readThreadMetadata(paths, id)),
+            index.threadIds.map((id) => readThreadMetadata(paths, id, lockOperations)),
           );
           return threads.filter((thread): thread is RelayThread => thread !== undefined);
         },
@@ -997,9 +1133,9 @@ export class ThreadStore extends Context.Service<
     exportTask: Effect.fn("ThreadStore.exportTask")((thread: RelayThread) =>
       Effect.tryPromise({
         try: async () => {
-          const runLease = await acquireTaskRunLease(paths, thread.id);
+          const runLease = await acquireTaskRunLease(paths, thread.id, lockOperations);
           try {
-            const lock = await acquireThreadLock(paths, thread.id);
+            const lock = await acquireThreadLock(paths, thread.id, lockOperations);
             try {
               const current = await readThreadFile(paths, thread.id);
               if (!current) throw new Error(`Relay task ${thread.id} no longer exists`);
@@ -1043,13 +1179,13 @@ export class ThreadStore extends Context.Service<
     deleteTask: Effect.fn("ThreadStore.deleteTask")((thread: RelayThread) =>
       Effect.tryPromise({
         try: async () => {
-          const runLease = await acquireTaskRunLease(paths, thread.id);
+          const runLease = await acquireTaskRunLease(paths, thread.id, lockOperations);
           try {
-            const lock = await acquireThreadLock(paths, thread.id);
+            const lock = await acquireThreadLock(paths, thread.id, lockOperations);
             try {
-              const indexLock = await acquireIndexLock(paths);
+              const indexLock = await acquireIndexLock(paths, lockOperations);
               try {
-                const index = await loadIndex(paths, { lockHeld: true });
+                const index = await loadIndex(paths, lockOperations, { lockHeld: true });
                 const remaining = index.threadIds.filter((id) => id !== thread.id);
                 await atomicJsonWrite(paths, deletionPath(paths, thread.id), {
                   version: 1,
@@ -1085,7 +1221,7 @@ export class ThreadStore extends Context.Service<
 
     acquireLock: Effect.fn("ThreadStore.acquireLock")((id: string) =>
       Effect.tryPromise({
-        try: () => acquireThreadLock(paths, id),
+        try: () => acquireThreadLock(paths, id, lockOperations),
         catch: (cause) =>
           cause instanceof ThreadBusy
             ? cause
@@ -1095,7 +1231,7 @@ export class ThreadStore extends Context.Service<
 
     acquireRunLease: Effect.fn("ThreadStore.acquireRunLease")((id: string) =>
       Effect.tryPromise({
-        try: () => acquireTaskRunLease(paths, id),
+        try: () => acquireTaskRunLease(paths, id, lockOperations),
         catch: (cause) =>
           cause instanceof ThreadBusy
             ? cause
@@ -1109,7 +1245,7 @@ export class ThreadStore extends Context.Service<
 
     acquireExecutionLease: Effect.fn("ThreadStore.acquireExecutionLease")((thread: RelayThread) =>
       Effect.tryPromise({
-        try: () => acquireExecutionLease(paths, thread),
+        try: () => acquireExecutionLease(paths, thread, lockOperations),
         catch: (cause) =>
           cause instanceof ThreadBusy
             ? cause
@@ -1648,7 +1784,7 @@ export class ThreadStore extends Context.Service<
     setCurrent: Effect.fn("ThreadStore.setCurrent")((id: string) =>
       Effect.tryPromise({
         try: async () => {
-          const indexLock = await acquireIndexLock(paths);
+          const indexLock = await acquireIndexLock(paths, lockOperations);
           try {
             if (!(await Bun.file(metadataPath(paths, id)).exists())) {
               throw new ThreadNotFound({
@@ -1656,7 +1792,7 @@ export class ThreadStore extends Context.Service<
                 message: `Relay task ${id} was not found`,
               });
             }
-            const index = await loadIndex(paths, { lockHeld: true });
+            const index = await loadIndex(paths, lockOperations, { lockHeld: true });
             await writeIndex(paths, {
               currentThreadId: id,
               threadIds: [id, ...index.threadIds.filter((threadId) => threadId !== id)],
@@ -1853,6 +1989,15 @@ export class ThreadStore extends Context.Service<
 
   static readonly layer = ThreadStore.configuredLayer.pipe(Layer.provide(RelayPaths.layer));
 
-  static readonly layerFromRoot = (root: string) =>
-    ThreadStore.configuredLayer.pipe(Layer.provide(RelayPaths.layerFromRoot(root)));
+  static readonly layerFromRoot = (
+    root: string,
+    lockOperations: ThreadLockOperations = liveThreadLockOperations,
+  ) =>
+    Layer.effect(
+      ThreadStore,
+      Effect.gen(function* () {
+        const paths = yield* RelayPaths;
+        return ThreadStore.of(ThreadStore.make(paths, lockOperations));
+      }),
+    ).pipe(Layer.provide(RelayPaths.layerFromRoot(root)));
 }
