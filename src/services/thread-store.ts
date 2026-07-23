@@ -59,7 +59,7 @@ const checkoutLockPath = async (paths: RelayPathsShape, cwd: string) => {
 const maxEventLineChars = 4_000_000;
 const NativeVisibility = Schema.Struct({
   hidden: Schema.Array(Schema.String),
-  links: Schema.optional(
+  links: Schema.optionalKey(
     Schema.Array(Schema.Struct({ messageId: Schema.String, key: Schema.String })),
   ),
 });
@@ -84,7 +84,7 @@ const readJson = async <A>(path: string, schema: Schema.Decoder<A>): Promise<A |
   if (!(await file.exists())) return undefined;
   await chmod(path, 0o600);
   const value: unknown = await file.json();
-  return Schema.decodeUnknownSync(schema)(value) as A;
+  return Schema.decodeUnknownSync(schema)(value);
 };
 
 const readVisibility = async (paths: RelayPathsShape, id: string): Promise<NativeVisibility> =>
@@ -142,9 +142,8 @@ const decodeStored = <A>(
       `Relay ${label} storage format ${version} is not supported by this release (expected version 1)`,
     );
   }
-  const decoded = Schema.decodeUnknownSync(stored)(value);
-  const { version: _, ...runtime } = decoded;
-  return { value: runtime as A, legacy: false };
+  Schema.decodeUnknownSync(stored)(value);
+  return { value: Schema.decodeUnknownSync(current)(value), legacy: false };
 };
 
 const readIndexFile = async (paths: RelayPathsShape) => {
@@ -374,8 +373,8 @@ const PendingTurn = Schema.Struct({
   version: Schema.Literal(1),
   messages: Schema.Array(RelayMessage),
   thread: RelayThread,
-  replaceEvents: Schema.optional(Schema.Boolean),
-  visibility: Schema.optional(NativeVisibility),
+  replaceEvents: Schema.optionalKey(Schema.Boolean),
+  visibility: Schema.optionalKey(NativeVisibility),
 });
 type PendingTurn = typeof PendingTurn.Type;
 

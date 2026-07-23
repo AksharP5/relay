@@ -12,8 +12,8 @@ export const RelayMessage = Schema.Struct({
   role: MessageRole,
   content: Schema.String,
   harness: Harness,
-  nativeId: Schema.optional(Schema.String),
-  nativeSessionId: Schema.optional(Schema.String),
+  nativeId: Schema.optionalKey(Schema.String),
+  nativeSessionId: Schema.optionalKey(Schema.String),
   createdAt: Schema.String,
 });
 export type RelayMessage = typeof RelayMessage.Type;
@@ -21,9 +21,9 @@ export type RelayMessage = typeof RelayMessage.Type;
 export const HarnessBinding = Schema.Struct({
   harness: Harness,
   sessionId: Schema.String,
-  model: Schema.optional(Schema.String),
+  model: Schema.optionalKey(Schema.String),
   lastSyncedSeq: Schema.Number,
-  nativeCursor: Schema.optional(Schema.String),
+  nativeCursor: Schema.optionalKey(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });
@@ -32,7 +32,7 @@ export type HarnessBinding = typeof HarnessBinding.Type;
 export const PendingNativeHandoff = Schema.Struct({
   id: Schema.String,
   harness: Harness,
-  sessionId: Schema.optional(Schema.String),
+  sessionId: Schema.optionalKey(Schema.String),
   fromSeq: Schema.Number,
   throughSeq: Schema.Number,
   createdAt: Schema.String,
@@ -45,23 +45,23 @@ export const RelayThread = Schema.Struct({
   cwd: Schema.String,
   activeHarness: Harness,
   bindings: Schema.Struct({
-    codex: Schema.optional(HarnessBinding),
-    opencode: Schema.optional(HarnessBinding),
+    codex: Schema.optionalKey(HarnessBinding),
+    opencode: Schema.optionalKey(HarnessBinding),
   }),
-  preferredModels: Schema.optional(
+  preferredModels: Schema.optionalKey(
     Schema.Struct({
-      codex: Schema.optional(Schema.String),
-      opencode: Schema.optional(Schema.String),
+      codex: Schema.optionalKey(Schema.String),
+      opencode: Schema.optionalKey(Schema.String),
     }),
   ),
-  pendingHandoffs: Schema.optional(
+  pendingHandoffs: Schema.optionalKey(
     Schema.Struct({
-      codex: Schema.optional(PendingNativeHandoff),
-      opencode: Schema.optional(PendingNativeHandoff),
+      codex: Schema.optionalKey(PendingNativeHandoff),
+      opencode: Schema.optionalKey(PendingNativeHandoff),
     }),
   ),
   /** Messages at or below this sequence belong to a superseded active context. */
-  contextStartSeq: Schema.optional(Schema.Number),
+  contextStartSeq: Schema.optionalKey(Schema.Number),
   lastSeq: Schema.Number,
   createdAt: Schema.String,
   updatedAt: Schema.String,
