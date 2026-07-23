@@ -56,7 +56,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      actions: write
       contents: write
       pull-requests: write
     outputs:
@@ -102,20 +101,6 @@ jobs:
               echo "ref=refs/tags/v$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
             fi
           fi
-      - name: Dispatch CI for the Release Please pull request
-        if: steps.release.outputs.prs_created == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_PRS: ${{ steps.release.outputs.prs }}
-        shell: bash
-        run: |
-          # GITHUB_TOKEN-created release PRs otherwise require a manual workflow approval.
-          # A dispatch against each head branch creates the normal CI check on its head SHA.
-          jq -er '.[].headBranchName' <<< "$RELEASE_PRS" |
-            while IFS= read -r head_ref; do
-              gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$head_ref"
-            done
-
   build_native:
     needs: release_please
     if: ${{ !cancelled() && needs.release_please.result == 'success' && (inputs.version != '' || needs.release_please.outputs.release_created == 'true') }}
