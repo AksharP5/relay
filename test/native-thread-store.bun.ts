@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RelayThread } from "../src/domain.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "relay-native-store-"));
 Bun.env.RELAY_DATA_DIR = directory;
@@ -326,6 +327,109 @@ describe("native transcript storage", () => {
     await first.release();
     await expect(acquire()).rejects.toThrow("already open");
     await second.release();
+  });
+
+  it("returns a schema-valid task when binding clears a pending handoff", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Schema-valid bind",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        const codexPending = yield* store.beginNativeHandoff(created, {
+          harness: "codex",
+          fromSeq: 0,
+          throughSeq: 0,
+        });
+        const bothPending = yield* store.beginNativeHandoff(codexPending, {
+          harness: "opencode",
+          fromSeq: 0,
+          throughSeq: 0,
+        });
+
+        const bound = yield* store.bindNativeSession(bothPending, {
+          harness: "codex",
+          sessionId: "codex-session",
+          lastSyncedSeq: 0,
+        });
+
+        expect(Schema.is(RelayThread)(bound)).toBe(true);
+        expect(Object.hasOwn(bound.pendingHandoffs ?? {}, "codex")).toBe(false);
+        expect(bound.pendingHandoffs?.opencode).toBeDefined();
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+  });
+
+  it("returns a schema-valid task when abandoning a pending handoff", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Schema-valid abandon",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        const adopted = yield* store.resetNativeContext(created, {
+          harness: "codex",
+          sessionId: "codex-session",
+          turns: [],
+        });
+        const codexPending = yield* store.beginNativeHandoff(adopted, {
+          harness: "codex",
+          sessionId: "codex-session",
+          fromSeq: 0,
+          throughSeq: 0,
+        });
+        const bothPending = yield* store.beginNativeHandoff(codexPending, {
+          harness: "opencode",
+          fromSeq: 0,
+          throughSeq: 0,
+        });
+
+        const abandoned = yield* store.abandonNativeHandoff(bothPending, "codex");
+
+        expect(Schema.is(RelayThread)(abandoned)).toBe(true);
+        expect(Object.hasOwn(abandoned.pendingHandoffs ?? {}, "codex")).toBe(false);
+        expect(abandoned.pendingHandoffs?.opencode).toBeDefined();
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
+  });
+
+  it("returns a schema-valid task when dropping a binding", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Schema-valid drop",
+          cwd: process.cwd(),
+          harness: "codex",
+        });
+        const adopted = yield* store.resetNativeContext(created, {
+          harness: "codex",
+          sessionId: "codex-session",
+          turns: [],
+        });
+        const codexPending = yield* store.beginNativeHandoff(adopted, {
+          harness: "codex",
+          sessionId: "codex-session",
+          fromSeq: 0,
+          throughSeq: 0,
+        });
+        const bothPending = yield* store.beginNativeHandoff(codexPending, {
+          harness: "opencode",
+          fromSeq: 0,
+          throughSeq: 0,
+        });
+
+        const dropped = yield* store.dropBinding(bothPending, "codex");
+
+        expect(Schema.is(RelayThread)(dropped)).toBe(true);
+        expect(Object.hasOwn(dropped.pendingHandoffs ?? {}, "codex")).toBe(false);
+        expect(dropped.pendingHandoffs?.opencode).toBeDefined();
+      }).pipe(Effect.provide(ThreadStore.layer)),
+    );
   });
 
   it("binds an empty session and idempotently imports native turns", async () => {
