@@ -29,6 +29,15 @@ const defaultIndex: RelayIndex = { currentThreadId: null, threadIds: [] };
 
 const errorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
+const withoutPendingHandoff = (
+  pendingHandoffs: RelayThread["pendingHandoffs"],
+  harness: Harness,
+) => {
+  const remaining = { ...pendingHandoffs };
+  delete remaining[harness];
+  return remaining;
+};
+
 const threadDir = (paths: RelayPathsShape, id: string) => `${paths.root}/threads/${id}`;
 const metadataPath = (paths: RelayPathsShape, id: string) => `${threadDir(paths, id)}/thread.json`;
 const eventsPath = (paths: RelayPathsShape, id: string) => `${threadDir(paths, id)}/events.jsonl`;
@@ -1250,10 +1259,7 @@ export class ThreadStore extends Context.Service<
                 ...thread.preferredModels,
                 ...(binding.model ? { [input.harness]: binding.model } : {}),
               },
-              pendingHandoffs: {
-                ...thread.pendingHandoffs,
-                [input.harness]: undefined,
-              },
+              pendingHandoffs: withoutPendingHandoff(thread.pendingHandoffs, input.harness),
               updatedAt: now,
             };
             await writeThread(paths, updated);
@@ -1417,10 +1423,7 @@ export class ThreadStore extends Context.Service<
                   ? { [harness]: thread.bindings[harness].model }
                   : {}),
               },
-              pendingHandoffs: {
-                ...thread.pendingHandoffs,
-                [harness]: undefined,
-              },
+              pendingHandoffs: withoutPendingHandoff(thread.pendingHandoffs, harness),
               updatedAt: new Date().toISOString(),
             };
             await writeThread(paths, updated);
@@ -1703,10 +1706,7 @@ export class ThreadStore extends Context.Service<
                 ? { [harness]: thread.bindings[harness].model }
                 : {}),
             },
-            pendingHandoffs: {
-              ...thread.pendingHandoffs,
-              [harness]: undefined,
-            },
+            pendingHandoffs: withoutPendingHandoff(thread.pendingHandoffs, harness),
             updatedAt: new Date().toISOString(),
           };
           await writeThread(paths, updated);
