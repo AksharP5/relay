@@ -21,6 +21,9 @@
     "type": "git",
     "url": "git+https://github.com/AksharP5/relay.git"
   },
+  "bin": {
+    "relay": "dist/relay"
+  },
   "type": "module",
   "scripts": {
     "relay": "bun src/cli.ts",
