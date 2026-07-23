@@ -1,9 +1,10 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { Effect, Schema } from "effect";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RelayThread } from "../src/domain.ts";
+import type { ThreadLockOperations } from "../src/services/thread-store.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "relay-native-store-"));
 Bun.env.RELAY_DATA_DIR = directory;
@@ -744,5 +745,217 @@ describe("native transcript storage", () => {
         expect(yield* store.messages(created.id)).toEqual([]);
       }).pipe(Effect.provide(ThreadStore.layer)),
     );
+  });
+});
+
+const StoredLockClaim = Schema.Struct({
+  pid: Schema.Number,
+  startedAt: Schema.String,
+  token: Schema.String,
+  createdAt: Schema.String,
+});
+
+const onlyLockClaim = async (path: string) => {
+  const entries = (await readdir(path)).filter((entry) => entry.endsWith(".json"));
+  expect(entries).toHaveLength(1);
+  const entry = entries[0];
+  if (entry === undefined) throw new Error(`Expected a lock claim in ${path}`);
+  return join(path, entry);
+};
+
+const lockOperations = (identities: ReadonlyMap<number, string>): ThreadLockOperations => ({
+  processStartIdentity: async (pid) => identities.get(pid),
+});
+
+describe("thread store lock ownership", () => {
+  it("records the owner process start identity in new claims", async () => {
+    const root = await mkdtemp(join(directory, "lock-owner-identity-"));
+    const identities = new Map([[process.pid, "owner-start"]]);
+    const lease = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        return yield* store.acquireLock("identity-claim");
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, lockOperations(identities)))),
+    );
+
+    const claimPath = await onlyLockClaim(join(root, "locks", "identity-claim"));
+    const claim = Schema.decodeUnknownSync(StoredLockClaim)(
+      JSON.parse(await readFile(claimPath, "utf8")),
+    );
+    expect(claim.pid).toBe(process.pid);
+    expect(claim.startedAt).toBe("owner-start");
+    await lease.release();
+  });
+
+  it("includes the Linux boot identity in live process claims", async () => {
+    if (process.platform !== "linux") return;
+    const root = await mkdtemp(join(directory, "lock-linux-boot-identity-"));
+    const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+    const lease = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        return yield* store.acquireLock("linux-boot-identity");
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+    );
+
+    const claimPath = await onlyLockClaim(join(root, "locks", "linux-boot-identity"));
+    const claim = Schema.decodeUnknownSync(StoredLockClaim)(
+      JSON.parse(await readFile(claimPath, "utf8")),
+    );
+    expect(claim.startedAt).toMatch(new RegExp(`^linux:${bootId}:\\d+$`));
+    await lease.release();
+  });
+
+  it("reclaims a live PID when its process start identity does not match", async () => {
+    const root = await mkdtemp(join(directory, "lock-reused-pid-"));
+    const threadId = "reused-pid";
+    const reusedPid = 42_424;
+    const claimDirectory = join(root, "run-locks", threadId);
+    const staleClaim = join(claimDirectory, "stale.json");
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(
+      staleClaim,
+      `${JSON.stringify({
+        pid: reusedPid,
+        startedAt: "original-start",
+        token: "stale",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    const identities = new Map([
+      [process.pid, "contender-start"],
+      [reusedPid, "replacement-start"],
+    ]);
+
+    const lease = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        return yield* store.acquireRunLease(threadId);
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, lockOperations(identities)))),
+    );
+    expect(await Bun.file(staleClaim).exists()).toBe(false);
+    await lease.release();
+  });
+
+  it("keeps a matching live process identity busy", async () => {
+    const root = await mkdtemp(join(directory, "lock-matching-owner-"));
+    const threadId = "matching-owner";
+    const ownerPid = 52_525;
+    const claimDirectory = join(root, "run-locks", threadId);
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(
+      join(claimDirectory, "owner.json"),
+      `${JSON.stringify({
+        pid: ownerPid,
+        startedAt: "matching-start",
+        token: "owner",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    const identities = new Map([
+      [process.pid, "contender-start"],
+      [ownerPid, "matching-start"],
+    ]);
+
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.acquireRunLease(threadId);
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, lockOperations(identities)))),
+      ),
+    ).rejects.toThrow("already open");
+    expect((await readdir(claimDirectory)).filter((entry) => entry.endsWith(".json"))).toEqual([
+      "owner.json",
+    ]);
+  });
+
+  it("keeps a claim when its process identity cannot be inspected", async () => {
+    const root = await mkdtemp(join(directory, "lock-owner-lookup-failure-"));
+    const threadId = "owner-lookup-failure";
+    const ownerPid = 53_535;
+    const claimDirectory = join(root, "run-locks", threadId);
+    const ownerClaim = join(claimDirectory, "owner.json");
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(
+      ownerClaim,
+      `${JSON.stringify({
+        pid: ownerPid,
+        startedAt: "owner-start",
+        token: "owner",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    const operations: ThreadLockOperations = {
+      processStartIdentity: async (pid) => {
+        if (pid === process.pid) return "contender-start";
+        throw new Error("identity lookup denied");
+      },
+    };
+
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.acquireRunLease(threadId);
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, operations))),
+      ),
+    ).rejects.toThrow("identity lookup denied");
+    expect(await Bun.file(ownerClaim).exists()).toBe(true);
+    expect((await readdir(claimDirectory)).filter((entry) => entry.endsWith(".json"))).toEqual([
+      "owner.json",
+    ]);
+  });
+
+  it("keeps a live legacy PID claim but reclaims it after that PID exits", async () => {
+    const root = await mkdtemp(join(directory, "lock-legacy-owner-"));
+    const threadId = "legacy-owner";
+    const legacyPid = 62_626;
+    const claimDirectory = join(root, "run-locks", threadId);
+    const legacyClaim = join(claimDirectory, "owner.json");
+    await mkdir(claimDirectory, { recursive: true });
+    await writeFile(
+      legacyClaim,
+      `${JSON.stringify({
+        pid: legacyPid,
+        token: "legacy",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    const identities = new Map([
+      [process.pid, "contender-start"],
+      [legacyPid, "legacy-live-start"],
+    ]);
+    const layer = ThreadStore.layerFromRoot(root, lockOperations(identities));
+    const acquire = () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.acquireRunLease(threadId);
+        }).pipe(Effect.provide(layer)),
+      );
+
+    await expect(acquire()).rejects.toThrow("already open");
+    identities.delete(legacyPid);
+    const lease = await acquire();
+    expect(await Bun.file(legacyClaim).exists()).toBe(false);
+    await lease.release();
+  });
+
+  it("does not release a claim after the owner process identity changes", async () => {
+    const root = await mkdtemp(join(directory, "lock-release-owner-"));
+    const threadId = "release-owner";
+    const identities = new Map([[process.pid, "original-owner"]]);
+    const lease = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        return yield* store.acquireRunLease(threadId);
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(root, lockOperations(identities)))),
+    );
+    const claimPath = await onlyLockClaim(join(root, "run-locks", threadId));
+
+    identities.set(process.pid, "replacement-owner");
+    await lease.release();
+    expect(await Bun.file(claimPath).exists()).toBe(true);
   });
 });
