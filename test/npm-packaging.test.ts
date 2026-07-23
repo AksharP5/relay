@@ -82,6 +82,41 @@ describe("npm package assembly", () => {
     await expect(createLauncherPackage(launcher, "01.2.3")).rejects.toThrow("Invalid npm");
   });
 
+  it("publishes every local README link target", async () => {
+    const root = await temporaryDirectory();
+    const launcher = join(root, "launcher");
+    await createLauncherPackage(launcher, "1.2.3");
+
+    const readme = await readFile(join(launcher, "README.md"), "utf8");
+    const localTargets = [...readme.matchAll(/\[[^\]]+\]\(([^)\s]+)\)/g)].flatMap((match) => {
+      const target = match[1];
+      if (!target || target.startsWith("#") || /^[a-z][a-z\d+.-]*:/i.test(target)) return [];
+      return [decodeURIComponent(target.split(/[?#]/, 1)[0] ?? target)];
+    });
+    const { stdout } = await execFileAsync("npm", ["pack", launcher, "--dry-run", "--json"], {
+      cwd: root,
+    });
+    const packResult: unknown = JSON.parse(stdout);
+    const packageFiles =
+      Array.isArray(packResult) &&
+      packResult.length === 1 &&
+      typeof packResult[0] === "object" &&
+      packResult[0] !== null &&
+      "files" in packResult[0] &&
+      Array.isArray(packResult[0].files)
+        ? packResult[0].files
+        : [];
+    const publishedPaths = new Set(
+      packageFiles.flatMap((file: unknown) =>
+        typeof file === "object" && file !== null && "path" in file && typeof file.path === "string"
+          ? [file.path]
+          : [],
+      ),
+    );
+
+    expect(localTargets.filter((target) => !publishedPaths.has(target))).toEqual([]);
+  });
+
   it.each([
     ["Darwin", "arm64", "relay-darwin-arm64", "nested", "ok"],
     ["Darwin", "x86_64", "relay-darwin-x64", "hoisted", "ok"],
