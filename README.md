@@ -114,10 +114,11 @@ bun install
 bun run check
 bun run build
 bun link
+relay --version
 relay doctor
 ```
 
-The build creates a standalone Relay executable for the current platform. Re-run `bun run build` after pulling changes. Source builds are for contributors; npm is the supported installation channel.
+The build creates a standalone Relay executable for the current platform. `bun link` exposes it as `relay` through Bun's global bin directory. Re-run `bun run build` after pulling changes. Source builds are for contributors; npm is the supported installation channel.
 
 Relay targets the latest stable releases rather than silently pinning old harnesses. On every relevant `main` change and once per day, [compatibility CI](https://github.com/AksharP5/relay/actions/workflows/compat-latest.yml) installs both `@latest` packages on Linux and macOS, records the exact resolved versions in the run summary, and exercises their schemas, authenticated local servers, event streams, session creation, hidden handoff injection, resume, deleted-session recovery, status, and cleanup without a model call. The PTY byte path also has automated terminal tests.
 
