@@ -62,6 +62,31 @@ const createTwoTurns = (root: string) =>
     }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
   );
 
+const createAdoptedTurn = (root: string) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* ThreadStore;
+      const created = yield* store.create({
+        title: "Adopted undo transaction",
+        cwd: process.cwd(),
+        harness: "opencode",
+      });
+      const original = yield* store.commitTurn(created, {
+        harness: "opencode",
+        prompt: "superseded",
+        response: "superseded response",
+        sessionId: "ses_original",
+        bindingCreatedAt: created.createdAt,
+      });
+      const adopted = yield* store.resetNativeContext(original.thread, {
+        harness: "opencode",
+        sessionId: "ses_adopted",
+        turns: [{ id: "native-adopted", prompt: "adopted", response: "adopted response" }],
+      });
+      return adopted;
+    }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+  );
+
 const interruptUndo = (root: string, thread: RelayThread, boundary: UndoRedoPersistenceBoundary) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -165,6 +190,57 @@ describe("canonical undo and redo", () => {
           expectCanonicalIdentities(messages);
         }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps redo valid after reopening an undone adopted native context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-redo-adopted-"));
+    try {
+      const adopted = await createAdoptedTurn(root);
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          const undone = yield* store.undoLastTurn(adopted, "opencode");
+          expect(undone.contextStartSeq).toBe(2);
+          expect(undone.lastSeq).toBe(2);
+
+          const reopened = yield* store.get(adopted.id);
+          expect(reopened.lastSeq).toBe(2);
+          expect(yield* store.canRedoLastTurn(reopened, "opencode")).toBe(true);
+          const redone = yield* store.redoLastTurn(reopened, "opencode");
+          expect(redone.lastSeq).toBe(4);
+          expect((yield* store.messages(adopted.id)).map((message) => message.content)).toEqual([
+            "adopted",
+            "adopted response",
+          ]);
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers an interrupted adopted-context undo without invalidating redo", async () => {
+    const root = await mkdtemp(join(tmpdir(), "relay-redo-adopted-crash-"));
+    try {
+      const adopted = await createAdoptedTurn(root);
+      const exit = await interruptUndo(root, adopted, "journal");
+      expect(exit._tag).toBe("Failure");
+
+      const recovered = await recover(root, adopted.id);
+      expect(recovered.thread.contextStartSeq).toBe(2);
+      expect(recovered.thread.lastSeq).toBe(2);
+      expect(recovered.messages).toEqual([]);
+      expect(recovered.canRedo).toBe(true);
+      const redone = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* ThreadStore;
+          return yield* store.redoLastTurn(recovered.thread, "opencode");
+        }).pipe(Effect.provide(ThreadStore.layerFromRoot(root))),
+      );
+      expect(redone.lastSeq).toBe(4);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

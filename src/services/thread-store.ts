@@ -2086,7 +2086,7 @@ export class ThreadStore extends Context.Service<
           const removedIds = new Set(removed.map((message) => message.id));
           const remaining = messages.filter((message) => !removedIds.has(message.id));
           const remainingRaw = rawMessages.filter((message) => !removedIds.has(message.id));
-          const lastSeq = remainingRaw.at(-1)?.seq ?? 0;
+          const lastSeq = Math.max(thread.contextStartSeq ?? 0, remainingRaw.at(-1)?.seq ?? 0);
           const lastVisibleSeq = remaining.at(-1)?.seq ?? 0;
           const lastHarnessSeq =
             remaining.findLast(
