@@ -541,6 +541,97 @@ describe("native transcript storage", () => {
     );
   });
 
+  it("recovers a visibility-only import after metadata persistence fails", async () => {
+    const keepTurn = { id: "native-keep", prompt: "keep", response: "kept" };
+    const hiddenTurn = { id: "native-hide", prompt: "hide", response: "hidden" };
+    const prepared = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const created = yield* store.create({
+          title: "Crash-safe native visibility",
+          cwd: process.cwd(),
+          harness: "opencode",
+        });
+        const imported = yield* store.importNativeTurns(created, {
+          harness: "opencode",
+          sessionId: "opencode-visibility-session",
+          turns: [keepTurn, hiddenTurn],
+          hiddenTurnIds: [],
+        });
+        const handedOff = yield* store.bindNativeSession(imported, {
+          harness: "codex",
+          sessionId: "codex-stale-session",
+          lastSyncedSeq: imported.lastSeq,
+        });
+        return { created, handedOff };
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(directory))),
+    );
+
+    const taskDirectory = join(directory, "threads", prepared.created.id);
+    const metadata = join(taskDirectory, "thread.json");
+    const pending = join(taskDirectory, "pending-turn.json");
+    const visibilityFile = join(taskDirectory, "native-visibility.json");
+    const metadataSource = await readFile(metadata, "utf8");
+
+    await rm(metadata);
+    await mkdir(metadata);
+    try {
+      await expect(
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const store = yield* ThreadStore;
+            return yield* store.importNativeTurns(prepared.handedOff, {
+              harness: "opencode",
+              sessionId: "opencode-visibility-session",
+              turns: [keepTurn],
+              hiddenTurnIds: [hiddenTurn.id],
+            });
+          }).pipe(Effect.provide(ThreadStore.layerFromRoot(directory))),
+        ),
+      ).rejects.toThrow();
+
+      expect(await Bun.file(pending).exists()).toBe(true);
+      const visibilitySource: unknown = JSON.parse(await readFile(visibilityFile, "utf8"));
+      const persistedVisibility = Schema.decodeUnknownSync(
+        Schema.Struct({
+          hidden: Schema.Array(Schema.String),
+          links: Schema.Array(Schema.Struct({ messageId: Schema.String, key: Schema.String })),
+        }),
+      )(visibilitySource);
+      expect(persistedVisibility.hidden).toEqual([
+        "opencode:opencode-visibility-session:native-hide",
+      ]);
+    } finally {
+      await rm(metadata, { recursive: true, force: true });
+      await writeFile(metadata, metadataSource, { encoding: "utf8", mode: 0o600 });
+    }
+
+    const freshTurn = { id: "native-fresh", prompt: "fresh", response: "new" };
+    const recovered = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const thread = yield* store.importNativeTurns(prepared.handedOff, {
+          harness: "opencode",
+          sessionId: "opencode-visibility-session",
+          turns: [keepTurn, freshTurn],
+          hiddenTurnIds: [hiddenTurn.id],
+        });
+        const messages = yield* store.messages(prepared.created.id);
+        return { thread, messages };
+      }).pipe(Effect.provide(ThreadStore.layerFromRoot(directory))),
+    );
+
+    expect(recovered.thread.bindings.codex).toBeUndefined();
+    expect(recovered.thread.bindings.opencode?.sessionId).toBe("opencode-visibility-session");
+    expect(recovered.messages.map((message) => message.content)).toEqual([
+      "keep",
+      "kept",
+      "fresh",
+      "new",
+    ]);
+    expect(await Bun.file(pending).exists()).toBe(false);
+  });
+
   it("re-adopts a redone OpenCode transcript without stale context tombstones", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
