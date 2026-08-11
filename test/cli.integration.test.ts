@@ -163,7 +163,7 @@ describe("Relay CLI storage", () => {
 
     const { stdout: bunPath } = await execFileAsync("sh", ["-c", "command -v bun"]);
     await symlink(bunPath.trim(), join(bin, "bun"));
-    const env = { PATH: `${bin}:/usr/bin:/bin` };
+    const env = { PATH: bin };
 
     const missing = await runRelay(root, ["doctor"], projectRoot, env);
     expect(missing.exitCode).toBe(1);

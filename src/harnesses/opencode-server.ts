@@ -58,7 +58,7 @@ const OpenCodeCommandMessage = Schema.Struct({
   ),
 });
 
-export class OpenCodeProtocolError extends Schema.TaggedErrorClass<OpenCodeProtocolError>()(
+export class OpenCodeProtocolError extends Schema.TaggedError<OpenCodeProtocolError>()(
   "OpenCodeProtocolError",
   {
     operation: Schema.String,

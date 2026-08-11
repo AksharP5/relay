@@ -15,7 +15,7 @@ const CodexRpcMessage = Schema.Struct({
 });
 type CodexRpcMessage = typeof CodexRpcMessage.Type;
 
-export class AppServerProtocolError extends Schema.TaggedErrorClass<AppServerProtocolError>()(
+export class AppServerProtocolError extends Schema.TaggedError<AppServerProtocolError>()(
   "AppServerProtocolError",
   {
     source: Schema.String,

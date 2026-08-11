@@ -85,7 +85,7 @@ const CodexModelCatalog = Schema.Struct({
   ),
 });
 
-export class CodexModelCatalogError extends Schema.TaggedErrorClass<CodexModelCatalogError>()(
+export class CodexModelCatalogError extends Schema.TaggedError<CodexModelCatalogError>()(
   "CodexModelCatalogError",
   {
     message: Schema.String,
