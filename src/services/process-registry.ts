@@ -46,7 +46,7 @@ export const ProcessRecoveryResult = Schema.Struct({
 });
 export interface ProcessRecoveryResult extends Schema.Schema.Type<typeof ProcessRecoveryResult> {}
 
-export class ProcessRecoveryError extends Schema.TaggedErrorClass<ProcessRecoveryError>()(
+export class ProcessRecoveryError extends Schema.TaggedError<ProcessRecoveryError>()(
   "ProcessRegistry.RecoveryError",
   { failures: Schema.Array(ProcessRecoveryFailure) },
 ) {}

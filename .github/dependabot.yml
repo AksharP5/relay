@@ -9,6 +9,11 @@ updates:
       time: "13:17"
       timezone: America/New_York
     open-pull-requests-limit: 5
+    groups:
+      effect:
+        patterns:
+          - effect
+          - "@effect/*"
 
   - package-ecosystem: github-actions
     directory: /
