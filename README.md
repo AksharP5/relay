@@ -105,7 +105,7 @@ npm install --global @akshar5/relay@latest
 
 ### Build from source
 
-Source installation additionally requires [Bun](https://bun.sh/) 1.3 or newer.
+Source installation additionally requires [Bun](https://bun.sh/) 1.3 or newer. Running the test suite also requires Node.js 22.12 or newer.
 
 ```bash
 git clone https://github.com/AksharP5/relay.git
