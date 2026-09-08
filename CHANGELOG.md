@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/AksharP5/relay/compare/v0.2.1...v0.2.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **deps:** restore dependency audit ([#99](https://github.com/AksharP5/relay/issues/99)) ([030d855](https://github.com/AksharP5/relay/commit/030d85534010f6d78f33c44aebcc10e10652bee4))
+* **deps:** unblock upgrades and dependency audit ([#92](https://github.com/AksharP5/relay/issues/92)) ([0142194](https://github.com/AksharP5/relay/commit/0142194fbaeb9fd9b248145608069b19dee6bdc6))
+
 ## [0.2.1](https://github.com/AksharP5/relay/compare/v0.2.0...v0.2.1) (2026-07-23)
 
 
