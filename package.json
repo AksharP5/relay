@@ -39,8 +39,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-rc.112",
-    "effect": "4.0.0-rc.112",
+    "@effect/platform-bun": "4.0.0-rc.115",
+    "effect": "4.0.0-rc.115",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
