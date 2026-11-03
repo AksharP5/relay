@@ -5,13 +5,13 @@ export interface RelayPathsShape {
 }
 
 const resolveRoot = Effect.gen(function* () {
-  const override = yield* Config.option(Config.string("RELAY_DATA_DIR"));
+  const override = yield* Config.option(Config.String("RELAY_DATA_DIR"));
   if (override._tag === "Some") {
     const root = override.value.trim();
     if (root) return root;
   }
 
-  const home = yield* Config.option(Config.string("HOME"));
+  const home = yield* Config.option(Config.String("HOME"));
   return home._tag === "Some" && home.value
     ? `${home.value}/.local/share/relay`
     : `${process.cwd()}/.relay`;
