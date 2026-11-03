@@ -167,7 +167,7 @@ jobs:
           tar -xzf "dist/tarballs/$(jq -r '.[0].filename' dist/pack.json)" -C "$verify_dir"
           test "$("$verify_dir/package/bin/relay" --version)" = "$VERSION"
           "$verify_dir/package/bin/relay" --help >/dev/null
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: npm-${{ matrix.asset }}
           path: dist/tarballs/*.tgz
@@ -204,7 +204,7 @@ jobs:
           test "$(jq -r '.[0].name' dist/pack.json)" = "@akshar5/relay"
           test "$(jq -r '.[0].version' dist/pack.json)" = "$VERSION"
           test "$(jq -r '.[0].files[] | select(.path == "bin/relay") | .mode' dist/pack.json)" = 493
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: npm-launcher
           path: dist/tarballs/*.tgz
